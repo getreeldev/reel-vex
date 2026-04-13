@@ -149,7 +149,7 @@ Base URL: `https://vex.getreel.dev`
 ### Look up a CVE
 
 ```bash
-curl https://vex.getreel.dev/v1/cve/CVE-2024-6387
+curl https://vex.getreel.dev/v1/cve/CVE-2021-44228
 ```
 
 ```json
@@ -157,12 +157,12 @@ curl https://vex.getreel.dev/v1/cve/CVE-2024-6387
   "statements": [
     {
       "vendor": "redhat",
-      "cve": "CVE-2024-6387",
-      "product_id": "pkg:rpm/redhat/openssh@8.7p1-38.el9_4.1",
+      "cve": "CVE-2021-44228",
+      "product_id": "pkg:rpm/redhat/log4j",
       "id_type": "purl",
       "status": "not_affected",
       "justification": "vulnerable_code_not_present",
-      "updated": "2024-07-01T00:00:00Z"
+      "updated": "2026-04-01T16:43:13Z"
     }
   ]
 }
@@ -176,8 +176,8 @@ Match CVEs against product IDs (PURL or CPE). Returns only statements where both
 curl -X POST https://vex.getreel.dev/v1/resolve \
   -H "Content-Type: application/json" \
   -d '{
-    "cves": ["CVE-2024-6387"],
-    "products": ["pkg:rpm/redhat/openssh@8.7p1"]
+    "cves": ["CVE-2021-44228"],
+    "products": ["pkg:rpm/redhat/log4j"]
   }'
 ```
 
@@ -195,7 +195,7 @@ Each vulnerability with a matching vendor statement gets an `analysis` field add
 
 ```json
 {
-  "id": "CVE-2024-6387",
+  "id": "CVE-2021-44228",
   "analysis": {
     "state": "not_affected",
     "justification": "code_not_present",
@@ -274,7 +274,7 @@ go build -o reel-vex ./cmd/server
   serve
 
 # Query the local database directly
-./reel-vex -db vex.db query CVE-2024-6387
+./reel-vex -db vex.db query CVE-2021-44228
 ./reel-vex -db vex.db stats
 ```
 
