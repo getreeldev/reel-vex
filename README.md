@@ -1,8 +1,17 @@
-# reel-vex
+<p align="center">
+  <img src="./docs/logo-light.svg#gh-light-mode-only" alt="Reel Logo" width="80" height="80">
+  <img src="./docs/logo.svg#gh-dark-mode-only" alt="Reel Logo" width="80" height="80">
+</p>
 
-A free, open source VEX resolution service. Aggregates vendor VEX statements from CSAF 2.0 feeds into a single SQLite database and serves them via HTTP API.
+<h1 align="center"><samp>reel</samp> vex</h1>
 
-Live at **[vex.getreel.dev](https://vex.getreel.dev)** | Web UI at **[getreel.dev/vex](https://getreel.dev/vex)**
+<p align="center">
+  <strong>Free, open source VEX resolution service.</strong>
+  <br>
+  Aggregates vendor VEX statements from CSAF 2.0 feeds into a single SQLite database and serves them via HTTP API.
+  <br><br>
+  <a href="https://getreel.dev/vex">Web UI</a> · API <code>vex.getreel.dev</code>
+</p>
 
 ## Why
 
