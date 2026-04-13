@@ -26,9 +26,9 @@ type Statement struct {
 
 // Stats holds database coverage statistics.
 type Stats struct {
-	Vendors    int
-	CVEs       int
-	Statements int
+	Vendors    int `json:"vendors"`
+	CVEs       int `json:"cves"`
+	Statements int `json:"statements"`
 }
 
 // Open opens or creates a SQLite database at the given path.

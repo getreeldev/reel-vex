@@ -1,0 +1,209 @@
+package api
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"testing"
+
+	"github.com/getreeldev/reel-vex/pkg/db"
+)
+
+func setupTestDB(t *testing.T) *db.DB {
+	t.Helper()
+	path := t.TempDir() + "/test.db"
+	database, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	if err := database.UpsertVendor("testvendor", "Test Vendor", "https://example.com/feed"); err != nil {
+		t.Fatal(err)
+	}
+
+	stmts := []db.Statement{
+		{Vendor: "testvendor", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/test/openssl@3.0", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-07-01T00:00:00Z"},
+		{Vendor: "testvendor", CVE: "CVE-2024-1234", ProductID: "cpe:/a:test:openssl:3.0", IDType: "cpe", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-07-01T00:00:00Z"},
+		{Vendor: "testvendor", CVE: "CVE-2024-5678", ProductID: "pkg:rpm/test/nginx@1.25", IDType: "purl", Status: "fixed", Updated: "2024-08-01T00:00:00Z"},
+	}
+	if err := database.BulkInsert(stmts); err != nil {
+		t.Fatal(err)
+	}
+	return database
+}
+
+func TestHandleCVE(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database)
+
+	t.Run("found", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/v1/cve/CVE-2024-1234", nil)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+
+		var resp statementsResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Statements) != 2 {
+			t.Fatalf("expected 2 statements, got %d", len(resp.Statements))
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/v1/cve/CVE-9999-0000", nil)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+
+		var resp statementsResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Statements) != 0 {
+			t.Fatalf("expected 0 statements, got %d", len(resp.Statements))
+		}
+	})
+}
+
+func TestHandleResolve(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database)
+
+	t.Run("match", func(t *testing.T) {
+		body, _ := json.Marshal(resolveRequest{
+			CVEs:     []string{"CVE-2024-1234"},
+			Products: []string{"pkg:rpm/test/openssl@3.0"},
+		})
+		req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var resp statementsResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Statements) != 1 {
+			t.Fatalf("expected 1 statement, got %d", len(resp.Statements))
+		}
+		if resp.Statements[0].Status != "not_affected" {
+			t.Fatalf("expected not_affected, got %s", resp.Statements[0].Status)
+		}
+	})
+
+	t.Run("no match", func(t *testing.T) {
+		body, _ := json.Marshal(resolveRequest{
+			CVEs:     []string{"CVE-2024-1234"},
+			Products: []string{"pkg:rpm/test/nginx@1.25"},
+		})
+		req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+
+		var resp statementsResponse
+		json.NewDecoder(w.Body).Decode(&resp)
+		if len(resp.Statements) != 0 {
+			t.Fatalf("expected 0 statements, got %d", len(resp.Statements))
+		}
+	})
+
+	t.Run("missing fields", func(t *testing.T) {
+		body, _ := json.Marshal(resolveRequest{CVEs: []string{"CVE-2024-1234"}})
+		req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", w.Code)
+		}
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader([]byte("not json")))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", w.Code)
+		}
+	})
+}
+
+func TestHandleStats(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database)
+
+	req := httptest.NewRequest("GET", "/v1/stats", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var stats db.Stats
+	if err := json.NewDecoder(w.Body).Decode(&stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Vendors != 1 {
+		t.Fatalf("expected 1 vendor, got %d", stats.Vendors)
+	}
+	if stats.CVEs != 2 {
+		t.Fatalf("expected 2 CVEs, got %d", stats.CVEs)
+	}
+	if stats.Statements != 3 {
+		t.Fatalf("expected 3 statements, got %d", stats.Statements)
+	}
+}
+
+func TestHandleHealth(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database)
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestCORS(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database)
+
+	req := httptest.NewRequest("OPTIONS", "/v1/stats", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", w.Code)
+	}
+	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatal("missing CORS header")
+	}
+}
+
+func TestMain(m *testing.M) {
+	os.Exit(m.Run())
+}

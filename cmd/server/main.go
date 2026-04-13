@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
+	"os/signal"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/getreeldev/reel-vex/pkg/api"
 	"github.com/getreeldev/reel-vex/pkg/db"
 	"github.com/getreeldev/reel-vex/pkg/ingest"
 )
@@ -23,10 +28,13 @@ func run() error {
 	configPath := flag.String("config", "config.yaml", "path to config file")
 	dbPath := flag.String("db", "vex.db", "path to SQLite database")
 	limit := flag.Int("limit", 0, "max documents per provider (0 = unlimited)")
+	addr := flag.String("addr", ":8080", "listen address for serve command")
 	flag.Parse()
 
 	cmd := flag.Arg(0)
 	switch cmd {
+	case "serve":
+		return runServe(*dbPath, *addr)
 	case "ingest":
 		return runIngest(*configPath, *dbPath, *limit)
 	case "stats":
@@ -40,6 +48,7 @@ func run() error {
 	default:
 		fmt.Fprintf(os.Stderr, "Usage: reel-vex [flags] <command>\n\n")
 		fmt.Fprintf(os.Stderr, "Commands:\n")
+		fmt.Fprintf(os.Stderr, "  serve     Start the HTTP API server\n")
 		fmt.Fprintf(os.Stderr, "  ingest    Ingest CSAF VEX feeds into the database\n")
 		fmt.Fprintf(os.Stderr, "  stats     Show database statistics\n")
 		fmt.Fprintf(os.Stderr, "  query     Query VEX statements for a CVE\n")
@@ -84,6 +93,39 @@ func runStats(dbPath string) error {
 	fmt.Printf("Vendors:    %d\n", stats.Vendors)
 	fmt.Printf("CVEs:       %d\n", stats.CVEs)
 	fmt.Printf("Statements: %d\n", stats.Statements)
+	return nil
+}
+
+func runServe(dbPath, addr string) error {
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer database.Close()
+
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      api.NewServer(database),
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	go func() {
+		<-ctx.Done()
+		slog.Info("shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx)
+	}()
+
+	slog.Info("starting server", "addr", addr)
+	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		return err
+	}
 	return nil
 }
 
