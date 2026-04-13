@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/getreeldev/reel-vex/pkg/db"
 )
@@ -37,7 +38,7 @@ func setupTestDB(t *testing.T) *db.DB {
 
 func TestHandleCVE(t *testing.T) {
 	database := setupTestDB(t)
-	srv := NewServer(database)
+	srv := NewServer(database, nil)
 
 	t.Run("found", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/v1/cve/CVE-2024-1234", nil)
@@ -78,7 +79,7 @@ func TestHandleCVE(t *testing.T) {
 
 func TestHandleResolve(t *testing.T) {
 	database := setupTestDB(t)
-	srv := NewServer(database)
+	srv := NewServer(database, nil)
 
 	t.Run("match", func(t *testing.T) {
 		body, _ := json.Marshal(resolveRequest{
@@ -150,7 +151,7 @@ func TestHandleResolve(t *testing.T) {
 
 func TestHandleStats(t *testing.T) {
 	database := setupTestDB(t)
-	srv := NewServer(database)
+	srv := NewServer(database, nil)
 
 	req := httptest.NewRequest("GET", "/v1/stats", nil)
 	w := httptest.NewRecorder()
@@ -177,7 +178,7 @@ func TestHandleStats(t *testing.T) {
 
 func TestHandleHealth(t *testing.T) {
 	database := setupTestDB(t)
-	srv := NewServer(database)
+	srv := NewServer(database, nil)
 
 	req := httptest.NewRequest("GET", "/healthz", nil)
 	w := httptest.NewRecorder()
@@ -190,7 +191,7 @@ func TestHandleHealth(t *testing.T) {
 
 func TestCORS(t *testing.T) {
 	database := setupTestDB(t)
-	srv := NewServer(database)
+	srv := NewServer(database, nil)
 
 	req := httptest.NewRequest("OPTIONS", "/v1/stats", nil)
 	w := httptest.NewRecorder()
@@ -202,6 +203,153 @@ func TestCORS(t *testing.T) {
 	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
 		t.Fatal("missing CORS header")
 	}
+}
+
+func TestHandleIngestStatus(t *testing.T) {
+	database := setupTestDB(t)
+
+	t.Run("no runner", func(t *testing.T) {
+		srv := NewServer(database, nil)
+		req := httptest.NewRequest("GET", "/v1/ingest", nil)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", w.Code)
+		}
+	})
+
+	t.Run("with runner", func(t *testing.T) {
+		runner := NewIngestRunner(func() error { return nil }, time.Hour, "")
+		srv := NewServer(database, runner)
+
+		req := httptest.NewRequest("GET", "/v1/ingest", nil)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+
+		var status IngestStatus
+		if err := json.NewDecoder(w.Body).Decode(&status); err != nil {
+			t.Fatal(err)
+		}
+		if status.Running {
+			t.Fatal("expected not running")
+		}
+	})
+}
+
+func TestHandleIngestTrigger(t *testing.T) {
+	database := setupTestDB(t)
+
+	t.Run("no auth required", func(t *testing.T) {
+		called := make(chan struct{}, 1)
+		runner := NewIngestRunner(func() error {
+			called <- struct{}{}
+			return nil
+		}, time.Hour, "")
+		srv := NewServer(database, runner)
+
+		req := httptest.NewRequest("POST", "/v1/ingest", nil)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// Wait for ingest goroutine to run.
+		select {
+		case <-called:
+		case <-time.After(2 * time.Second):
+			t.Fatal("ingest function not called")
+		}
+	})
+
+	t.Run("auth required and missing", func(t *testing.T) {
+		runner := NewIngestRunner(func() error { return nil }, time.Hour, "secret-token")
+		srv := NewServer(database, runner)
+
+		req := httptest.NewRequest("POST", "/v1/ingest", nil)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d", w.Code)
+		}
+	})
+
+	t.Run("auth required and wrong", func(t *testing.T) {
+		runner := NewIngestRunner(func() error { return nil }, time.Hour, "secret-token")
+		srv := NewServer(database, runner)
+
+		req := httptest.NewRequest("POST", "/v1/ingest", nil)
+		req.Header.Set("Authorization", "Bearer wrong-token")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d", w.Code)
+		}
+	})
+
+	t.Run("auth required and correct", func(t *testing.T) {
+		called := make(chan struct{}, 1)
+		runner := NewIngestRunner(func() error {
+			called <- struct{}{}
+			return nil
+		}, time.Hour, "secret-token")
+		srv := NewServer(database, runner)
+
+		req := httptest.NewRequest("POST", "/v1/ingest", nil)
+		req.Header.Set("Authorization", "Bearer secret-token")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+		}
+
+		select {
+		case <-called:
+		case <-time.After(2 * time.Second):
+			t.Fatal("ingest function not called")
+		}
+	})
+
+	t.Run("conflict when already running", func(t *testing.T) {
+		started := make(chan struct{})
+		block := make(chan struct{})
+		runner := NewIngestRunner(func() error {
+			close(started)
+			<-block // Block until test releases.
+			return nil
+		}, time.Hour, "")
+		srv := NewServer(database, runner)
+
+		// First trigger.
+		req := httptest.NewRequest("POST", "/v1/ingest", nil)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d", w.Code)
+		}
+
+		// Wait for ingest to start.
+		<-started
+
+		// Second trigger while first is running.
+		req2 := httptest.NewRequest("POST", "/v1/ingest", nil)
+		w2 := httptest.NewRecorder()
+		srv.ServeHTTP(w2, req2)
+		if w2.Code != http.StatusConflict {
+			t.Fatalf("expected 409, got %d", w2.Code)
+		}
+
+		close(block)
+	})
 }
 
 func TestMain(m *testing.M) {

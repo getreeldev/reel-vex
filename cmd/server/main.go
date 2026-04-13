@@ -29,12 +29,14 @@ func run() error {
 	dbPath := flag.String("db", "vex.db", "path to SQLite database")
 	limit := flag.Int("limit", 0, "max documents per provider (0 = unlimited)")
 	addr := flag.String("addr", ":8080", "listen address for serve command")
+	ingestInterval := flag.Duration("ingest-interval", 24*time.Hour, "interval between scheduled ingests")
+	adminToken := flag.String("admin-token", "", "bearer token for admin endpoints (empty = no auth)")
 	flag.Parse()
 
 	cmd := flag.Arg(0)
 	switch cmd {
 	case "serve":
-		return runServe(*dbPath, *addr)
+		return runServe(*configPath, *dbPath, *addr, *ingestInterval, *adminToken)
 	case "ingest":
 		return runIngest(*configPath, *dbPath, *limit)
 	case "stats":
@@ -96,16 +98,31 @@ func runStats(dbPath string) error {
 	return nil
 }
 
-func runServe(dbPath, addr string) error {
+func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adminToken string) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+
+	var cfg ingest.Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+
 	database, err := db.Open(dbPath)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer database.Close()
 
+	ingestFn := func() error {
+		return ingest.Run(cfg, database, ingest.Options{})
+	}
+	runner := api.NewIngestRunner(ingestFn, ingestInterval, adminToken)
+
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      api.NewServer(database),
+		Handler:      api.NewServer(database, runner),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -113,6 +130,8 @@ func runServe(dbPath, addr string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+
+	go runner.StartScheduler(ctx)
 
 	go func() {
 		<-ctx.Done()
@@ -122,7 +141,7 @@ func runServe(dbPath, addr string) error {
 		srv.Shutdown(shutdownCtx)
 	}()
 
-	slog.Info("starting server", "addr", addr)
+	slog.Info("starting server", "addr", addr, "ingest_interval", ingestInterval)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		return err
 	}

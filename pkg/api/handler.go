@@ -10,19 +10,24 @@ import (
 
 // Server is the HTTP API server.
 type Server struct {
-	db  *db.DB
-	mux *http.ServeMux
+	db     *db.DB
+	mux    *http.ServeMux
+	ingest *IngestRunner
 }
 
 // NewServer creates a new API server.
-func NewServer(database *db.DB) *Server {
+// ingest may be nil if running without ingest support.
+func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 	s := &Server{
-		db:  database,
-		mux: http.NewServeMux(),
+		db:     database,
+		mux:    http.NewServeMux(),
+		ingest: ingest,
 	}
 	s.mux.HandleFunc("GET /v1/cve/{id}", s.handleCVE)
 	s.mux.HandleFunc("POST /v1/resolve", s.handleResolve)
 	s.mux.HandleFunc("GET /v1/stats", s.handleStats)
+	s.mux.HandleFunc("GET /v1/ingest", s.handleIngestStatus)
+	s.mux.HandleFunc("POST /v1/ingest", s.handleIngestTrigger)
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
 	return s
 }
@@ -111,6 +116,39 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
+}
+
+func (s *Server) handleIngestStatus(w http.ResponseWriter, r *http.Request) {
+	if s.ingest == nil {
+		writeError(w, http.StatusNotFound, "ingest not configured")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(s.ingest.Status())
+}
+
+func (s *Server) handleIngestTrigger(w http.ResponseWriter, r *http.Request) {
+	if s.ingest == nil {
+		writeError(w, http.StatusNotFound, "ingest not configured")
+		return
+	}
+
+	if s.ingest.adminToken != "" {
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer "+s.ingest.adminToken {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+	}
+
+	if !s.ingest.TriggerIngest() {
+		writeError(w, http.StatusConflict, "ingest already running")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "started"})
 }
 
 type statementsResponse struct {
