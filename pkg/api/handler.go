@@ -26,6 +26,7 @@ func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 	s.mux.HandleFunc("GET /v1/cve/{id}", s.handleCVE)
 	s.mux.HandleFunc("POST /v1/resolve", s.handleResolve)
 	s.mux.HandleFunc("GET /v1/stats", s.handleStats)
+	s.mux.HandleFunc("POST /v1/sbom", s.handleSBOM)
 	s.mux.HandleFunc("GET /v1/ingest", s.handleIngestStatus)
 	s.mux.HandleFunc("POST /v1/ingest", s.handleIngestTrigger)
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -203,6 +204,215 @@ func TestCORS(t *testing.T) {
 	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
 		t.Fatal("missing CORS header")
 	}
+}
+
+func TestHandleSBOM(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	t.Run("annotates matching vulnerabilities", func(t *testing.T) {
+		sbom := map[string]any{
+			"bomFormat":   "CycloneDX",
+			"specVersion": "1.5",
+			"components": []any{
+				map[string]any{
+					"type": "library",
+					"name": "openssl",
+					"purl": "pkg:rpm/test/openssl@3.0",
+				},
+			},
+			"vulnerabilities": []any{
+				map[string]any{
+					"id": "CVE-2024-1234",
+				},
+			},
+		}
+		body, _ := json.Marshal(sbom)
+		req := httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var result map[string]any
+		if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+			t.Fatal(err)
+		}
+
+		vulns := result["vulnerabilities"].([]any)
+		vuln := vulns[0].(map[string]any)
+		analysis, ok := vuln["analysis"].(map[string]any)
+		if !ok {
+			t.Fatal("expected analysis field on vulnerability")
+		}
+		if analysis["state"] != "not_affected" {
+			t.Fatalf("expected not_affected, got %v", analysis["state"])
+		}
+		if analysis["justification"] != "code_not_present" {
+			t.Fatalf("expected code_not_present, got %v", analysis["justification"])
+		}
+	})
+
+	t.Run("no matching CVEs returns SBOM as-is", func(t *testing.T) {
+		sbom := map[string]any{
+			"bomFormat":   "CycloneDX",
+			"specVersion": "1.5",
+			"components": []any{
+				map[string]any{
+					"type": "library",
+					"name": "something",
+					"purl": "pkg:npm/something@1.0",
+				},
+			},
+			"vulnerabilities": []any{
+				map[string]any{
+					"id": "CVE-9999-0000",
+				},
+			},
+		}
+		body, _ := json.Marshal(sbom)
+		req := httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+
+		var result map[string]any
+		json.NewDecoder(w.Body).Decode(&result)
+		vulns := result["vulnerabilities"].([]any)
+		vuln := vulns[0].(map[string]any)
+		if _, ok := vuln["analysis"]; ok {
+			t.Fatal("expected no analysis field when no match")
+		}
+	})
+
+	t.Run("no vulnerabilities returns SBOM as-is", func(t *testing.T) {
+		sbom := map[string]any{
+			"bomFormat":   "CycloneDX",
+			"specVersion": "1.5",
+			"components": []any{
+				map[string]any{"type": "library", "purl": "pkg:npm/foo@1.0"},
+			},
+		}
+		body, _ := json.Marshal(sbom)
+		req := httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+	})
+
+	t.Run("no components returns SBOM as-is", func(t *testing.T) {
+		sbom := map[string]any{
+			"bomFormat":   "CycloneDX",
+			"specVersion": "1.5",
+			"vulnerabilities": []any{
+				map[string]any{"id": "CVE-2024-1234"},
+			},
+		}
+		body, _ := json.Marshal(sbom)
+		req := httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+	})
+
+	t.Run("cpe matching works", func(t *testing.T) {
+		sbom := map[string]any{
+			"bomFormat":   "CycloneDX",
+			"specVersion": "1.5",
+			"components": []any{
+				map[string]any{
+					"type": "library",
+					"name": "openssl",
+					"cpe":  "cpe:/a:test:openssl:3.0",
+				},
+			},
+			"vulnerabilities": []any{
+				map[string]any{"id": "CVE-2024-1234"},
+			},
+		}
+		body, _ := json.Marshal(sbom)
+		req := httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+
+		var result map[string]any
+		json.NewDecoder(w.Body).Decode(&result)
+		vulns := result["vulnerabilities"].([]any)
+		vuln := vulns[0].(map[string]any)
+		if _, ok := vuln["analysis"]; !ok {
+			t.Fatal("expected analysis field for CPE match")
+		}
+	})
+
+	t.Run("invalid JSON", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader([]byte("not json")))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", w.Code)
+		}
+	})
+
+	t.Run("picks best status across vendors", func(t *testing.T) {
+		// Add a second vendor with "affected" status for the same CVE+product.
+		database.UpsertVendor("vendor2", "Vendor Two", "https://example.com/feed2")
+		database.BulkInsert([]db.Statement{
+			{Vendor: "vendor2", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/test/openssl@3.0", IDType: "purl", Status: "affected", Updated: "2024-07-01T00:00:00Z"},
+		})
+
+		sbom := map[string]any{
+			"bomFormat":   "CycloneDX",
+			"specVersion": "1.5",
+			"components": []any{
+				map[string]any{"type": "library", "purl": "pkg:rpm/test/openssl@3.0"},
+			},
+			"vulnerabilities": []any{
+				map[string]any{"id": "CVE-2024-1234"},
+			},
+		}
+		body, _ := json.Marshal(sbom)
+		req := httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+
+		var result map[string]any
+		json.NewDecoder(w.Body).Decode(&result)
+		vulns := result["vulnerabilities"].([]any)
+		vuln := vulns[0].(map[string]any)
+		analysis := vuln["analysis"].(map[string]any)
+
+		// not_affected (priority 4) should win over affected (priority 1).
+		if analysis["state"] != "not_affected" {
+			t.Fatalf("expected not_affected (highest priority), got %v", analysis["state"])
+		}
+
+		// Detail should mention both vendors.
+		detail := analysis["detail"].(string)
+		if !strings.Contains(detail, "testvendor") || !strings.Contains(detail, "vendor2") {
+			t.Fatalf("expected both vendors in detail, got: %s", detail)
+		}
+	})
 }
 
 func TestHandleIngestStatus(t *testing.T) {

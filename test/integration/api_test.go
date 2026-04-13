@@ -44,8 +44,20 @@ func TestMain(m *testing.M) {
 	port := freePort()
 	serverURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 
-	// Start server
-	cmd := exec.Command(binPath, "-db", dbPath, "-addr", fmt.Sprintf(":%d", port), "serve")
+	// Write a minimal config (empty providers so ingest is a no-op)
+	configPath := filepath.Join(os.TempDir(), "reel-vex-test-config.yaml")
+	os.WriteFile(configPath, []byte("providers: []\n"), 0644)
+	defer os.Remove(configPath)
+
+	// Start server with long ingest interval so scheduler doesn't interfere
+	cmd := exec.Command(binPath,
+		"-db", dbPath,
+		"-addr", fmt.Sprintf(":%d", port),
+		"-config", configPath,
+		"-ingest-interval", "999h",
+		"-admin-token", "test-token",
+		"serve",
+	)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -53,7 +65,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	defer func() {
-		cmd.Process.Signal(os.Interrupt)
+		cmd.Process.Kill()
 		cmd.Wait()
 	}()
 
@@ -336,6 +348,207 @@ func TestCORS_Headers(t *testing.T) {
 		t.Fatal("missing Access-Control-Allow-Origin on regular response")
 	}
 	resp.Body.Close()
+}
+
+// --- SBOM endpoint ---
+
+func TestSBOM_AnnotatesMatchingVulns(t *testing.T) {
+	sbom := map[string]any{
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.5",
+		"components": []any{
+			map[string]any{
+				"type": "library",
+				"name": "openssl",
+				"purl": "pkg:rpm/redhat/openssl@3.0.7-27.el9",
+			},
+		},
+		"vulnerabilities": []any{
+			map[string]any{
+				"id": "CVE-2024-1234",
+			},
+		},
+	}
+	resp := post(t, "/v1/sbom", sbom)
+	expectStatus(t, resp, 200)
+
+	var result map[string]any
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	json.Unmarshal(body, &result)
+
+	vulns := result["vulnerabilities"].([]any)
+	vuln := vulns[0].(map[string]any)
+	analysis, ok := vuln["analysis"].(map[string]any)
+	if !ok {
+		t.Fatal("expected analysis field")
+	}
+	if analysis["state"] != "not_affected" {
+		t.Fatalf("expected not_affected, got %v", analysis["state"])
+	}
+	if analysis["justification"] != "code_not_present" {
+		t.Fatalf("expected code_not_present, got %v", analysis["justification"])
+	}
+	detail := analysis["detail"].(string)
+	if !strings.Contains(detail, "redhat") {
+		t.Fatalf("expected redhat in detail, got: %s", detail)
+	}
+}
+
+func TestSBOM_NoMatchReturnsAsIs(t *testing.T) {
+	sbom := map[string]any{
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.5",
+		"components": []any{
+			map[string]any{"type": "library", "purl": "pkg:npm/unknown@1.0"},
+		},
+		"vulnerabilities": []any{
+			map[string]any{"id": "CVE-9999-0000"},
+		},
+	}
+	resp := post(t, "/v1/sbom", sbom)
+	expectStatus(t, resp, 200)
+
+	var result map[string]any
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	json.Unmarshal(body, &result)
+
+	vulns := result["vulnerabilities"].([]any)
+	vuln := vulns[0].(map[string]any)
+	if _, ok := vuln["analysis"]; ok {
+		t.Fatal("expected no analysis for unmatched CVE")
+	}
+}
+
+func TestSBOM_MultiVendorPicksBest(t *testing.T) {
+	// CVE-2024-5678 has redhat=fixed and suse=affected
+	sbom := map[string]any{
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.5",
+		"components": []any{
+			map[string]any{"type": "library", "purl": "pkg:rpm/redhat/nginx@1.22.1-4.el9"},
+			map[string]any{"type": "library", "cpe": "cpe:/a:suse:sles:15:sp5"},
+		},
+		"vulnerabilities": []any{
+			map[string]any{"id": "CVE-2024-5678"},
+		},
+	}
+	resp := post(t, "/v1/sbom", sbom)
+	expectStatus(t, resp, 200)
+
+	var result map[string]any
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	json.Unmarshal(body, &result)
+
+	vulns := result["vulnerabilities"].([]any)
+	vuln := vulns[0].(map[string]any)
+	analysis := vuln["analysis"].(map[string]any)
+	// fixed (priority 3) > affected (priority 1)
+	if analysis["state"] != "resolved" {
+		t.Fatalf("expected resolved, got %v", analysis["state"])
+	}
+	detail := analysis["detail"].(string)
+	if !strings.Contains(detail, "redhat") || !strings.Contains(detail, "suse") {
+		t.Fatalf("expected both vendors in detail, got: %s", detail)
+	}
+}
+
+func TestSBOM_CPEMatching(t *testing.T) {
+	sbom := map[string]any{
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.5",
+		"components": []any{
+			map[string]any{"type": "library", "cpe": "cpe:/a:redhat:enterprise_linux:9::appstream"},
+		},
+		"vulnerabilities": []any{
+			map[string]any{"id": "CVE-2024-1234"},
+		},
+	}
+	resp := post(t, "/v1/sbom", sbom)
+	expectStatus(t, resp, 200)
+
+	var result map[string]any
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	json.Unmarshal(body, &result)
+
+	vulns := result["vulnerabilities"].([]any)
+	vuln := vulns[0].(map[string]any)
+	if _, ok := vuln["analysis"]; !ok {
+		t.Fatal("expected analysis for CPE match")
+	}
+}
+
+func TestSBOM_NoVulnsReturnsAsIs(t *testing.T) {
+	sbom := map[string]any{
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.5",
+		"components": []any{
+			map[string]any{"type": "library", "purl": "pkg:npm/foo@1.0"},
+		},
+	}
+	resp := post(t, "/v1/sbom", sbom)
+	expectStatus(t, resp, 200)
+}
+
+func TestSBOM_InvalidJSON(t *testing.T) {
+	req, _ := http.NewRequest("POST", serverURL+"/v1/sbom", bytes.NewReader([]byte("not json")))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 400 {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+// --- Ingest endpoint ---
+
+func TestIngest_StatusEndpoint(t *testing.T) {
+	resp := get(t, "/v1/ingest")
+	expectStatus(t, resp, 200)
+
+	var status map[string]any
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	json.Unmarshal(body, &status)
+
+	// running should be a boolean
+	if _, ok := status["running"].(bool); !ok {
+		t.Fatalf("expected running field as bool, got %T", status["running"])
+	}
+}
+
+func TestIngest_TriggerWithoutAuth(t *testing.T) {
+	req, _ := http.NewRequest("POST", serverURL+"/v1/ingest", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 401 {
+		t.Fatalf("expected 401 without token, got %d", resp.StatusCode)
+	}
+}
+
+func TestIngest_TriggerWithAuth(t *testing.T) {
+	req, _ := http.NewRequest("POST", serverURL+"/v1/ingest", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 202 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 202, got %d: %s", resp.StatusCode, body)
+	}
 }
 
 // --- Method not allowed ---
