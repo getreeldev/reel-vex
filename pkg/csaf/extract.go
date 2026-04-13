@@ -10,7 +10,9 @@ import (
 // Statement is a single VEX assertion: a product is (or isn't) affected by a CVE.
 type Statement struct {
 	CVE           string
-	ProductID     string // PURL or CPE
+	ProductID     string // Full PURL or CPE as published by the vendor
+	BaseID        string // Normalized identifier for matching (PURL without version/qualifiers, CPE as-is)
+	Version       string // Extracted version (PURL only; empty for CPE or unversioned PURLs)
 	IDType        string // "purl" or "cpe"
 	Status        string // not_affected, fixed, affected, under_investigation
 	Justification string // e.g. vulnerable_code_not_present (only for not_affected)
@@ -72,9 +74,12 @@ func Extract(data []byte) ([]Statement, error) {
 				}
 
 				for _, ident := range identifiers {
+					base, version := SplitPURL(ident.id)
 					statements = append(statements, Statement{
 						CVE:           cve,
 						ProductID:     ident.id,
+						BaseID:        base,
+						Version:       version,
 						IDType:        ident.idType,
 						Status:        status,
 						Justification: justification,

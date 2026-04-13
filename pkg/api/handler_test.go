@@ -27,9 +27,9 @@ func setupTestDB(t *testing.T) *db.DB {
 	}
 
 	stmts := []db.Statement{
-		{Vendor: "testvendor", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/test/openssl@3.0", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-07-01T00:00:00Z"},
-		{Vendor: "testvendor", CVE: "CVE-2024-1234", ProductID: "cpe:/a:test:openssl:3.0", IDType: "cpe", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-07-01T00:00:00Z"},
-		{Vendor: "testvendor", CVE: "CVE-2024-5678", ProductID: "pkg:rpm/test/nginx@1.25", IDType: "purl", Status: "fixed", Updated: "2024-08-01T00:00:00Z"},
+		{Vendor: "testvendor", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/test/openssl@3.0", BaseID: "pkg:rpm/test/openssl", Version: "3.0", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-07-01T00:00:00Z"},
+		{Vendor: "testvendor", CVE: "CVE-2024-1234", ProductID: "cpe:/a:test:openssl:3.0", BaseID: "cpe:/a:test:openssl:3.0", IDType: "cpe", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-07-01T00:00:00Z"},
+		{Vendor: "testvendor", CVE: "CVE-2024-5678", ProductID: "pkg:rpm/test/nginx@1.25", BaseID: "pkg:rpm/test/nginx", Version: "1.25", IDType: "purl", Status: "fixed", Updated: "2024-08-01T00:00:00Z"},
 	}
 	if err := database.BulkInsert(stmts); err != nil {
 		t.Fatal(err)
@@ -374,7 +374,7 @@ func TestHandleSBOM(t *testing.T) {
 		// Add a second vendor with "affected" status for the same CVE+product.
 		database.UpsertVendor("vendor2", "Vendor Two", "https://example.com/feed2")
 		database.BulkInsert([]db.Statement{
-			{Vendor: "vendor2", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/test/openssl@3.0", IDType: "purl", Status: "affected", Updated: "2024-07-01T00:00:00Z"},
+			{Vendor: "vendor2", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/test/openssl@3.0", BaseID: "pkg:rpm/test/openssl", Version: "3.0", IDType: "purl", Status: "affected", Updated: "2024-07-01T00:00:00Z"},
 		})
 
 		sbom := map[string]any{

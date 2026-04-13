@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
 )
 
@@ -92,7 +93,15 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stmts, err := s.db.QueryResolve(req.CVEs, req.Products)
+	// Normalize user-provided PURLs into base form so "log4j@1.2.17" matches
+	// a statement published against "log4j".
+	bases := make([]string, len(req.Products))
+	for i, p := range req.Products {
+		b, _ := csaf.SplitPURL(p)
+		bases[i] = b
+	}
+
+	stmts, err := s.db.QueryResolve(req.CVEs, bases)
 	if err != nil {
 		slog.Error("resolve failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -160,6 +169,7 @@ type statementJSON struct {
 	Vendor        string `json:"vendor"`
 	CVE           string `json:"cve"`
 	ProductID     string `json:"product_id"`
+	Version       string `json:"version,omitempty"`
 	IDType        string `json:"id_type"`
 	Status        string `json:"status"`
 	Justification string `json:"justification,omitempty"`
@@ -175,6 +185,7 @@ func writeStatements(w http.ResponseWriter, stmts []db.Statement) {
 			Vendor:        s.Vendor,
 			CVE:           s.CVE,
 			ProductID:     s.ProductID,
+			Version:       s.Version,
 			IDType:        s.IDType,
 			Status:        s.Status,
 			Justification: s.Justification,

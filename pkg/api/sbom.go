@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
 )
 
@@ -46,11 +47,13 @@ func (s *Server) handleSBOM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Collect unique product IDs and CVE IDs.
+	// Collect unique product BASE IDs (PURLs stripped of version/qualifiers)
+	// so that "log4j@1.2.17" matches a VEX statement published against "log4j".
 	productSet := make(map[string]struct{})
 	for _, c := range components {
 		for _, id := range c {
-			productSet[id] = struct{}{}
+			base, _ := csaf.SplitPURL(id)
+			productSet[base] = struct{}{}
 		}
 	}
 	products := make([]string, 0, len(productSet))
