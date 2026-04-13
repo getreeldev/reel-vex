@@ -1,0 +1,6 @@
+*.db
+*.db-wal
+*.db-shm
+/server
+/reel-vex
+testdata/batch/

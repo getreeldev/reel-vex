@@ -1,0 +1,7 @@
+providers:
+  - id: redhat
+    name: Red Hat
+    url: https://security.access.redhat.com/data/csaf/v2/provider-metadata.json
+  - id: suse
+    name: SUSE
+    url: https://www.suse.com/.well-known/csaf/provider-metadata.json
