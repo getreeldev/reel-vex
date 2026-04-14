@@ -249,10 +249,43 @@ reel-vex/
   Dockerfile                  -- multi-stage build (golang:1.26-alpine -> alpine:3.21)
 ```
 
-## Run locally
+## Run it yourself
+
+### Docker (recommended)
+
+Prebuilt images are published to Docker Hub on every release, scanned
+for vulnerabilities before publishing (see `.github/workflows/release.yml`):
+
+- `getreel/vex-hub:<version>` — pinned to a specific release (e.g. `v0.1.3`)
+- `getreel/vex-hub:v0` — latest in the 0.x series
+- `getreel/vex-hub:latest` — latest release
+
+Minimal run:
 
 ```bash
-# Build
+docker run -d \
+  --name vex-hub \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -v $(pwd)/data:/data \
+  -v $(pwd)/config.yaml:/config.yaml:ro \
+  getreel/vex-hub:latest \
+  -db /data/vex.db \
+  -config /config.yaml \
+  -admin-token your-secret-token \
+  serve
+```
+
+The SQLite database lives in the mounted `data/` directory so it
+survives container restarts. First boot runs a full ingest (hours for
+Red Hat's 313K docs); subsequent scheduled runs are incremental.
+
+### From source
+
+If you're developing locally or want to build the image yourself:
+
+```bash
+# Build the binary
 go build -o reel-vex ./cmd/server
 
 # Run ingest manually (useful for first population or testing)
@@ -276,21 +309,9 @@ go build -o reel-vex ./cmd/server
 # Query the local database directly
 ./reel-vex -db vex.db query CVE-2021-44228
 ./reel-vex -db vex.db stats
-```
 
-### Docker
-
-```bash
-docker build -t reel-vex .
-docker run -d \
-  -p 8080:8080 \
-  -v $(pwd)/data:/data \
-  -v $(pwd)/config.yaml:/config.yaml:ro \
-  reel-vex \
-  -db /data/vex.db \
-  -config /config.yaml \
-  -admin-token your-secret-token \
-  serve
+# Or build the container image from source
+docker build -t reel-vex:dev .
 ```
 
 ## Tests
