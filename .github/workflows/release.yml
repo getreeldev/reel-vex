@@ -34,21 +34,35 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Scan image with reel
-        uses: getreeldev/releases@v1
+      # We'd love to use the reel GitHub Action here (dogfood), but today it
+      # hard-pulls from a registry and doesn't expose --local for every scan
+      # mode (malware/cbom don't have it). Trivy-action uses the same Trivy
+      # underneath and handles local daemon images natively.
+      # Follow-up: extend getreeldev/releases@v1 to support local-only image
+      # scans across all scan-types.
+      - name: Scan image (Trivy — vulnerabilities)
+        uses: aquasecurity/trivy-action@master
         with:
-          image: vex-hub:scan
-          scan-types: sbom,malware
-          scanners: vuln
-          severity: HIGH,CRITICAL
-          fail-on-findings: true
+          image-ref: 'vex-hub:scan'
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+
+      - name: Generate SBOM (Trivy — CycloneDX)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'vex-hub:scan'
+          format: 'cyclonedx'
+          output: 'sbom.cdx.json'
 
       - name: Upload scan artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: scan-results
-          path: reel-results/
+          path: |
+            sbom.cdx.json
           if-no-files-found: ignore
 
   # Build (cache hit from `scan` job), tag, and push to Docker Hub.
