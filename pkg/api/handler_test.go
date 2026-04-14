@@ -78,6 +78,64 @@ func TestHandleCVE(t *testing.T) {
 	})
 }
 
+func TestHandleCVESummary(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	t.Run("found", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/v1/cve/CVE-2024-1234/summary", nil)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+
+		var got struct {
+			CVE      string         `json:"cve"`
+			Total    int            `json:"total"`
+			ByStatus map[string]int `json:"by_status"`
+			Vendors  []string       `json:"vendors"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got.CVE != "CVE-2024-1234" {
+			t.Fatalf("cve: got %q, want CVE-2024-1234", got.CVE)
+		}
+		if got.Total != 2 {
+			t.Fatalf("total: got %d, want 2", got.Total)
+		}
+		if got.ByStatus["not_affected"] != 2 {
+			t.Fatalf("not_affected: got %d, want 2", got.ByStatus["not_affected"])
+		}
+		if len(got.Vendors) != 1 || got.Vendors[0] != "testvendor" {
+			t.Fatalf("vendors: got %v, want [testvendor]", got.Vendors)
+		}
+	})
+
+	t.Run("not found returns zero totals", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/v1/cve/CVE-9999-0000/summary", nil)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+
+		var got struct {
+			Total    int            `json:"total"`
+			ByStatus map[string]int `json:"by_status"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Total != 0 {
+			t.Fatalf("expected 0 total for missing CVE, got %d", got.Total)
+		}
+	})
+}
+
 func TestHandleResolve(t *testing.T) {
 	database := setupTestDB(t)
 	srv := NewServer(database, nil)

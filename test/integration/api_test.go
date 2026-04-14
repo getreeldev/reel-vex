@@ -22,6 +22,14 @@ import (
 var serverURL string
 
 func TestMain(m *testing.M) {
+	os.Exit(runTests(m))
+}
+
+// runTests does setup / m.Run / teardown so deferred cleanup runs before
+// os.Exit. Without this, the spawned server process leaks, and Go's test
+// runner blocks ~60s waiting for the child's stdout to drain before
+// reporting a spurious non-zero exit.
+func runTests(m *testing.M) int {
 	// Build binary
 	binPath := filepath.Join(os.TempDir(), "reel-vex-test")
 	build := exec.Command("go", "build", "-o", binPath, "./cmd/server")
@@ -60,6 +68,9 @@ func TestMain(m *testing.M) {
 	)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
+	// Cap how long cmd.Wait waits for the child's pipes to close after the
+	// process exits. Without this the CI runner hangs 60s draining stdout.
+	cmd.WaitDelay = 3 * time.Second
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "start server: %s\n", err)
 		os.Exit(1)
@@ -76,7 +87,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 func seedDB(path string) error {

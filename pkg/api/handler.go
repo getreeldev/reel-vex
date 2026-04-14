@@ -25,6 +25,7 @@ func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 		ingest: ingest,
 	}
 	s.mux.HandleFunc("GET /v1/cve/{id}", s.handleCVE)
+	s.mux.HandleFunc("GET /v1/cve/{id}/summary", s.handleCVESummary)
 	s.mux.HandleFunc("POST /v1/resolve", s.handleResolve)
 	s.mux.HandleFunc("GET /v1/stats", s.handleStats)
 	s.mux.HandleFunc("POST /v1/sbom", s.handleSBOM)
@@ -63,6 +64,51 @@ func (s *Server) handleCVE(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeStatements(w, stmts)
+}
+
+// cveSummary is the aggregated view of all VEX statements for a single CVE.
+// Useful for scripting and dashboards that want counts instead of the full list.
+type cveSummary struct {
+	CVE      string         `json:"cve"`
+	Total    int            `json:"total"`
+	ByStatus map[string]int `json:"by_status"`
+	Vendors  []string       `json:"vendors"`
+}
+
+func (s *Server) handleCVESummary(w http.ResponseWriter, r *http.Request) {
+	cve := r.PathValue("id")
+	if cve == "" {
+		writeError(w, http.StatusBadRequest, "missing CVE ID")
+		return
+	}
+
+	stmts, err := s.db.QueryByCVE(cve)
+	if err != nil {
+		slog.Error("summary query failed", "cve", cve, "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	byStatus := make(map[string]int)
+	vendorSet := make(map[string]struct{})
+	for _, stmt := range stmts {
+		byStatus[stmt.Status]++
+		vendorSet[stmt.Vendor] = struct{}{}
+	}
+	vendors := make([]string, 0, len(vendorSet))
+	for v := range vendorSet {
+		vendors = append(vendors, v)
+	}
+
+	out := cveSummary{
+		CVE:      cve,
+		Total:    len(stmts),
+		ByStatus: byStatus,
+		Vendors:  vendors,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 type resolveRequest struct {
