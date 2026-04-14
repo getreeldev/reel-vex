@@ -28,10 +28,17 @@ func ExtractFromFile(path string) ([]Statement, error) {
 }
 
 // Extract parses CSAF JSON bytes and extracts all VEX statements.
+//
+// First tries the strict gocsaf/csaf parser. If that fails (most often because
+// of CPE 2.3 syntax violations in real vendor feeds — see SUSE's `+git...`
+// version suffixes and `c/c++` software_edition patterns), falls back to a
+// permissive map-based extractor that treats product_id strings as opaque
+// keys. We'd rather store something the vendor actually published than drop
+// the whole document.
 func Extract(data []byte) ([]Statement, error) {
 	var adv csaf.Advisory
 	if err := json.Unmarshal(data, &adv); err != nil {
-		return nil, err
+		return extractPermissive(data)
 	}
 
 	// Build product_id → []productIdentifier map from product_tree
