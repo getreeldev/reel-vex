@@ -9,6 +9,24 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/db"
 )
 
+// Cache-Control values for GET endpoints.
+//
+// VEX data only changes when the daily ingest runs, so stale-while-revalidate
+// is set aggressively on per-CVE responses — browsers can serve a slightly
+// stale answer for up to 24h while refreshing in the background. Stats are
+// re-checked more often because the counters tick up during ingest.
+const (
+	cacheCVE   = "public, max-age=600, stale-while-revalidate=86400"
+	cacheStats = "public, max-age=60"
+	cacheNone  = "no-cache"
+)
+
+// setCacheControl is a one-line helper to keep handlers readable and to make
+// the TTL constants easy to grep / tune from a single place.
+func setCacheControl(w http.ResponseWriter, value string) {
+	w.Header().Set("Cache-Control", value)
+}
+
 // Server is the HTTP API server.
 type Server struct {
 	db     *db.DB
@@ -63,6 +81,7 @@ func (s *Server) handleCVE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	setCacheControl(w, cacheCVE)
 	writeStatements(w, stmts)
 }
 
@@ -107,6 +126,7 @@ func (s *Server) handleCVESummary(w http.ResponseWriter, r *http.Request) {
 		Vendors:  vendors,
 	}
 
+	setCacheControl(w, cacheCVE)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }
@@ -165,11 +185,13 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	setCacheControl(w, cacheStats)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	setCacheControl(w, cacheNone)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
 }
@@ -179,6 +201,7 @@ func (s *Server) handleIngestStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "ingest not configured")
 		return
 	}
+	setCacheControl(w, cacheNone)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(s.ingest.Status())
 }

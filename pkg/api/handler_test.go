@@ -49,6 +49,9 @@ func TestHandleCVE(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", w.Code)
 		}
+		if got := w.Header().Get("Cache-Control"); got != cacheCVE {
+			t.Errorf("Cache-Control: got %q, want %q", got, cacheCVE)
+		}
 
 		var resp statementsResponse
 		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
@@ -89,6 +92,9 @@ func TestHandleCVESummary(t *testing.T) {
 
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", w.Code)
+		}
+		if hdr := w.Header().Get("Cache-Control"); hdr != cacheCVE {
+			t.Errorf("Cache-Control: got %q, want %q", hdr, cacheCVE)
 		}
 
 		var got struct {
@@ -219,6 +225,9 @@ func TestHandleStats(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
+	if hdr := w.Header().Get("Cache-Control"); hdr != cacheStats {
+		t.Errorf("Cache-Control: got %q, want %q", hdr, cacheStats)
+	}
 
 	var stats db.Stats
 	if err := json.NewDecoder(w.Body).Decode(&stats); err != nil {
@@ -245,6 +254,46 @@ func TestHandleHealth(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if hdr := w.Header().Get("Cache-Control"); hdr != cacheNone {
+		t.Errorf("Cache-Control: got %q, want %q", hdr, cacheNone)
+	}
+}
+
+// TestPOSTEndpointsHaveNoCacheControl is a regression guard. POST endpoints
+// (resolve, sbom, ingest trigger) must never advertise caching — their
+// responses are derived from the request body or change global state.
+func TestPOSTEndpointsHaveNoCacheControl(t *testing.T) {
+	database := setupTestDB(t)
+	runner := NewIngestRunner(func() error { return nil }, time.Hour, "")
+	srv := NewServer(database, runner)
+
+	cases := []struct {
+		name string
+		req  *http.Request
+	}{
+		{
+			"POST /v1/resolve",
+			httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader([]byte(`{"cves":["CVE-2024-1234"],"products":["pkg:rpm/test/openssl"]}`))),
+		},
+		{
+			"POST /v1/sbom",
+			httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader([]byte(`{"bomFormat":"CycloneDX","specVersion":"1.5"}`))),
+		},
+		{
+			"POST /v1/ingest",
+			httptest.NewRequest("POST", "/v1/ingest", nil),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			srv.ServeHTTP(w, tc.req)
+			if hdr := w.Header().Get("Cache-Control"); hdr != "" {
+				t.Errorf("Cache-Control on %s: got %q, want empty", tc.name, hdr)
+			}
+		})
 	}
 }
 
@@ -497,6 +546,9 @@ func TestHandleIngestStatus(t *testing.T) {
 
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", w.Code)
+		}
+		if hdr := w.Header().Get("Cache-Control"); hdr != cacheNone {
+			t.Errorf("Cache-Control: got %q, want %q", hdr, cacheNone)
 		}
 
 		var status IngestStatus
