@@ -6,32 +6,55 @@ on:
       - 'v*'
 
 jobs:
+  # Run the full CI suite first (build, vet, unit-test, integration-test).
+  # Reused from ci.yml so each test shows up as its own box in the UI.
   test:
+    uses: ./.github/workflows/ci.yml
+
+  # Build the image and scan it with reel (our own GitHub Action).
+  # Eats our own dogfood: SBOM + vulnerability + malware scan in one step.
+  # Fails the release if HIGH/CRITICAL findings survive the filters.
+  scan:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image into local daemon
+        uses: docker/build-push-action@v6
         with:
-          go-version: "1.26"
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: vex-hub:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Build
-        run: go build ./...
+      - name: Scan image with reel
+        uses: getreeldev/releases@v1
+        with:
+          image: vex-hub:scan
+          scan-types: sbom,malware
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          fail-on-findings: true
 
-      - name: Vet
-        run: go vet ./...
+      - name: Upload scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-results
+          path: reel-results/
+          if-no-files-found: ignore
 
-      - name: Unit tests
-        run: go test ./...
-
-      - name: Integration tests
-        run: go test -tags integration -v ./test/integration/
-
+  # Build (cache hit from `scan` job), tag, and push to Docker Hub.
   publish-image:
-    needs: test
+    needs: scan
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -39,7 +62,7 @@ jobs:
         id: tags
         run: |
           VERSION="${GITHUB_REF_NAME}"
-          MAJOR="${VERSION%%.*}"  # v0.1.0 → v0
+          MAJOR="${VERSION%%.*}"   # v0.1.0 → v0
           {
             echo "version=${VERSION}"
             echo "major=${MAJOR}"
@@ -68,6 +91,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  gh-release:
+    needs: publish-image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
