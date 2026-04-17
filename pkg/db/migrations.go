@@ -8,7 +8,7 @@ import (
 // currentSchemaVersion is the schema version this binary expects. Each migration
 // brings the database up to the next version; on Open() we apply every
 // migration whose target is higher than the stored version.
-const currentSchemaVersion = 1
+const currentSchemaVersion = 2
 
 // migrations lists every forward-only schema migration in order. The index
 // doesn't matter; we use target versions to decide what to run. A migration
@@ -16,6 +16,7 @@ const currentSchemaVersion = 1
 // its last statement.
 var migrations = []migration{
 	{version: 1, apply: migrateV0ToV1},
+	{version: 2, apply: migrateV1ToV2},
 }
 
 type migration struct {
@@ -146,6 +147,35 @@ func migrateV0ToV1(tx *sql.Tx) error {
 		`CREATE INDEX IF NOT EXISTS idx_statements_source ON statements(source_format)`,
 	} {
 		if _, err := tx.Exec(idx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateV1ToV2 adds the product_aliases table used by the translation layer.
+// Each row maps a (vendor, source) identifier to an equivalent (target)
+// identifier — e.g. a Red Hat repository_id to its CPE. The table is keyed
+// bidirectionally so we can answer both "what CPE does this repo_id map to?"
+// and (later) "what repos map to this CPE?".
+//
+// Purely additive migration — no existing data is touched.
+func migrateV1ToV2(tx *sql.Tx) error {
+	for _, ddl := range []string{
+		`CREATE TABLE IF NOT EXISTS product_aliases (
+			vendor     TEXT NOT NULL,
+			source_ns  TEXT NOT NULL,
+			source_id  TEXT NOT NULL,
+			target_ns  TEXT NOT NULL,
+			target_id  TEXT NOT NULL,
+			confidence REAL NOT NULL DEFAULT 1.0,
+			updated    TEXT NOT NULL,
+			PRIMARY KEY (vendor, source_ns, source_id, target_ns, target_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_aliases_source ON product_aliases(vendor, source_ns, source_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_aliases_target ON product_aliases(vendor, target_ns, target_id)`,
+	} {
+		if _, err := tx.Exec(ddl); err != nil {
 			return err
 		}
 	}

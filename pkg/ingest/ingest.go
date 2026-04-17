@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/getreeldev/reel-vex/pkg/aliases"
 	"github.com/getreeldev/reel-vex/pkg/db"
 	"github.com/getreeldev/reel-vex/pkg/source"
 )
@@ -21,12 +22,18 @@ type Options struct {
 	Limit int
 }
 
-// Run drives every adapter sequentially. A failure in one adapter is logged
-// and skipped — the others still run.
-func Run(ctx context.Context, adapters []source.Adapter, database *db.DB, opts Options) error {
+// Run drives every adapter then every alias fetcher sequentially. A failure
+// in any one is logged and skipped so the others still run.
+func Run(ctx context.Context, adapters []source.Adapter, fetchers []aliases.Fetcher, database *db.DB, opts Options) error {
 	for _, a := range adapters {
 		if err := runAdapter(ctx, a, database, opts); err != nil {
 			slog.Error("adapter ingest failed", "adapter", a.ID(), "error", err)
+			continue
+		}
+	}
+	for _, f := range fetchers {
+		if err := f.Fetch(ctx, database); err != nil {
+			slog.Error("alias fetcher failed", "fetcher", f.ID(), "error", err)
 			continue
 		}
 	}

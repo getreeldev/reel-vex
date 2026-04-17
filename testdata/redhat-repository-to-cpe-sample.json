@@ -1,0 +1,76 @@
+{
+  "data": {
+    "rhel-8-for-x86_64-baseos-rpms": {
+      "cpes": [
+        "cpe:/o:redhat:enterprise_linux:8::baseos"
+      ],
+      "repo_relative_urls": [
+        "content/dist/rhel8/8.10/x86_64/baseos/os",
+        "content/dist/rhel8/8.6/x86_64/baseos/os",
+        "content/dist/rhel8/8.8/x86_64/baseos/os",
+        "content/dist/rhel8/8.9/x86_64/baseos/os",
+        "content/dist/rhel8/8/x86_64/baseos/os"
+      ]
+    },
+    "rhel-8-for-x86_64-appstream-rpms": {
+      "cpes": [
+        "cpe:/a:redhat:enterprise_linux:8::appstream"
+      ],
+      "repo_relative_urls": [
+        "content/dist/rhel8/8.10/x86_64/appstream/os",
+        "content/dist/rhel8/8.6/x86_64/appstream/os",
+        "content/dist/rhel8/8.8/x86_64/appstream/os",
+        "content/dist/rhel8/8.9/x86_64/appstream/os",
+        "content/dist/rhel8/8/x86_64/appstream/os"
+      ]
+    },
+    "rhel-9-for-x86_64-baseos-rpms": {
+      "cpes": [
+        "cpe:/o:redhat:enterprise_linux:9::baseos"
+      ],
+      "repo_relative_urls": [
+        "content/dist/rhel9/9.1/x86_64/baseos/os",
+        "content/dist/rhel9/9.2/x86_64/baseos/os",
+        "content/dist/rhel9/9.3/x86_64/baseos/os",
+        "content/dist/rhel9/9.4/x86_64/baseos/os",
+        "content/dist/rhel9/9.5/x86_64/baseos/os",
+        "content/dist/rhel9/9.6/x86_64/baseos/os",
+        "content/dist/rhel9/9.7/x86_64/baseos/os",
+        "content/dist/rhel9/9.8/x86_64/baseos/os",
+        "content/dist/rhel9/9.9/x86_64/baseos/os",
+        "content/dist/rhel9/9/x86_64/baseos/os"
+      ]
+    },
+    "rhel-9-for-x86_64-appstream-rpms": {
+      "cpes": [
+        "cpe:/a:redhat:enterprise_linux:9::appstream"
+      ],
+      "repo_relative_urls": [
+        "content/dist/rhel9/9.1/x86_64/appstream/os",
+        "content/dist/rhel9/9.2/x86_64/appstream/os",
+        "content/dist/rhel9/9.3/x86_64/appstream/os",
+        "content/dist/rhel9/9.4/x86_64/appstream/os",
+        "content/dist/rhel9/9.5/x86_64/appstream/os",
+        "content/dist/rhel9/9.6/x86_64/appstream/os",
+        "content/dist/rhel9/9.7/x86_64/appstream/os",
+        "content/dist/rhel9/9.8/x86_64/appstream/os",
+        "content/dist/rhel9/9.9/x86_64/appstream/os",
+        "content/dist/rhel9/9/x86_64/appstream/os"
+      ]
+    },
+    "3scale-amp-2-for-rhel-8-ppc64le-debug-rpms": {
+      "cpes": [
+        "cpe:/a:redhat:3scale:2.13::el8",
+        "cpe:/a:redhat:3scale:2.14::el8",
+        "cpe:/a:redhat:3scale:2.15::el8",
+        "cpe:/a:redhat:3scale:2.16::el8",
+        "cpe:/a:redhat:3scale_amp:2.11::el8",
+        "cpe:/a:redhat:3scale_amp:2.12::el8",
+        "cpe:/a:redhat:3scale_amp:2.8::el8"
+      ],
+      "repo_relative_urls": [
+        "content/dist/layered/rhel8/ppc64le/3scale-amp/2/debug"
+      ]
+    }
+  }
+}

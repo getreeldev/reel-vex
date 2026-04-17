@@ -10,9 +10,9 @@ import (
 // IngestRunner manages scheduled and on-demand ingest runs.
 // Only one ingest runs at a time.
 type IngestRunner struct {
-	mu        sync.Mutex
-	ingestFn  func() error
-	interval  time.Duration
+	mu         sync.Mutex
+	ingestFn   func() error
+	interval   time.Duration
 	adminToken string
 
 	running   bool

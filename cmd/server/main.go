@@ -12,6 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/getreeldev/reel-vex/pkg/aliases"
 	"github.com/getreeldev/reel-vex/pkg/api"
 	"github.com/getreeldev/reel-vex/pkg/db"
 	"github.com/getreeldev/reel-vex/pkg/ingest"
@@ -19,11 +20,20 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/source/csafadapter"
 )
 
-// registerAdapters wires every known adapter type into the source registry.
-// Done once at program start so the rest of the code can resolve adapters
-// purely through source.New / source.BuildAll.
+// registerAdapters wires every known adapter and alias fetcher into their
+// respective registries. Done once at program start so the rest of the code
+// can resolve both purely through the factory functions.
 func registerAdapters() {
 	source.Register(csafadapter.Type, csafadapter.New)
+	aliases.Register(aliases.RedHatRepoToCPEType, aliases.NewRedHatRepoToCPE)
+}
+
+// serverConfig is the top-level shape of config.yaml. Both adapters and
+// alias fetchers are optional; an adapter-only config is valid (no alias
+// enrichment), as is an alias-only config (rare but valid for backfill).
+type serverConfig struct {
+	Adapters []source.AdapterConfig `yaml:"adapters"`
+	Aliases  []aliases.Config       `yaml:"aliases"`
 }
 
 func main() {
@@ -72,7 +82,7 @@ func run() error {
 }
 
 func runIngest(configPath, dbPath string, limit int) error {
-	adapters, err := loadAdapters(configPath)
+	adapters, fetchers, err := loadPipeline(configPath)
 	if err != nil {
 		return err
 	}
@@ -86,24 +96,32 @@ func runIngest(configPath, dbPath string, limit int) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	return ingest.Run(ctx, adapters, database, ingest.Options{Limit: limit})
+	return ingest.Run(ctx, adapters, fetchers, database, ingest.Options{Limit: limit})
 }
 
-// loadAdapters reads the YAML config at configPath and instantiates each
-// adapter through the source registry. Call registerAdapters() first.
-func loadAdapters(configPath string) ([]source.Adapter, error) {
+// loadPipeline reads the YAML config at configPath and instantiates every
+// adapter and alias fetcher. Call registerAdapters() first.
+func loadPipeline(configPath string) ([]source.Adapter, []aliases.Fetcher, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
+		return nil, nil, fmt.Errorf("read config: %w", err)
 	}
-	var cfg source.Config
+	var cfg serverConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
+		return nil, nil, fmt.Errorf("parse config: %w", err)
 	}
 	if len(cfg.Adapters) == 0 {
-		return nil, fmt.Errorf("config %s has no adapters; expected an `adapters:` list", configPath)
+		return nil, nil, fmt.Errorf("config %s has no adapters; expected an `adapters:` list", configPath)
 	}
-	return source.BuildAll(cfg)
+	adapters, err := source.BuildAll(source.Config{Adapters: cfg.Adapters})
+	if err != nil {
+		return nil, nil, err
+	}
+	fetchers, err := aliases.BuildAll(cfg.Aliases)
+	if err != nil {
+		return nil, nil, err
+	}
+	return adapters, fetchers, nil
 }
 
 func runStats(dbPath string) error {
@@ -125,7 +143,7 @@ func runStats(dbPath string) error {
 }
 
 func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adminToken string) error {
-	adapters, err := loadAdapters(configPath)
+	adapters, fetchers, err := loadPipeline(configPath)
 	if err != nil {
 		return err
 	}
@@ -140,7 +158,7 @@ func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adm
 	defer stop()
 
 	ingestFn := func() error {
-		return ingest.Run(ctx, adapters, database, ingest.Options{})
+		return ingest.Run(ctx, adapters, fetchers, database, ingest.Options{})
 	}
 	runner := api.NewIngestRunner(ingestFn, ingestInterval, adminToken)
 

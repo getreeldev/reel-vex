@@ -4,9 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strings"
 
-	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
 	"github.com/getreeldev/reel-vex/pkg/resolver"
 )
@@ -31,18 +29,20 @@ func setCacheControl(w http.ResponseWriter, value string) {
 
 // Server is the HTTP API server.
 type Server struct {
-	db     *db.DB
-	mux    *http.ServeMux
-	ingest *IngestRunner
+	db       *db.DB
+	resolver *resolver.Resolver
+	mux      *http.ServeMux
+	ingest   *IngestRunner
 }
 
 // NewServer creates a new API server.
 // ingest may be nil if running without ingest support.
 func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 	s := &Server{
-		db:     database,
-		mux:    http.NewServeMux(),
-		ingest: ingest,
+		db:       database,
+		resolver: resolver.New(database),
+		mux:      http.NewServeMux(),
+		ingest:   ingest,
 	}
 	s.mux.HandleFunc("GET /v1/cve/{id}", s.handleCVE)
 	s.mux.HandleFunc("GET /v1/cve/{id}/summary", s.handleCVESummary)
@@ -164,7 +164,7 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	// Normalize user-provided PURLs into base form and expand CPE variants
 	// into their RedHat-documented 5-part prefix, tagging each candidate with
 	// the match_reason it would carry if a statement matches.
-	baseToReason := expandProducts(req.Products)
+	baseToReason := s.expandProducts(req.Products)
 	bases := make([]string, 0, len(baseToReason))
 	for b := range baseToReason {
 		bases = append(bases, b)
@@ -287,21 +287,15 @@ func writeStatementsWithMatch(w http.ResponseWriter, stmts []db.Statement, baseT
 
 // expandProducts turns the user-supplied product list into a lookup map from
 // candidate base identifier to the match_reason that would apply if a
-// statement's base_id matches that candidate. "direct" always wins over
-// "via_cpe_prefix" when both would apply to the same candidate (direct listed
-// first).
-func expandProducts(products []string) map[string]string {
+// statement's base_id matches that candidate. Delegates to resolver.Resolver
+// so that alias lookups (e.g. repository_id → CPE) are applied alongside
+// CPE prefix expansion.
+func (s *Server) expandProducts(products []string) map[string]string {
 	baseToReason := make(map[string]string, len(products))
 	for _, p := range products {
-		base, _ := csaf.SplitPURL(p)
-		if _, exists := baseToReason[base]; !exists {
-			baseToReason[base] = "direct"
-		}
-		if strings.HasPrefix(p, "cpe:/") {
-			if prefix := resolver.CPEPrefix(p); prefix != p {
-				if _, exists := baseToReason[prefix]; !exists {
-					baseToReason[prefix] = "via_cpe_prefix"
-				}
+		for _, cand := range s.resolver.Expand(p) {
+			if _, exists := baseToReason[cand.ID]; !exists {
+				baseToReason[cand.ID] = cand.MatchReason
 			}
 		}
 	}

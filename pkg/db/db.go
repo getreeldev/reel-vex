@@ -32,6 +32,7 @@ type Stats struct {
 	Vendors     int    `json:"vendors"`
 	CVEs        int    `json:"cves"`
 	Statements  int    `json:"statements"`
+	Aliases     int    `json:"aliases"`
 	LastUpdated string `json:"last_updated,omitempty"`
 }
 
@@ -195,6 +196,10 @@ func (db *DB) Stats() (Stats, error) {
 	if err != nil {
 		return s, err
 	}
+	err = db.db.QueryRow("SELECT COUNT(*) FROM product_aliases").Scan(&s.Aliases)
+	if err != nil {
+		return s, err
+	}
 	var lastUpdated sql.NullString
 	err = db.db.QueryRow("SELECT MAX(last_synced) FROM vendors").Scan(&lastUpdated)
 	if err != nil && err != sql.ErrNoRows {
@@ -204,6 +209,79 @@ func (db *DB) Stats() (Stats, error) {
 		s.LastUpdated = lastUpdated.String
 	}
 	return s, nil
+}
+
+// Alias is a mapping from one identifier namespace to another, as published
+// by a vendor (e.g. Red Hat's repository-to-cpe.json).
+type Alias struct {
+	Vendor   string
+	SourceNS string
+	SourceID string
+	TargetNS string
+	TargetID string
+	Updated  string
+}
+
+// BulkUpsertAliases replaces or inserts each alias row. Idempotent — safe to
+// re-run with fresh data; rows for the same PK get their Updated refreshed.
+func (db *DB) BulkUpsertAliases(aliases []Alias) error {
+	if len(aliases) == 0 {
+		return nil
+	}
+	tx, err := db.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	prepared, err := tx.Prepare(`
+		INSERT OR REPLACE INTO product_aliases
+			(vendor, source_ns, source_id, target_ns, target_id, confidence, updated)
+		VALUES (?, ?, ?, ?, ?, 1.0, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer prepared.Close()
+
+	for _, a := range aliases {
+		if _, err := prepared.Exec(a.Vendor, a.SourceNS, a.SourceID, a.TargetNS, a.TargetID, a.Updated); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// LookupAliases returns all target identifiers in targetNS reached from the
+// given source identifier, scanning across all vendors. Order is stable but
+// not semantically meaningful; callers should treat the result as a set.
+func (db *DB) LookupAliases(sourceNS, sourceID, targetNS string) ([]string, error) {
+	rows, err := db.db.Query(`
+		SELECT target_id FROM product_aliases
+		WHERE source_ns = ? AND source_id = ? AND target_ns = ?
+		ORDER BY vendor, target_id
+	`, sourceNS, sourceID, targetNS)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// AliasCount returns the total number of rows in product_aliases. Used by
+// stats + smoke tests.
+func (db *DB) AliasCount() (int, error) {
+	var n int
+	err := db.db.QueryRow("SELECT COUNT(*) FROM product_aliases").Scan(&n)
+	return n, err
 }
 
 func scanStatements(rows *sql.Rows) ([]Statement, error) {

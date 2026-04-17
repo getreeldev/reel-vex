@@ -250,6 +250,38 @@ func TestHandleStats(t *testing.T) {
 	if stats.Statements != 3 {
 		t.Fatalf("expected 3 statements, got %d", stats.Statements)
 	}
+	if stats.Aliases != 0 {
+		t.Fatalf("expected 0 aliases on a fresh DB, got %d", stats.Aliases)
+	}
+}
+
+// TestHandleStats_WithAliases verifies the Aliases counter surfaces in the
+// JSON response. Surfacing this on the stats page is what lets the website
+// show "Product mappings" alongside CVEs and statements.
+func TestHandleStats_WithAliases(t *testing.T) {
+	database := setupTestDB(t)
+	if err := database.BulkUpsertAliases([]db.Alias{
+		{Vendor: "redhat", SourceNS: "repository_id", SourceID: "rhel-8-for-x86_64-appstream-rpms", TargetNS: "cpe", TargetID: "cpe:/a:redhat:enterprise_linux:8::appstream", Updated: "2024-01-05T00:00:00Z"},
+		{Vendor: "redhat", SourceNS: "repository_id", SourceID: "rhel-8-for-x86_64-baseos-rpms", TargetNS: "cpe", TargetID: "cpe:/o:redhat:enterprise_linux:8::baseos", Updated: "2024-01-05T00:00:00Z"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(database, nil)
+
+	req := httptest.NewRequest("GET", "/v1/stats", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var stats db.Stats
+	if err := json.NewDecoder(w.Body).Decode(&stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Aliases != 2 {
+		t.Errorf("expected 2 aliases, got %d", stats.Aliases)
+	}
 }
 
 func TestHandleHealth(t *testing.T) {
@@ -776,6 +808,75 @@ func TestHandleResolve_SECDATA1220(t *testing.T) {
 	}
 	if viaPrefix == 0 {
 		t.Fatalf("expected at least one statement matched via_cpe_prefix, got none")
+	}
+}
+
+// TestHandleResolve_AliasExpansion drives the Phase 3 translation layer
+// end-to-end. The scanner query carries a PURL with
+// `?repository_id=rhel-8-for-x86_64-appstream-rpms` (no direct CPE or bare
+// PURL match); the stored statement is keyed on the CPE
+// `cpe:/a:redhat:enterprise_linux:8::appstream`. The resolver must consult
+// product_aliases to translate the repository_id into the CPE, then match.
+func TestHandleResolve_AliasExpansion(t *testing.T) {
+	dbPath := t.TempDir() + "/alias-test.db"
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.UpsertVendor("redhat", "Red Hat", "https://example.invalid/feed"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.BulkInsert([]db.Statement{{
+		Vendor:       "redhat",
+		CVE:          "CVE-2024-9999",
+		ProductID:    "cpe:/a:redhat:enterprise_linux:8::appstream",
+		BaseID:       "cpe:/a:redhat:enterprise_linux:8::appstream",
+		IDType:       "cpe",
+		Status:       "affected",
+		Updated:      "2024-01-05T00:00:00Z",
+		SourceFormat: "csaf",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.BulkUpsertAliases([]db.Alias{{
+		Vendor:   "redhat",
+		SourceNS: "repository_id",
+		SourceID: "rhel-8-for-x86_64-appstream-rpms",
+		TargetNS: "cpe",
+		TargetID: "cpe:/a:redhat:enterprise_linux:8::appstream",
+		Updated:  "2024-01-05T00:00:00Z",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := NewServer(database, nil)
+	body, _ := json.Marshal(resolveRequest{
+		CVEs:     []string{"CVE-2024-9999"},
+		Products: []string{"pkg:rpm/redhat/openssl@3.0?arch=x86_64&repository_id=rhel-8-for-x86_64-appstream-rpms"},
+	})
+	req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp statementsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Statements) != 1 {
+		t.Fatalf("expected 1 statement via alias, got %d: %+v", len(resp.Statements), resp.Statements)
+	}
+	got := resp.Statements[0]
+	if got.MatchReason != "via_alias" {
+		t.Errorf("match_reason: got %q, want via_alias", got.MatchReason)
+	}
+	if got.ProductID != "cpe:/a:redhat:enterprise_linux:8::appstream" {
+		t.Errorf("product_id: got %q", got.ProductID)
 	}
 }
 

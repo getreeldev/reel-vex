@@ -53,8 +53,8 @@ func TestMigrateV0ToV1_PreservesData(t *testing.T) {
 	if err := d.db.QueryRow("SELECT version FROM schema_version").Scan(&v); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if v != 1 {
-		t.Fatalf("schema_version: got %d, want 1", v)
+	if v != currentSchemaVersion {
+		t.Fatalf("schema_version: got %d, want %d", v, currentSchemaVersion)
 	}
 
 	// Statement count unchanged.
@@ -94,8 +94,8 @@ func TestMigrateV0ToV1_PreservesData(t *testing.T) {
 	if err := d2.db.QueryRow("SELECT version FROM schema_version").Scan(&v); err != nil {
 		t.Fatal(err)
 	}
-	if v != 1 {
-		t.Fatalf("reopen schema_version: got %d, want 1", v)
+	if v != currentSchemaVersion {
+		t.Fatalf("reopen schema_version: got %d, want %d", v, currentSchemaVersion)
 	}
 	stats2, _ := d2.Stats()
 	if stats2.Statements != 2 {
@@ -117,8 +117,8 @@ func TestMigrateV0ToV1_FreshDB(t *testing.T) {
 	if err := d.db.QueryRow("SELECT version FROM schema_version").Scan(&v); err != nil {
 		t.Fatal(err)
 	}
-	if v != 1 {
-		t.Fatalf("schema_version: got %d, want 1", v)
+	if v != currentSchemaVersion {
+		t.Fatalf("schema_version: got %d, want %d", v, currentSchemaVersion)
 	}
 
 	// Inserting a statement with the v1 PK (source_format in key) must work,
@@ -137,5 +137,59 @@ func TestMigrateV0ToV1_FreshDB(t *testing.T) {
 	}
 	if len(rows) != 2 {
 		t.Fatalf("coexistence: got %d rows, want 2 (csaf + oval)", len(rows))
+	}
+}
+
+// TestMigrateV1ToV2_AddsAliasesTable confirms the v1 → v2 migration adds
+// product_aliases without touching existing statement rows.
+func TestMigrateV1ToV2_AddsAliasesTable(t *testing.T) {
+	dbPath := t.TempDir() + "/v1-to-v2.db"
+
+	// Produce a v1 database with data, then simulate pre-v2 by setting
+	// schema_version back to 1 and dropping product_aliases.
+	d, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.BulkInsert([]Statement{
+		{Vendor: "redhat", CVE: "CVE-1", ProductID: "cpe:/o:redhat:rhel:8", IDType: "cpe", Status: "affected", Updated: "2024-01-01T00:00:00Z", SourceFormat: "csaf"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.db.Exec("UPDATE schema_version SET version = 1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.db.Exec("DROP TABLE product_aliases"); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+
+	// Re-open triggers the v1 → v2 migration.
+	d2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer d2.Close()
+
+	var v int
+	if err := d2.db.QueryRow("SELECT version FROM schema_version").Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	if v != currentSchemaVersion {
+		t.Fatalf("schema_version after v1→v2: got %d, want %d", v, currentSchemaVersion)
+	}
+
+	n, err := d2.AliasCount()
+	if err != nil {
+		t.Fatalf("AliasCount: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("fresh aliases table: got %d rows, want 0", n)
+	}
+
+	// Statement data preserved across the migration.
+	stats, _ := d2.Stats()
+	if stats.Statements != 1 {
+		t.Errorf("statements preserved: got %d, want 1", stats.Statements)
 	}
 }
