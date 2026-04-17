@@ -15,7 +15,16 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/api"
 	"github.com/getreeldev/reel-vex/pkg/db"
 	"github.com/getreeldev/reel-vex/pkg/ingest"
+	"github.com/getreeldev/reel-vex/pkg/source"
+	"github.com/getreeldev/reel-vex/pkg/source/csafadapter"
 )
+
+// registerAdapters wires every known adapter type into the source registry.
+// Done once at program start so the rest of the code can resolve adapters
+// purely through source.New / source.BuildAll.
+func registerAdapters() {
+	source.Register(csafadapter.Type, csafadapter.New)
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -27,11 +36,13 @@ func main() {
 func run() error {
 	configPath := flag.String("config", "config.yaml", "path to config file")
 	dbPath := flag.String("db", "vex.db", "path to SQLite database")
-	limit := flag.Int("limit", 0, "max documents per provider (0 = unlimited)")
+	limit := flag.Int("limit", 0, "max statements per adapter (0 = unlimited)")
 	addr := flag.String("addr", ":8080", "listen address for serve command")
 	ingestInterval := flag.Duration("ingest-interval", 24*time.Hour, "interval between scheduled ingests")
 	adminToken := flag.String("admin-token", "", "bearer token for admin endpoints (empty = no auth)")
 	flag.Parse()
+
+	registerAdapters()
 
 	cmd := flag.Arg(0)
 	switch cmd {
@@ -61,14 +72,9 @@ func run() error {
 }
 
 func runIngest(configPath, dbPath string, limit int) error {
-	data, err := os.ReadFile(configPath)
+	adapters, err := loadAdapters(configPath)
 	if err != nil {
-		return fmt.Errorf("read config: %w", err)
-	}
-
-	var cfg ingest.Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("parse config: %w", err)
+		return err
 	}
 
 	database, err := db.Open(dbPath)
@@ -77,7 +83,27 @@ func runIngest(configPath, dbPath string, limit int) error {
 	}
 	defer database.Close()
 
-	return ingest.Run(cfg, database, ingest.Options{Limit: limit})
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	return ingest.Run(ctx, adapters, database, ingest.Options{Limit: limit})
+}
+
+// loadAdapters reads the YAML config at configPath and instantiates each
+// adapter through the source registry. Call registerAdapters() first.
+func loadAdapters(configPath string) ([]source.Adapter, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	var cfg source.Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	if len(cfg.Adapters) == 0 {
+		return nil, fmt.Errorf("config %s has no adapters; expected an `adapters:` list", configPath)
+	}
+	return source.BuildAll(cfg)
 }
 
 func runStats(dbPath string) error {
@@ -99,14 +125,9 @@ func runStats(dbPath string) error {
 }
 
 func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adminToken string) error {
-	data, err := os.ReadFile(configPath)
+	adapters, err := loadAdapters(configPath)
 	if err != nil {
-		return fmt.Errorf("read config: %w", err)
-	}
-
-	var cfg ingest.Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("parse config: %w", err)
+		return err
 	}
 
 	database, err := db.Open(dbPath)
@@ -115,8 +136,11 @@ func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adm
 	}
 	defer database.Close()
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
 	ingestFn := func() error {
-		return ingest.Run(cfg, database, ingest.Options{})
+		return ingest.Run(ctx, adapters, database, ingest.Options{})
 	}
 	runner := api.NewIngestRunner(ingestFn, ingestInterval, adminToken)
 
@@ -127,9 +151,6 @@ func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adm
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 
 	go runner.StartScheduler(ctx)
 

@@ -1,171 +1,121 @@
+// Package ingest orchestrates source.Adapters: for each configured adapter,
+// discover the feed, stream statements since the last watermark, batch-
+// insert into the database, and update the watermark.
 package ingest
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"time"
 
-	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
+	"github.com/getreeldev/reel-vex/pkg/source"
 )
-
-var httpClient = &http.Client{
-	Timeout: 60 * time.Second,
-}
-
-// ProviderConfig is the configuration for a single CSAF provider.
-type ProviderConfig struct {
-	ID          string `yaml:"id"`
-	Name        string `yaml:"name"`
-	MetadataURL string `yaml:"url"`
-}
-
-// Config is the top-level ingest configuration.
-type Config struct {
-	Providers []ProviderConfig `yaml:"providers"`
-}
 
 // Options controls ingest behavior.
 type Options struct {
-	Limit int // max documents to process per provider (0 = unlimited)
+	// Limit caps the number of statements emitted per adapter. Zero means
+	// unlimited. Dev/testing convenience; production should leave it at 0.
+	Limit int
 }
 
-// Run executes ingestion for all configured providers.
-func Run(cfg Config, database *db.DB, opts Options) error {
-	for _, pc := range cfg.Providers {
-		if err := ingestProvider(pc, database, opts); err != nil {
-			slog.Error("provider ingest failed", "provider", pc.ID, "error", err)
+// Run drives every adapter sequentially. A failure in one adapter is logged
+// and skipped — the others still run.
+func Run(ctx context.Context, adapters []source.Adapter, database *db.DB, opts Options) error {
+	for _, a := range adapters {
+		if err := runAdapter(ctx, a, database, opts); err != nil {
+			slog.Error("adapter ingest failed", "adapter", a.ID(), "error", err)
 			continue
 		}
 	}
 	return nil
 }
 
-func ingestProvider(pc ProviderConfig, database *db.DB, opts Options) error {
-	slog.Info("discovering provider", "id", pc.ID, "url", pc.MetadataURL)
+// errLimitReached signals emit() to stop streaming because Options.Limit was
+// hit. Caught and swallowed by runAdapter; never escapes.
+var errLimitReached = errors.New("statement limit reached")
 
-	provider, err := csaf.DiscoverProvider(pc.MetadataURL)
+func runAdapter(ctx context.Context, a source.Adapter, database *db.DB, opts Options) error {
+	slog.Info("adapter discover", "adapter", a.ID(), "format", a.SourceFormat())
+	feed, err := a.Discover(ctx)
 	if err != nil {
-		return fmt.Errorf("discover provider %s: %w", pc.ID, err)
+		return fmt.Errorf("discover: %w", err)
 	}
-	slog.Info("found VEX feed", "provider", pc.ID, "feed_url", provider.VEXFeedURL)
-
-	if err := database.UpsertVendor(pc.ID, provider.Name, provider.VEXFeedURL); err != nil {
+	if err := database.UpsertVendor(a.ID(), a.Name(), feed.FeedURL); err != nil {
 		return fmt.Errorf("upsert vendor: %w", err)
 	}
 
 	var since time.Time
-	lastSynced, err := database.VendorLastSynced(pc.ID)
+	lastSynced, err := database.VendorLastSynced(a.ID())
 	if err != nil {
-		return fmt.Errorf("get last synced: %w", err)
+		return fmt.Errorf("last_synced: %w", err)
 	}
 	if lastSynced != "" {
 		since, _ = time.Parse(time.RFC3339, lastSynced)
-		slog.Info("incremental sync", "provider", pc.ID, "since", since)
+		slog.Info("incremental sync", "adapter", a.ID(), "since", since)
 	} else {
-		slog.Info("full sync", "provider", pc.ID)
+		slog.Info("full sync", "adapter", a.ID())
 	}
-
-	entries, err := csaf.FetchFeedEntries(provider.VEXFeedURL, since)
-	if err != nil {
-		return fmt.Errorf("fetch feed: %w", err)
-	}
-	slog.Info("feed entries", "provider", pc.ID, "count", len(entries))
-
-	if opts.Limit > 0 && len(entries) > opts.Limit {
-		entries = entries[:opts.Limit]
-		slog.Info("limiting to", "count", opts.Limit)
-	}
-
-	var (
-		processed int
-		failed    int
-		newest    time.Time
-	)
 
 	const batchSize = 5000
-	var batch []db.Statement
+	var (
+		batch     []db.Statement
+		newest    time.Time
+		processed int
+	)
 
-	for i, entry := range entries {
-		if entry.Updated.After(newest) {
-			newest = entry.Updated
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
 		}
-
-		docURL := csaf.DocumentURL(provider.VEXFeedURL, entry)
-		data, err := fetchDocument(docURL)
-		if err != nil {
-			slog.Warn("fetch document failed", "url", docURL, "error", err)
-			failed++
-			continue
+		if err := database.BulkInsert(batch); err != nil {
+			return err
 		}
-
-		stmts, err := csaf.Extract(data)
-		if err != nil {
-			slog.Warn("extract failed", "url", docURL, "error", err)
-			failed++
-			continue
-		}
-
-		for _, s := range stmts {
-			batch = append(batch, db.Statement{
-				Vendor:        pc.ID,
-				CVE:           s.CVE,
-				ProductID:     s.ProductID,
-				BaseID:        s.BaseID,
-				Version:       s.Version,
-				IDType:        s.IDType,
-				Status:        s.Status,
-				Justification: s.Justification,
-				Updated:       entry.Updated.Format(time.RFC3339),
-				SourceFormat:  "csaf",
-			})
-		}
-
-		if len(batch) >= batchSize {
-			if err := database.BulkInsert(batch); err != nil {
-				return fmt.Errorf("bulk insert: %w", err)
-			}
-			batch = batch[:0]
-		}
-
-		processed++
-		if processed%100 == 0 {
-			slog.Info("progress", "provider", pc.ID, "processed", processed, "of", len(entries), "failed", failed)
-		}
-
-		if i < 3 {
-			slog.Info("processed document", "path", entry.Path, "statements", len(stmts))
-		}
+		batch = batch[:0]
+		return nil
 	}
 
-	if len(batch) > 0 {
-		if err := database.BulkInsert(batch); err != nil {
-			return fmt.Errorf("bulk insert: %w", err)
+	emit := func(s source.Statement) error {
+		if opts.Limit > 0 && processed >= opts.Limit {
+			return errLimitReached
 		}
+		if s.Updated.After(newest) {
+			newest = s.Updated
+		}
+		batch = append(batch, db.Statement{
+			Vendor:        a.ID(),
+			CVE:           s.CVE,
+			ProductID:     s.ProductID,
+			BaseID:        s.BaseID,
+			Version:       s.Version,
+			IDType:        s.IDType,
+			Status:        s.Status,
+			Justification: s.Justification,
+			Updated:       s.Updated.Format(time.RFC3339),
+			SourceFormat:  a.SourceFormat(),
+		})
+		processed++
+		if len(batch) >= batchSize {
+			return flush()
+		}
+		return nil
+	}
+
+	err = a.Sync(ctx, since, emit)
+	if err != nil && !errors.Is(err, errLimitReached) {
+		return fmt.Errorf("sync: %w", err)
+	}
+	if err := flush(); err != nil {
+		return fmt.Errorf("flush: %w", err)
 	}
 
 	if !newest.IsZero() {
-		if err := database.SetVendorSynced(pc.ID, newest.Format(time.RFC3339)); err != nil {
-			return fmt.Errorf("set vendor synced: %w", err)
+		if err := database.SetVendorSynced(a.ID(), newest.Format(time.RFC3339)); err != nil {
+			return fmt.Errorf("set synced: %w", err)
 		}
 	}
-
-	slog.Info("ingest complete", "provider", pc.ID, "processed", processed, "failed", failed)
+	slog.Info("adapter done", "adapter", a.ID(), "processed", processed)
 	return nil
-}
-
-func fetchDocument(url string) ([]byte, error) {
-	resp, err := httpClient.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	return io.ReadAll(resp.Body)
 }
