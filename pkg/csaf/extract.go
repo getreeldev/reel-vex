@@ -129,23 +129,30 @@ func buildProductMap(adv *csaf.Advisory) map[string][]productIdentifier {
 	}
 
 	// Walk relationships — these define composite products
-	// (e.g., "openssh as component of RHEL 8")
+	// (e.g., "openssh-1.2.3 as component of RHEL 8"). A composite inherits
+	// identifiers from BOTH sides of the relationship: the component
+	// (product_reference, usually a PURL) and the platform
+	// (relates_to_product_reference, usually a CPE). Red Hat puts the CPE
+	// only on the platform side, so omitting the platform inheritance drops
+	// every CPE-keyed statement for their multi-stream advisories.
 	if adv.ProductTree.RelationShips != nil {
 		for _, rel := range *adv.ProductTree.RelationShips {
-			if rel == nil || rel.FullProductName == nil {
+			if rel == nil || rel.FullProductName == nil || rel.FullProductName.ProductID == nil {
 				continue
 			}
 			addProduct(rel.FullProductName, m)
 
-			// The relationship's product inherits identifiers from its component
-			// (product_reference) if the relationship product itself has no identifiers.
-			if rel.FullProductName.ProductID != nil && rel.ProductReference != nil {
-				relID := string(*rel.FullProductName.ProductID)
-				if len(m[relID]) == 0 {
-					refID := string(*rel.ProductReference)
-					if idents := m[refID]; len(idents) > 0 {
-						m[relID] = append(m[relID], idents...)
-					}
+			relID := string(*rel.FullProductName.ProductID)
+			if len(m[relID]) > 0 {
+				// Composite already has its own identifiers — respect them.
+				continue
+			}
+			for _, ref := range []*csaf.ProductID{rel.ProductReference, rel.RelatesToProductReference} {
+				if ref == nil {
+					continue
+				}
+				if idents := m[string(*ref)]; len(idents) > 0 {
+					m[relID] = append(m[relID], idents...)
 				}
 			}
 		}

@@ -24,6 +24,7 @@ type Statement struct {
 	Status        string
 	Justification string
 	Updated       string
+	SourceFormat  string // "csaf", "oval", ... — upstream feed format
 }
 
 // Stats holds database coverage statistics.
@@ -62,34 +63,7 @@ func (db *DB) Close() error {
 }
 
 func (db *DB) migrate() error {
-	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS vendors (
-			id          TEXT PRIMARY KEY,
-			name        TEXT NOT NULL,
-			feed_url    TEXT NOT NULL,
-			last_synced TEXT
-		)`,
-		`CREATE TABLE IF NOT EXISTS statements (
-			vendor        TEXT NOT NULL,
-			cve           TEXT NOT NULL,
-			product_id    TEXT NOT NULL,
-			base_id       TEXT NOT NULL,
-			version       TEXT,
-			id_type       TEXT NOT NULL,
-			status        TEXT NOT NULL,
-			justification TEXT,
-			updated       TEXT NOT NULL,
-			PRIMARY KEY (vendor, cve, product_id)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_statements_cve ON statements(cve)`,
-		`CREATE INDEX IF NOT EXISTS idx_statements_base_id ON statements(base_id)`,
-	}
-	for _, s := range stmts {
-		if _, err := db.db.Exec(s); err != nil {
-			return err
-		}
-	}
-	return nil
+	return runMigrations(db.db)
 }
 
 // UpsertVendor inserts or updates a vendor record.
@@ -129,8 +103,8 @@ func (db *DB) BulkInsert(stmts []Statement) error {
 	defer tx.Rollback()
 
 	prepared, err := tx.Prepare(`
-		INSERT OR REPLACE INTO statements (vendor, cve, product_id, base_id, version, id_type, status, justification, updated)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT OR REPLACE INTO statements (vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -146,7 +120,11 @@ func (db *DB) BulkInsert(stmts []Statement) error {
 		if s.Version != "" {
 			version = s.Version
 		}
-		if _, err := prepared.Exec(s.Vendor, s.CVE, s.ProductID, base, version, s.IDType, s.Status, s.Justification, s.Updated); err != nil {
+		sourceFormat := s.SourceFormat
+		if sourceFormat == "" {
+			sourceFormat = "csaf"
+		}
+		if _, err := prepared.Exec(s.Vendor, s.CVE, s.ProductID, base, version, s.IDType, s.Status, s.Justification, s.Updated, sourceFormat); err != nil {
 			return err
 		}
 	}
@@ -156,7 +134,7 @@ func (db *DB) BulkInsert(stmts []Statement) error {
 // QueryByCVE returns all statements for a given CVE.
 func (db *DB) QueryByCVE(cve string) ([]Statement, error) {
 	rows, err := db.db.Query(`
-		SELECT vendor, cve, product_id, base_id, version, id_type, status, justification, updated
+		SELECT vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format
 		FROM statements WHERE cve = ?
 	`, cve)
 	if err != nil {
@@ -181,7 +159,7 @@ func (db *DB) QueryResolve(cves, productBaseIDs []string) ([]Statement, error) {
 	prodPlaceholders = prodPlaceholders[:len(prodPlaceholders)-1]
 
 	query := fmt.Sprintf(`
-		SELECT vendor, cve, product_id, base_id, version, id_type, status, justification, updated
+		SELECT vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format
 		FROM statements
 		WHERE cve IN (%s) AND base_id IN (%s)
 	`, cvePlaceholders, prodPlaceholders)
@@ -233,7 +211,7 @@ func scanStatements(rows *sql.Rows) ([]Statement, error) {
 	for rows.Next() {
 		var s Statement
 		var just, version sql.NullString
-		if err := rows.Scan(&s.Vendor, &s.CVE, &s.ProductID, &s.BaseID, &version, &s.IDType, &s.Status, &just, &s.Updated); err != nil {
+		if err := rows.Scan(&s.Vendor, &s.CVE, &s.ProductID, &s.BaseID, &version, &s.IDType, &s.Status, &just, &s.Updated, &s.SourceFormat); err != nil {
 			return nil, err
 		}
 		s.Justification = just.String

@@ -132,6 +132,37 @@ func TestExtract_SUSE(t *testing.T) {
 	}
 }
 
+// TestExtract_PlatformCPEInheritance is a regression guard for the fix that
+// makes composite products in `product_tree.relationships` inherit identifiers
+// from BOTH sides — the package (product_reference, usually a PURL) and the
+// platform (relates_to_product_reference, usually a CPE). Red Hat's unfixed-
+// advisory documents put CPEs only on the platform side; dropping them means
+// zero CPE-keyed statements for RHEL advisories.
+func TestExtract_PlatformCPEInheritance(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "secdata-1220-cve-2024-0217.json")
+	stmts, err := ExtractFromFile(path)
+	if err != nil {
+		t.Fatalf("ExtractFromFile: %v", err)
+	}
+
+	var cpeCount int
+	var sawBaseRHEL8 bool
+	for _, s := range stmts {
+		if s.IDType == "cpe" {
+			cpeCount++
+			if s.ProductID == "cpe:/o:redhat:enterprise_linux:8" {
+				sawBaseRHEL8 = true
+			}
+		}
+	}
+	if cpeCount == 0 {
+		t.Fatal("expected CPE statements from relationship inheritance; got none")
+	}
+	if !sawBaseRHEL8 {
+		t.Error("expected at least one statement keyed on cpe:/o:redhat:enterprise_linux:8")
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }

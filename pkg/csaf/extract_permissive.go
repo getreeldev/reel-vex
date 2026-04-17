@@ -119,11 +119,19 @@ func buildProductMapPermissive(doc map[string]any) map[string][]productIdentifie
 			}
 			addProductPermissive(fpn, m)
 
-			// Inherit identifiers from the referenced component if the
-			// relationship product itself has none.
+			// Inherit from BOTH sides of the relationship: the component
+			// (product_reference, usually a PURL) and the platform
+			// (relates_to_product_reference, usually a CPE). See the strict
+			// extractor's equivalent block for the rationale.
 			relID, _ := fpn["product_id"].(string)
-			refID, _ := rel["product_reference"].(string)
-			if relID != "" && refID != "" && len(m[relID]) == 0 {
+			if relID == "" || len(m[relID]) > 0 {
+				continue
+			}
+			for _, key := range []string{"product_reference", "relates_to_product_reference"} {
+				refID, _ := rel[key].(string)
+				if refID == "" {
+					continue
+				}
 				if idents := m[refID]; len(idents) > 0 {
 					m[relID] = append(m[relID], idents...)
 				}

@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
+	"github.com/getreeldev/reel-vex/pkg/resolver"
 )
 
 // Cache-Control values for GET endpoints.
@@ -159,12 +161,13 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Normalize user-provided PURLs into base form so "log4j@1.2.17" matches
-	// a statement published against "log4j".
-	bases := make([]string, len(req.Products))
-	for i, p := range req.Products {
-		b, _ := csaf.SplitPURL(p)
-		bases[i] = b
+	// Normalize user-provided PURLs into base form and expand CPE variants
+	// into their RedHat-documented 5-part prefix, tagging each candidate with
+	// the match_reason it would carry if a statement matches.
+	baseToReason := expandProducts(req.Products)
+	bases := make([]string, 0, len(baseToReason))
+	for b := range baseToReason {
+		bases = append(bases, b)
 	}
 
 	stmts, err := s.db.QueryResolve(req.CVEs, bases)
@@ -174,7 +177,7 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeStatements(w, stmts)
+	writeStatementsWithMatch(w, stmts, baseToReason)
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -243,14 +246,26 @@ type statementJSON struct {
 	Status        string `json:"status"`
 	Justification string `json:"justification,omitempty"`
 	Updated       string `json:"updated"`
+	SourceFormat  string `json:"source_format"`
+	MatchReason   string `json:"match_reason,omitempty"`
 }
 
+// writeStatements serializes statements without a match_reason. Used by
+// endpoints that don't do product matching (/v1/cve/{id}).
 func writeStatements(w http.ResponseWriter, stmts []db.Statement) {
+	writeStatementsWithMatch(w, stmts, nil)
+}
+
+// writeStatementsWithMatch serializes statements and, when baseToReason is
+// non-nil, tags each row with the match_reason that caused it to be selected.
+// Endpoints that do product expansion (/v1/resolve, /v1/sbom) pass the map
+// they built during expansion.
+func writeStatementsWithMatch(w http.ResponseWriter, stmts []db.Statement, baseToReason map[string]string) {
 	out := statementsResponse{
 		Statements: make([]statementJSON, len(stmts)),
 	}
 	for i, s := range stmts {
-		out.Statements[i] = statementJSON{
+		row := statementJSON{
 			Vendor:        s.Vendor,
 			CVE:           s.CVE,
 			ProductID:     s.ProductID,
@@ -259,10 +274,38 @@ func writeStatements(w http.ResponseWriter, stmts []db.Statement) {
 			Status:        s.Status,
 			Justification: s.Justification,
 			Updated:       s.Updated,
+			SourceFormat:  s.SourceFormat,
 		}
+		if baseToReason != nil {
+			row.MatchReason = baseToReason[s.BaseID]
+		}
+		out.Statements[i] = row
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out)
+}
+
+// expandProducts turns the user-supplied product list into a lookup map from
+// candidate base identifier to the match_reason that would apply if a
+// statement's base_id matches that candidate. "direct" always wins over
+// "via_cpe_prefix" when both would apply to the same candidate (direct listed
+// first).
+func expandProducts(products []string) map[string]string {
+	baseToReason := make(map[string]string, len(products))
+	for _, p := range products {
+		base, _ := csaf.SplitPURL(p)
+		if _, exists := baseToReason[base]; !exists {
+			baseToReason[base] = "direct"
+		}
+		if strings.HasPrefix(p, "cpe:/") {
+			if prefix := resolver.CPEPrefix(p); prefix != p {
+				if _, exists := baseToReason[prefix]; !exists {
+					baseToReason[prefix] = "via_cpe_prefix"
+				}
+			}
+		}
+	}
+	return baseToReason
 }
 
 type errorResponse struct {

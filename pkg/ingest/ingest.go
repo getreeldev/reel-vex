@@ -113,10 +113,13 @@ func ingestProvider(pc ProviderConfig, database *db.DB, opts Options) error {
 				Vendor:        pc.ID,
 				CVE:           s.CVE,
 				ProductID:     s.ProductID,
+				BaseID:        s.BaseID,
+				Version:       s.Version,
 				IDType:        s.IDType,
 				Status:        s.Status,
 				Justification: s.Justification,
 				Updated:       entry.Updated.Format(time.RFC3339),
+				SourceFormat:  "csaf",
 			})
 		}
 

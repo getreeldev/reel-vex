@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
 )
 
@@ -169,6 +171,12 @@ func TestHandleResolve(t *testing.T) {
 		}
 		if resp.Statements[0].Status != "not_affected" {
 			t.Fatalf("expected not_affected, got %s", resp.Statements[0].Status)
+		}
+		if resp.Statements[0].SourceFormat != "csaf" {
+			t.Fatalf("expected source_format=csaf, got %q", resp.Statements[0].SourceFormat)
+		}
+		if resp.Statements[0].MatchReason != "direct" {
+			t.Fatalf("expected match_reason=direct for an exact-base PURL query, got %q", resp.Statements[0].MatchReason)
 		}
 	})
 
@@ -670,6 +678,105 @@ func TestHandleIngestTrigger(t *testing.T) {
 
 		close(block)
 	})
+}
+
+// TestHandleResolve_SECDATA1220 exercises the CPE-prefix expansion end-to-end
+// against the real Red Hat CSAF VEX document for CVE-2024-0217. The document
+// emits only the base CPE (cpe:/o:redhat:enterprise_linux:8) for the unfixed
+// RHEL 8 branch — no ::baseos / ::appstream variants. A scanner querying with
+// a variant CPE must still match via the RedHat-documented 5-part prefix rule.
+// Reference: redhat.atlassian.net/browse/SECDATA-1220 (closed "Not a bug";
+// Red Hat's position is that scanners should prefix-match on the first 5 parts).
+func TestHandleResolve_SECDATA1220(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "secdata-1220-cve-2024-0217.json")
+	stmts, err := csaf.ExtractFromFile(path)
+	if err != nil {
+		t.Fatalf("extract fixture: %v", err)
+	}
+
+	const (
+		baseCPE    = "cpe:/o:redhat:enterprise_linux:8"
+		variantCPE = "cpe:/o:redhat:enterprise_linux:8::baseos"
+	)
+	var hasBase, hasVariant bool
+	for _, s := range stmts {
+		if s.ProductID == baseCPE {
+			hasBase = true
+		}
+		if s.ProductID == variantCPE {
+			hasVariant = true
+		}
+	}
+	if !hasBase {
+		t.Fatalf("fixture missing base CPE %q — regression-test premise broken", baseCPE)
+	}
+	if hasVariant {
+		t.Fatalf("fixture unexpectedly contains variant CPE %q — SECDATA-1220 may have been fixed upstream; revisit", variantCPE)
+	}
+
+	dbPath := t.TempDir() + "/test.db"
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.UpsertVendor("redhat", "Red Hat", "https://example.invalid/feed"); err != nil {
+		t.Fatal(err)
+	}
+	dbStmts := make([]db.Statement, 0, len(stmts))
+	for _, s := range stmts {
+		dbStmts = append(dbStmts, db.Statement{
+			Vendor:        "redhat",
+			CVE:           s.CVE,
+			ProductID:     s.ProductID,
+			BaseID:        s.BaseID,
+			Version:       s.Version,
+			IDType:        s.IDType,
+			Status:        s.Status,
+			Justification: s.Justification,
+			Updated:       "2024-01-05T00:00:00Z",
+			SourceFormat:  "csaf",
+		})
+	}
+	if err := database.BulkInsert(dbStmts); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := NewServer(database, nil)
+	body, _ := json.Marshal(resolveRequest{
+		CVEs:     []string{"CVE-2024-0217"},
+		Products: []string{variantCPE},
+	})
+	req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp statementsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Statements) == 0 {
+		t.Fatal("expected at least one statement via CPE prefix; got zero — SECDATA-1220 regression")
+	}
+	var viaPrefix int
+	for _, s := range resp.Statements {
+		if s.SourceFormat != "csaf" {
+			t.Errorf("expected source_format=csaf, got %q", s.SourceFormat)
+		}
+		if s.ProductID == baseCPE && s.MatchReason != "via_cpe_prefix" {
+			t.Errorf("expected match_reason=via_cpe_prefix for base-CPE statement, got %q", s.MatchReason)
+		}
+		if s.MatchReason == "via_cpe_prefix" {
+			viaPrefix++
+		}
+	}
+	if viaPrefix == 0 {
+		t.Fatalf("expected at least one statement matched via_cpe_prefix, got none")
+	}
 }
 
 func TestMain(m *testing.M) {
