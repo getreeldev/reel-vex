@@ -52,9 +52,16 @@ func runTests(m *testing.M) int {
 	port := freePort()
 	serverURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 
-	// Write a minimal config (empty providers so ingest is a no-op)
+	// Write a minimal config with a placeholder adapter. The adapter's
+	// Discover would fail against example.invalid, but we set the ingest
+	// interval to 999h so the scheduler never fires during the test — the
+	// API is exercised against the pre-seeded DB, not via live ingest.
 	configPath := filepath.Join(os.TempDir(), "reel-vex-test-config.yaml")
-	os.WriteFile(configPath, []byte("providers: []\n"), 0644)
+	os.WriteFile(configPath, []byte(`adapters:
+  - type: csaf
+    id: test
+    url: https://example.invalid/metadata.json
+`), 0644)
 	defer os.Remove(configPath)
 
 	// Start server with long ingest interval so scheduler doesn't interfere
