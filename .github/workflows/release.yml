@@ -17,6 +17,9 @@ jobs:
   scan:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
 
@@ -42,7 +45,7 @@ jobs:
         uses: getreeldev/releases@v1
         with:
           image: vex-hub:scan
-          scan-types: sbom,cbom,malware
+          scan-types: sbom,cbom,sarif,malware
           scanners: vuln
           severity: HIGH,CRITICAL
           ignore-unfixed: true
