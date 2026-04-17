@@ -13,13 +13,20 @@ import (
 // Discover to resolve the feed URL and confirm the adapter can reach it,
 // then calls Sync to stream statements updated after the last-synced
 // watermark. Statements emitted through the callback are tagged with the
-// adapter's ID and SourceFormat when they land in the database.
+// adapter's Vendor and SourceFormat when they land in the database.
 type Adapter interface {
-	// ID is the vendor identifier used as the key in the statements table
-	// (e.g. "redhat", "suse"). Stable across adapter types — when a vendor
-	// has both CSAF and OVAL adapters they share one ID and the resulting
-	// statements are distinguished only by SourceFormat.
+	// ID is the adapter instance identifier, unique across all configured
+	// adapters. Used as the key for this adapter's watermark entry in
+	// adapter_state, so two adapters that share a vendor (e.g. a CSAF and
+	// an OVAL adapter both scanning Red Hat) need distinct IDs like
+	// "redhat-csaf" and "redhat-oval-rhel-9.6-eus".
 	ID() string
+
+	// Vendor is the vendor identifier written onto every statement this
+	// adapter emits. Multiple adapters can share a vendor — a vendor with
+	// both CSAF and OVAL adapters produces statements under one vendor
+	// string; their provenance is distinguished by SourceFormat.
+	Vendor() string
 
 	// Name is the vendor's human-readable name (e.g. "Red Hat"). Adapters
 	// may override an empty config-provided name with one discovered from

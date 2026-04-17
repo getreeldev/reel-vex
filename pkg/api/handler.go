@@ -136,6 +136,9 @@ func (s *Server) handleCVESummary(w http.ResponseWriter, r *http.Request) {
 type resolveRequest struct {
 	Products []string `json:"products"`
 	CVEs     []string `json:"cves"`
+	// SourceFormats, when non-empty, restricts matches to statements from
+	// those upstream formats ("csaf", "oval"). Empty = all formats.
+	SourceFormats []string `json:"source_formats,omitempty"`
 }
 
 const maxResolveItems = 10000
@@ -170,7 +173,7 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		bases = append(bases, b)
 	}
 
-	stmts, err := s.db.QueryResolve(req.CVEs, bases)
+	stmts, err := s.db.QueryResolve(req.CVEs, bases, req.SourceFormats)
 	if err != nil {
 		slog.Error("resolve failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")

@@ -71,7 +71,7 @@ func (s *Server) handleSBOM(w http.ResponseWriter, r *http.Request) {
 		cveIDs = append(cveIDs, id)
 	}
 
-	stmts, err := s.db.QueryResolve(cveIDs, products)
+	stmts, err := s.db.QueryResolve(cveIDs, products, nil)
 	if err != nil {
 		slog.Error("sbom resolve failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "resolve failed")

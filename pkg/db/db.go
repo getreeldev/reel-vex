@@ -67,25 +67,42 @@ func (db *DB) migrate() error {
 	return runMigrations(db.db)
 }
 
-// UpsertVendor inserts or updates a vendor record.
-func (db *DB) UpsertVendor(id, name, feedURL string) error {
+// UpsertVendor inserts or updates a vendor row. From v3 onward the vendors
+// table is pure display metadata — feed URL and watermark moved to
+// adapter_state so multiple adapters under one vendor can't stomp on each
+// other.
+func (db *DB) UpsertVendor(id, name string) error {
 	_, err := db.db.Exec(`
-		INSERT INTO vendors (id, name, feed_url) VALUES (?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET name=excluded.name, feed_url=excluded.feed_url
-	`, id, name, feedURL)
+		INSERT INTO vendors (id, name) VALUES (?, ?)
+		ON CONFLICT(id) DO UPDATE SET name=excluded.name
+	`, id, name)
 	return err
 }
 
-// SetVendorSynced updates the last_synced timestamp for a vendor.
-func (db *DB) SetVendorSynced(id, timestamp string) error {
-	_, err := db.db.Exec("UPDATE vendors SET last_synced = ? WHERE id = ?", timestamp, id)
+// UpsertAdapterState records an adapter's feed URL + current watermark.
+// Called at the end of each Sync cycle. timestamp should be the newest
+// Updated field we saw on emitted statements this cycle ("" if nothing
+// was emitted — keeps existing watermark intact).
+func (db *DB) UpsertAdapterState(adapterID, feedURL, lastSynced string) error {
+	// If lastSynced is empty, preserve the prior watermark (we didn't see
+	// new data this cycle). feed_url is always refreshed since Discover
+	// re-resolves it each cycle.
+	_, err := db.db.Exec(`
+		INSERT INTO adapter_state (adapter_id, feed_url, last_synced, updated)
+		VALUES (?, ?, NULLIF(?, ''), ?)
+		ON CONFLICT(adapter_id) DO UPDATE SET
+			feed_url = excluded.feed_url,
+			last_synced = COALESCE(NULLIF(excluded.last_synced, ''), adapter_state.last_synced),
+			updated = excluded.updated
+	`, adapterID, feedURL, lastSynced, lastSynced)
 	return err
 }
 
-// VendorLastSynced returns the last_synced timestamp for a vendor, or "" if never synced.
-func (db *DB) VendorLastSynced(id string) (string, error) {
+// AdapterLastSynced returns the last_synced timestamp for an adapter, or
+// "" if the adapter has never successfully synced.
+func (db *DB) AdapterLastSynced(adapterID string) (string, error) {
 	var ts sql.NullString
-	err := db.db.QueryRow("SELECT last_synced FROM vendors WHERE id = ?", id).Scan(&ts)
+	err := db.db.QueryRow("SELECT last_synced FROM adapter_state WHERE adapter_id = ?", adapterID).Scan(&ts)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -146,9 +163,11 @@ func (db *DB) QueryByCVE(cve string) ([]Statement, error) {
 }
 
 // QueryResolve returns statements matching any of the given CVEs AND any of the
-// given product base IDs. Callers should pass already-normalized base IDs
-// (PURLs without @version and qualifiers; CPEs as-is).
-func (db *DB) QueryResolve(cves, productBaseIDs []string) ([]Statement, error) {
+// given product base IDs, optionally filtered to specific source_formats.
+// Callers should pass already-normalized base IDs (PURLs without @version
+// and qualifiers; CPEs as-is). Empty sourceFormats means "no filter" —
+// every format matches.
+func (db *DB) QueryResolve(cves, productBaseIDs, sourceFormats []string) ([]Statement, error) {
 	if len(cves) == 0 || len(productBaseIDs) == 0 {
 		return nil, nil
 	}
@@ -159,19 +178,29 @@ func (db *DB) QueryResolve(cves, productBaseIDs []string) ([]Statement, error) {
 	prodPlaceholders := strings.Repeat("?,", len(productBaseIDs))
 	prodPlaceholders = prodPlaceholders[:len(prodPlaceholders)-1]
 
-	query := fmt.Sprintf(`
-		SELECT vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format
-		FROM statements
-		WHERE cve IN (%s) AND base_id IN (%s)
-	`, cvePlaceholders, prodPlaceholders)
-
-	args := make([]any, 0, len(cves)+len(productBaseIDs))
+	args := make([]any, 0, len(cves)+len(productBaseIDs)+len(sourceFormats))
 	for _, c := range cves {
 		args = append(args, c)
 	}
 	for _, p := range productBaseIDs {
 		args = append(args, p)
 	}
+
+	sourceFilter := ""
+	if len(sourceFormats) > 0 {
+		srcPlaceholders := strings.Repeat("?,", len(sourceFormats))
+		srcPlaceholders = srcPlaceholders[:len(srcPlaceholders)-1]
+		sourceFilter = fmt.Sprintf(" AND source_format IN (%s)", srcPlaceholders)
+		for _, sf := range sourceFormats {
+			args = append(args, sf)
+		}
+	}
+
+	query := fmt.Sprintf(`
+		SELECT vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format
+		FROM statements
+		WHERE cve IN (%s) AND base_id IN (%s)%s
+	`, cvePlaceholders, prodPlaceholders, sourceFilter)
 
 	rows, err := db.db.Query(query, args...)
 	if err != nil {
@@ -201,7 +230,7 @@ func (db *DB) Stats() (Stats, error) {
 		return s, err
 	}
 	var lastUpdated sql.NullString
-	err = db.db.QueryRow("SELECT MAX(last_synced) FROM vendors").Scan(&lastUpdated)
+	err = db.db.QueryRow("SELECT MAX(last_synced) FROM adapter_state").Scan(&lastUpdated)
 	if err != nil && err != sql.ErrNoRows {
 		return s, err
 	}

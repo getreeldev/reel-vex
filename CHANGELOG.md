@@ -2,6 +2,39 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.2.0] — Unreleased — multi-source Red Hat coverage
+
+Plan-completion milestone. reel-vex now ingests Red Hat OVAL alongside CSAF, filling the EUS / AUS / E4S / SAP / HA / NFV stream coverage gap that Red Hat documented in [SECDATA-1181](https://redhat.atlassian.net/browse/SECDATA-1181) as intentional-but-asymmetric between their two feeds.
+
+### Added
+
+- **Red Hat OVAL source adapter** (`pkg/source/redhatoval/`). Fetches a single OVAL file per adapter instance (configurable via `url:`), decompresses bz2 in-stream, delegates parsing to the new [`getreeldev/oval-to-vex`](https://github.com/getreeldev/oval-to-vex) library, and emits VEX statements with `source_format: oval`. Incremental sync via HTTP `Last-Modified` — if upstream hasn't regenerated the file since our watermark, the adapter skips the GET entirely.
+- **`source.Adapter.Vendor()` method**. Distinguishes the vendor domain (written onto statements) from the adapter instance ID (used for per-adapter watermarks). CSAF adapter's Vendor() returns its ID for backward compatibility; RH OVAL adapter's Vendor() returns `"redhat"` regardless of which OVAL file it targets. Two adapters for one vendor now produce statements under one vendor string, distinguished only by `source_format`.
+- **`/v1/resolve` `source_formats` filter**. Request body accepts an optional `source_formats: ["csaf", "oval"]` array. Empty means all formats. Applied at the SQL `WHERE source_format IN (...)` layer.
+- **`adapter_state` table** (schema v3). Keyed by adapter ID; holds per-adapter feed URL + last_synced watermark. Replaces the v2 `vendors.last_synced` / `vendors.feed_url` columns which were per-vendor and would collide when two adapters shared a vendor.
+- Regression tests covering: the full Discover + Sync adapter lifecycle against an `httptest.Server` serving the committed OVAL fixture; HEAD-short-circuit when upstream is unchanged; source_formats filter at the API level with four scenarios (no filter / csaf-only / oval-only / both explicitly); schema v2 → v3 carry-forward preserving existing CSAF watermarks.
+
+### Changed
+
+- `statements.vendor` is now `a.Vendor()` (not `a.ID()`). For CSAF, unchanged in practice. For RH OVAL, statements carry `vendor: redhat` matching CSAF — no `redhat-oval` string appears in user-facing output.
+- `ingest.Run` records per-adapter state via `UpsertAdapterState(adapterID, feedURL, lastSynced)` instead of `SetVendorSynced` / `UpsertVendor(…, feedURL)`. Watermark-preserving on no-op cycles (HEAD-short-circuit on OVAL, or CSAF runs with no new documents since last sync).
+- `Stats.LastUpdated` reads `MAX(last_synced) FROM adapter_state`. JSON field name unchanged; semantics unchanged (newest upstream data absorbed across all adapters).
+- `db.QueryResolve` signature: `QueryResolve(cves, products, sourceFormats)`. `sourceFormats` empty = no filter.
+- `db.UpsertVendor` signature: `UpsertVendor(id, name)` (dropped `feedURL` argument — URL is now per-adapter, not per-vendor).
+- `vendors` table schema: `last_synced` and `feed_url` columns dropped (v3 migration carries their values forward into `adapter_state` before drop).
+
+### Migration
+
+- Schema v2 → v3 runs on first boot of the new binary. Data-preserving:
+  - `adapter_state` created and seeded from existing `vendors.{id, feed_url, last_synced}` rows.
+  - `vendors.feed_url` and `vendors.last_synced` columns dropped after the copy.
+  - Pre-existing CSAF watermark carries forward under the CSAF adapter's ID; first ingest after upgrade resumes from that timestamp (no full re-sync).
+- Hosted deployment `config.yaml` must add one new entry for the Red Hat OVAL adapter. No rename of the existing CSAF `id: redhat`.
+
+### Library
+
+- New dependency: [`github.com/getreeldev/oval-to-vex v0.1.0`](https://github.com/getreeldev/oval-to-vex) — Red Hat OVAL XML parser + VEX-statement translator, zero dependencies beyond stdlib.
+
 ## [0.1.7] — Unreleased
 
 ### Added

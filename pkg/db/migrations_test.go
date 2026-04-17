@@ -141,12 +141,17 @@ func TestMigrateV0ToV1_FreshDB(t *testing.T) {
 }
 
 // TestMigrateV1ToV2_AddsAliasesTable confirms the v1 → v2 migration adds
-// product_aliases without touching existing statement rows.
+// product_aliases without touching existing statement rows. The test
+// drives from v1 all the way to the current schema, so v2 → v3 is also
+// exercised end-to-end: v1 statements stay intact, product_aliases
+// starts empty, and vendors loses its feed_url/last_synced columns.
 func TestMigrateV1ToV2_AddsAliasesTable(t *testing.T) {
 	dbPath := t.TempDir() + "/v1-to-v2.db"
 
 	// Produce a v1 database with data, then simulate pre-v2 by setting
-	// schema_version back to 1 and dropping product_aliases.
+	// schema_version back to 1, dropping product_aliases, dropping
+	// adapter_state, and re-adding the v1-era vendors columns that later
+	// migrations removed.
 	d, err := Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -162,9 +167,21 @@ func TestMigrateV1ToV2_AddsAliasesTable(t *testing.T) {
 	if _, err := d.db.Exec("DROP TABLE product_aliases"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := d.db.Exec("DROP TABLE adapter_state"); err != nil {
+		t.Fatal(err)
+	}
+	// Re-add the v1-era vendors columns that later migrations dropped.
+	for _, sql := range []string{
+		`ALTER TABLE vendors ADD COLUMN feed_url TEXT`,
+		`ALTER TABLE vendors ADD COLUMN last_synced TEXT`,
+	} {
+		if _, err := d.db.Exec(sql); err != nil {
+			t.Fatalf("rebuild v1 vendors shape: %v", err)
+		}
+	}
 	d.Close()
 
-	// Re-open triggers the v1 → v2 migration.
+	// Re-open triggers the v1 → v2 → v3 migrations in sequence.
 	d2, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
@@ -176,7 +193,7 @@ func TestMigrateV1ToV2_AddsAliasesTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	if v != currentSchemaVersion {
-		t.Fatalf("schema_version after v1→v2: got %d, want %d", v, currentSchemaVersion)
+		t.Fatalf("schema_version after migrations: got %d, want %d", v, currentSchemaVersion)
 	}
 
 	n, err := d2.AliasCount()
@@ -191,5 +208,69 @@ func TestMigrateV1ToV2_AddsAliasesTable(t *testing.T) {
 	stats, _ := d2.Stats()
 	if stats.Statements != 1 {
 		t.Errorf("statements preserved: got %d, want 1", stats.Statements)
+	}
+}
+
+// TestMigrateV2ToV3_CarryForward confirms the v2 → v3 migration creates
+// adapter_state and copies existing per-adapter watermarks + feed URLs
+// into it, then drops those columns from vendors. This is the workflow
+// Phase 5 will trigger on the hosted deployment's first boot.
+func TestMigrateV2ToV3_CarryForward(t *testing.T) {
+	dbPath := t.TempDir() + "/v2-to-v3.db"
+
+	// Build a v2-shaped DB with a vendor row carrying feed_url + last_synced.
+	d, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.db.Exec("UPDATE schema_version SET version = 2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.db.Exec("DROP TABLE adapter_state"); err != nil {
+		t.Fatal(err)
+	}
+	for _, sql := range []string{
+		`ALTER TABLE vendors ADD COLUMN feed_url TEXT`,
+		`ALTER TABLE vendors ADD COLUMN last_synced TEXT`,
+		`INSERT INTO vendors (id, name, feed_url, last_synced) VALUES ('redhat', 'Red Hat', 'https://example/feed', '2024-07-01T00:00:00Z')`,
+		`INSERT INTO vendors (id, name, feed_url, last_synced) VALUES ('suse', 'SUSE', 'https://example/suse', NULL)`,
+	} {
+		if _, err := d.db.Exec(sql); err != nil {
+			t.Fatalf("rebuild v2 state: %v\nSQL: %s", err, sql)
+		}
+	}
+	d.Close()
+
+	// Re-open runs v2 → v3.
+	d2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer d2.Close()
+
+	// Watermark carried forward for redhat.
+	lastSynced, err := d2.AdapterLastSynced("redhat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lastSynced != "2024-07-01T00:00:00Z" {
+		t.Errorf("adapter_state carry-forward for redhat: got %q, want 2024-07-01T00:00:00Z", lastSynced)
+	}
+
+	// suse had NULL last_synced; should carry forward as empty.
+	suseSynced, err := d2.AdapterLastSynced("suse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if suseSynced != "" {
+		t.Errorf("adapter_state carry-forward for suse (NULL): got %q, want empty", suseSynced)
+	}
+
+	// vendors table should no longer have feed_url or last_synced columns.
+	if _, err := d2.db.Exec("SELECT feed_url FROM vendors LIMIT 1"); err == nil {
+		t.Error("expected feed_url column dropped from vendors after v3")
+	}
+	if _, err := d2.db.Exec("SELECT last_synced FROM vendors LIMIT 1"); err == nil {
+		t.Error("expected last_synced column dropped from vendors after v3")
 	}
 }

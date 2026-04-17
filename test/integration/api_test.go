@@ -97,10 +97,10 @@ func seedDB(path string) error {
 	}
 	defer database.Close()
 
-	if err := database.UpsertVendor("redhat", "Red Hat", "https://example.com/redhat/feed"); err != nil {
+	if err := database.UpsertVendor("redhat", "Red Hat"); err != nil {
 		return err
 	}
-	if err := database.UpsertVendor("suse", "SUSE", "https://example.com/suse/feed"); err != nil {
+	if err := database.UpsertVendor("suse", "SUSE"); err != nil {
 		return err
 	}
 

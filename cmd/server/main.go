@@ -18,6 +18,7 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/ingest"
 	"github.com/getreeldev/reel-vex/pkg/source"
 	"github.com/getreeldev/reel-vex/pkg/source/csafadapter"
+	"github.com/getreeldev/reel-vex/pkg/source/redhatoval"
 )
 
 // registerAdapters wires every known adapter and alias fetcher into their
@@ -25,6 +26,7 @@ import (
 // can resolve both purely through the factory functions.
 func registerAdapters() {
 	source.Register(csafadapter.Type, csafadapter.New)
+	source.Register(redhatoval.Type, redhatoval.New)
 	aliases.Register(aliases.RedHatRepoToCPEType, aliases.NewRedHatRepoToCPE)
 }
 

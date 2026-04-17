@@ -7,6 +7,12 @@ adapters:
     id: suse
     name: SUSE
     url: https://www.suse.com/.well-known/csaf/provider-metadata.json
+  # Red Hat OVAL: fills the EUS/AUS/E4S/SAP/HA/NFV coverage gap that CSAF
+  # intentionally leaves (see SECDATA-1181). One adapter per OVAL file;
+  # add more entries here as coverage needs grow — no code changes required.
+  - type: redhat-oval
+    id: redhat-oval-rhel-9.6-eus
+    url: https://security.access.redhat.com/data/oval/v2/RHEL9/rhel-9.6-eus.oval.xml.bz2
 
 aliases:
   - type: redhat-repository-to-cpe

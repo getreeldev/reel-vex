@@ -45,17 +45,17 @@ func Run(ctx context.Context, adapters []source.Adapter, fetchers []aliases.Fetc
 var errLimitReached = errors.New("statement limit reached")
 
 func runAdapter(ctx context.Context, a source.Adapter, database *db.DB, opts Options) error {
-	slog.Info("adapter discover", "adapter", a.ID(), "format", a.SourceFormat())
+	slog.Info("adapter discover", "adapter", a.ID(), "vendor", a.Vendor(), "format", a.SourceFormat())
 	feed, err := a.Discover(ctx)
 	if err != nil {
 		return fmt.Errorf("discover: %w", err)
 	}
-	if err := database.UpsertVendor(a.ID(), a.Name(), feed.FeedURL); err != nil {
+	if err := database.UpsertVendor(a.Vendor(), a.Name()); err != nil {
 		return fmt.Errorf("upsert vendor: %w", err)
 	}
 
 	var since time.Time
-	lastSynced, err := database.VendorLastSynced(a.ID())
+	lastSynced, err := database.AdapterLastSynced(a.ID())
 	if err != nil {
 		return fmt.Errorf("last_synced: %w", err)
 	}
@@ -92,7 +92,7 @@ func runAdapter(ctx context.Context, a source.Adapter, database *db.DB, opts Opt
 			newest = s.Updated
 		}
 		batch = append(batch, db.Statement{
-			Vendor:        a.ID(),
+			Vendor:        a.Vendor(),
 			CVE:           s.CVE,
 			ProductID:     s.ProductID,
 			BaseID:        s.BaseID,
@@ -118,10 +118,16 @@ func runAdapter(ctx context.Context, a source.Adapter, database *db.DB, opts Opt
 		return fmt.Errorf("flush: %w", err)
 	}
 
+	// Record adapter state: feed URL (always) and watermark (only if we saw
+	// new data this cycle). UpsertAdapterState preserves the prior watermark
+	// when the incoming one is empty, so HEAD-short-circuit cycles don't
+	// erase a previously-set last_synced.
+	var newestStr string
 	if !newest.IsZero() {
-		if err := database.SetVendorSynced(a.ID(), newest.Format(time.RFC3339)); err != nil {
-			return fmt.Errorf("set synced: %w", err)
-		}
+		newestStr = newest.Format(time.RFC3339)
+	}
+	if err := database.UpsertAdapterState(a.ID(), feed.FeedURL, newestStr); err != nil {
+		return fmt.Errorf("update adapter state: %w", err)
 	}
 	slog.Info("adapter done", "adapter", a.ID(), "processed", processed)
 	return nil

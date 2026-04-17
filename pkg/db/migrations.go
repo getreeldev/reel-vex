@@ -8,7 +8,7 @@ import (
 // currentSchemaVersion is the schema version this binary expects. Each migration
 // brings the database up to the next version; on Open() we apply every
 // migration whose target is higher than the stored version.
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 // migrations lists every forward-only schema migration in order. The index
 // doesn't matter; we use target versions to decide what to run. A migration
@@ -17,6 +17,7 @@ const currentSchemaVersion = 2
 var migrations = []migration{
 	{version: 1, apply: migrateV0ToV1},
 	{version: 2, apply: migrateV1ToV2},
+	{version: 3, apply: migrateV2ToV3},
 }
 
 type migration struct {
@@ -177,6 +178,52 @@ func migrateV1ToV2(tx *sql.Tx) error {
 	} {
 		if _, err := tx.Exec(ddl); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// migrateV2ToV3 introduces the adapter_state table for per-adapter watermarks
+// and feed URLs. Before v3, vendors.last_synced held the watermark — which
+// worked fine with one adapter per vendor but breaks the moment two adapters
+// (e.g. CSAF + OVAL for Red Hat) share a vendor row: their writes would
+// overwrite each other.
+//
+// v3 moves both last_synced and feed_url out of vendors (which becomes pure
+// display metadata) into adapter_state, keyed by adapter ID so two adapters
+// under one vendor never collide. The CSAF watermark carries forward into
+// adapter_state under the existing adapter ID.
+//
+// The CSAF feed URL also carries forward under the same adapter ID so the
+// website's /v1/stats response still displays a reasonable feed URL for the
+// vendor row (via an adapter_state lookup). If multiple adapters exist per
+// vendor later, the display logic can pick one deterministically.
+func migrateV2ToV3(tx *sql.Tx) error {
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS adapter_state (
+		adapter_id  TEXT PRIMARY KEY,
+		feed_url    TEXT,
+		last_synced TEXT,
+		updated     TEXT NOT NULL
+	)`); err != nil {
+		return err
+	}
+
+	// Carry existing per-adapter watermarks forward. At v2 every adapter ID
+	// that ever ran has a row in vendors with a last_synced (for those that
+	// successfully synced). Copy them.
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO adapter_state (adapter_id, feed_url, last_synced, updated)
+		SELECT id, feed_url, last_synced, COALESCE(last_synced, '') FROM vendors`); err != nil {
+		return err
+	}
+
+	// Drop the columns that moved out. SQLite 3.35+ supports DROP COLUMN.
+	// modernc/sqlite's pure-Go driver includes this support.
+	for _, ddl := range []string{
+		`ALTER TABLE vendors DROP COLUMN last_synced`,
+		`ALTER TABLE vendors DROP COLUMN feed_url`,
+	} {
+		if _, err := tx.Exec(ddl); err != nil {
+			return fmt.Errorf("drop column: %w", err)
 		}
 	}
 	return nil

@@ -9,12 +9,18 @@ import (
 
 // mockAdapter is the Adapter reference implementation used in tests.
 type mockAdapter struct {
-	id, name, format string
-	stmts            []Statement
-	discoverErr      error
+	id, vendor, name, format string
+	stmts                    []Statement
+	discoverErr              error
 }
 
-func (m *mockAdapter) ID() string           { return m.id }
+func (m *mockAdapter) ID() string { return m.id }
+func (m *mockAdapter) Vendor() string {
+	if m.vendor == "" {
+		return m.id
+	}
+	return m.vendor
+}
 func (m *mockAdapter) Name() string         { return m.name }
 func (m *mockAdapter) SourceFormat() string { return m.format }
 

@@ -24,7 +24,7 @@ func setupTestDB(t *testing.T) *db.DB {
 	}
 	t.Cleanup(func() { database.Close() })
 
-	if err := database.UpsertVendor("testvendor", "Test Vendor", "https://example.com/feed"); err != nil {
+	if err := database.UpsertVendor("testvendor", "Test Vendor"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -519,7 +519,7 @@ func TestHandleSBOM(t *testing.T) {
 
 	t.Run("picks best status across vendors", func(t *testing.T) {
 		// Add a second vendor with "affected" status for the same CVE+product.
-		database.UpsertVendor("vendor2", "Vendor Two", "https://example.com/feed2")
+		database.UpsertVendor("vendor2", "Vendor Two")
 		database.BulkInsert([]db.Statement{
 			{Vendor: "vendor2", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/test/openssl@3.0", BaseID: "pkg:rpm/test/openssl", Version: "3.0", IDType: "purl", Status: "affected", Updated: "2024-07-01T00:00:00Z"},
 		})
@@ -752,7 +752,7 @@ func TestHandleResolve_SECDATA1220(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { database.Close() })
-	if err := database.UpsertVendor("redhat", "Red Hat", "https://example.invalid/feed"); err != nil {
+	if err := database.UpsertVendor("redhat", "Red Hat"); err != nil {
 		t.Fatal(err)
 	}
 	dbStmts := make([]db.Statement, 0, len(stmts))
@@ -824,7 +824,7 @@ func TestHandleResolve_AliasExpansion(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { database.Close() })
-	if err := database.UpsertVendor("redhat", "Red Hat", "https://example.invalid/feed"); err != nil {
+	if err := database.UpsertVendor("redhat", "Red Hat"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -878,6 +878,79 @@ func TestHandleResolve_AliasExpansion(t *testing.T) {
 	if got.ProductID != "cpe:/a:redhat:enterprise_linux:8::appstream" {
 		t.Errorf("product_id: got %q", got.ProductID)
 	}
+}
+
+// TestHandleResolve_SourceFormatsFilter confirms that /v1/resolve's
+// source_formats request field restricts which upstream formats are
+// returned. With OVAL joining CSAF for Red Hat, consumers that want only
+// VEX-shaped statements (not OVAL-derived ones), or vice versa, can
+// filter cleanly.
+func TestHandleResolve_SourceFormatsFilter(t *testing.T) {
+	database := setupTestDB(t)
+	// setupTestDB already inserted a CSAF statement for CVE-2024-1234
+	// against pkg:rpm/test/openssl@3.0 (vendor=testvendor). Add an OVAL
+	// statement for the same CVE+product so the filter has something to
+	// distinguish.
+	if err := database.BulkInsert([]db.Statement{{
+		Vendor:       "testvendor",
+		CVE:          "CVE-2024-1234",
+		ProductID:    "pkg:rpm/test/openssl@3.0",
+		BaseID:       "pkg:rpm/test/openssl",
+		Version:      "3.0",
+		IDType:       "purl",
+		Status:       "fixed",
+		Updated:      "2024-07-02T00:00:00Z",
+		SourceFormat: "oval",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(database, nil)
+
+	run := func(t *testing.T, filter []string, wantFormats map[string]bool) {
+		t.Helper()
+		body, _ := json.Marshal(resolveRequest{
+			CVEs:          []string{"CVE-2024-1234"},
+			Products:      []string{"pkg:rpm/test/openssl@3.0"},
+			SourceFormats: filter,
+		})
+		req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp statementsResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
+		gotFormats := map[string]bool{}
+		for _, s := range resp.Statements {
+			gotFormats[s.SourceFormat] = true
+		}
+		if len(gotFormats) != len(wantFormats) {
+			t.Errorf("formats: got %v, want %v", gotFormats, wantFormats)
+			return
+		}
+		for f := range wantFormats {
+			if !gotFormats[f] {
+				t.Errorf("expected source_format %q in response, got %v", f, gotFormats)
+			}
+		}
+	}
+
+	t.Run("no filter returns both", func(t *testing.T) {
+		run(t, nil, map[string]bool{"csaf": true, "oval": true})
+	})
+	t.Run("csaf only", func(t *testing.T) {
+		run(t, []string{"csaf"}, map[string]bool{"csaf": true})
+	})
+	t.Run("oval only", func(t *testing.T) {
+		run(t, []string{"oval"}, map[string]bool{"oval": true})
+	})
+	t.Run("both explicitly", func(t *testing.T) {
+		run(t, []string{"csaf", "oval"}, map[string]bool{"csaf": true, "oval": true})
+	})
 }
 
 func TestMain(m *testing.M) {

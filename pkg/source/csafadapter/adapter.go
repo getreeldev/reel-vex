@@ -46,7 +46,14 @@ type Adapter struct {
 	http *http.Client
 }
 
-func (a *Adapter) ID() string           { return a.id }
+func (a *Adapter) ID() string { return a.id }
+
+// Vendor returns the vendor identifier for emitted statements. For CSAF
+// adapters the adapter ID IS the vendor (one CSAF adapter per vendor is
+// the canonical model). If a deployment ever runs multiple CSAF adapters
+// for the same vendor, they'd need distinct IDs and an explicit vendor
+// config field — which we can add additively when that use case arrives.
+func (a *Adapter) Vendor() string       { return a.id }
 func (a *Adapter) Name() string         { return a.name }
 func (a *Adapter) SourceFormat() string { return "csaf" }
 
