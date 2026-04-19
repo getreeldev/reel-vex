@@ -17,7 +17,7 @@ import (
 // re-checked more often because the counters tick up during ingest.
 const (
 	cacheCVE   = "public, max-age=600, stale-while-revalidate=86400"
-	cacheStats = "public, max-age=60"
+	cacheStats = "public, max-age=60, stale-while-revalidate=86400"
 	cacheNone  = "no-cache"
 )
 
