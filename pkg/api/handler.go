@@ -32,7 +32,11 @@ type Server struct {
 	db       *db.DB
 	resolver *resolver.Resolver
 	mux      *http.ServeMux
-	ingest   *IngestRunner
+	// handler is the mux wrapped with the request-log middleware. All non-
+	// CORS-preflight requests flow through it so every handled request
+	// produces one structured "api_request" slog line.
+	handler http.Handler
+	ingest  *IngestRunner
 }
 
 // NewServer creates a new API server.
@@ -52,10 +56,13 @@ func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 	s.mux.HandleFunc("GET /v1/ingest", s.handleIngestStatus)
 	s.mux.HandleFunc("POST /v1/ingest", s.handleIngestTrigger)
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
+	s.handler = logRequest(s.mux)
 	return s
 }
 
-// ServeHTTP implements http.Handler.
+// ServeHTTP implements http.Handler. CORS preflight is short-circuited
+// before the logged handler chain so preflight noise doesn't pollute the
+// request log.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -66,7 +73,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mux.ServeHTTP(w, r)
+	s.handler.ServeHTTP(w, r)
 }
 
 func (s *Server) handleCVE(w http.ResponseWriter, r *http.Request) {
