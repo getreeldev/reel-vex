@@ -5,7 +5,9 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
+	"github.com/getreeldev/reel-vex/pkg/openvex"
 	"github.com/getreeldev/reel-vex/pkg/resolver"
 )
 
@@ -146,6 +148,10 @@ type resolveRequest struct {
 	// SourceFormats, when non-empty, restricts matches to statements from
 	// those upstream formats ("csaf", "oval"). Empty = all formats.
 	SourceFormats []string `json:"source_formats,omitempty"`
+	// Format selects the response shape. "" (default) returns native
+	// reel-vex JSON with match_reason + source_format. "openvex" returns
+	// an OpenVEX 0.2.0 document for consumers like vexctl and Trivy.
+	Format string `json:"format,omitempty"`
 }
 
 const maxResolveItems = 10000
@@ -170,11 +176,18 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "too many items (max 10000 each)")
 		return
 	}
+	if req.Format != "" && req.Format != "openvex" {
+		writeError(w, http.StatusBadRequest, `invalid format (must be "" or "openvex")`)
+		return
+	}
 
 	// Normalize user-provided PURLs into base form and expand CPE variants
 	// into their RedHat-documented 5-part prefix, tagging each candidate with
-	// the match_reason it would carry if a statement matches.
-	baseToReason := s.expandProducts(req.Products)
+	// the match_reason it would carry if a statement matches. baseToInputs
+	// tracks which user inputs (in base form) produced each candidate — the
+	// OpenVEX emitter echoes those inputs into products[] so Trivy sees
+	// PURLs it can actually match when a CPE-keyed statement is returned.
+	baseToReason, baseToInputs := s.expandProducts(req.Products)
 	bases := make([]string, 0, len(baseToReason))
 	for b := range baseToReason {
 		bases = append(bases, b)
@@ -184,6 +197,21 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Error("resolve failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	if req.Format == "openvex" {
+		// Spec requires statements: minItems 1. 204 signals "query worked,
+		// no statements matched" cleanly without emitting an invalid doc.
+		if len(stmts) == 0 {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		doc := openvex.Encode(stmts, baseToInputs, baseToReason)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(doc); err != nil {
+			slog.Error("openvex encode failed", "error", err)
+		}
 		return
 	}
 
@@ -295,21 +323,39 @@ func writeStatementsWithMatch(w http.ResponseWriter, stmts []db.Statement, baseT
 	json.NewEncoder(w).Encode(out)
 }
 
-// expandProducts turns the user-supplied product list into a lookup map from
-// candidate base identifier to the match_reason that would apply if a
-// statement's base_id matches that candidate. Delegates to resolver.Resolver
-// so that alias lookups (e.g. repository_id → CPE) are applied alongside
-// CPE prefix expansion.
-func (s *Server) expandProducts(products []string) map[string]string {
+// expandProducts turns the user-supplied product list into two maps, keyed
+// by candidate base identifier:
+//
+//   - baseToReason: match_reason that would apply if a statement's base_id
+//     matches that candidate (first/stronger rule wins on collision).
+//   - baseToInputs: the set of user inputs (in base form — stripped of PURL
+//     qualifiers and version) that expanded to this candidate. Used by the
+//     OpenVEX emitter to echo the user's PURLs into products[] so Trivy
+//     can match statements keyed by a different identifier (typically CPE).
+//
+// Delegates expansion to resolver.Resolver so alias lookups and CPE prefix
+// expansion run alongside the direct base.
+func (s *Server) expandProducts(products []string) (map[string]string, map[string][]string) {
 	baseToReason := make(map[string]string, len(products))
+	baseToInputs := make(map[string][]string, len(products))
+	seenInput := make(map[string]map[string]bool)
+
 	for _, p := range products {
+		inputBase, _ := csaf.SplitPURL(p)
 		for _, cand := range s.resolver.Expand(p) {
 			if _, exists := baseToReason[cand.ID]; !exists {
 				baseToReason[cand.ID] = cand.MatchReason
 			}
+			if seenInput[cand.ID] == nil {
+				seenInput[cand.ID] = make(map[string]bool)
+			}
+			if !seenInput[cand.ID][inputBase] {
+				seenInput[cand.ID][inputBase] = true
+				baseToInputs[cand.ID] = append(baseToInputs[cand.ID], inputBase)
+			}
 		}
 	}
-	return baseToReason
+	return baseToReason, baseToInputs
 }
 
 type errorResponse struct {

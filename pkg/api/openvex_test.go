@@ -1,0 +1,90 @@
+package api
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/getreeldev/reel-vex/pkg/openvex"
+)
+
+// TestHandleResolve_OpenVEXFormat drives the full /v1/resolve handler with
+// format=openvex and confirms the response is a structurally valid OpenVEX
+// 0.2.0 document with the user's input PURL echoed into products[].
+func TestHandleResolve_OpenVEXFormat(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	body, _ := json.Marshal(resolveRequest{
+		CVEs:     []string{"CVE-2024-1234"},
+		Products: []string{"pkg:rpm/test/openssl@3.0"},
+		Format:   "openvex",
+	})
+	req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+
+	var doc openvex.Document
+	if err := json.NewDecoder(w.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if err := openvex.Validate(doc); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(doc.Statements) == 0 {
+		t.Fatal("no statements in response")
+	}
+	s := doc.Statements[0]
+	if s.Vulnerability.Name != "CVE-2024-1234" {
+		t.Errorf("vulnerability.name = %q", s.Vulnerability.Name)
+	}
+	if len(s.Products) != 1 || s.Products[0].Identifiers == nil || s.Products[0].Identifiers.PURL != "pkg:rpm/test/openssl" {
+		t.Errorf("expected echoed PURL base in products[0].identifiers.purl; got %+v", s.Products[0])
+	}
+}
+
+func TestHandleResolve_OpenVEXNoMatch_Returns204(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	body, _ := json.Marshal(resolveRequest{
+		CVEs:     []string{"CVE-0000-0000"},
+		Products: []string{"pkg:rpm/test/openssl"},
+		Format:   "openvex",
+	})
+	req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204 on empty openvex result, got %d", w.Code)
+	}
+}
+
+func TestHandleResolve_InvalidFormat(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	body, _ := json.Marshal(resolveRequest{
+		CVEs:     []string{"CVE-2024-1234"},
+		Products: []string{"pkg:rpm/test/openssl"},
+		Format:   "cycloneDX",
+	})
+	req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid format, got %d", w.Code)
+	}
+}

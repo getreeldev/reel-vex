@@ -60,7 +60,7 @@ func (s *Server) handleSBOM(w http.ResponseWriter, r *http.Request) {
 			rawIDs = append(rawIDs, id)
 		}
 	}
-	baseToReason := s.expandProducts(rawIDs)
+	baseToReason, _ := s.expandProducts(rawIDs)
 	products := make([]string, 0, len(baseToReason))
 	for b := range baseToReason {
 		products = append(products, b)

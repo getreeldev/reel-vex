@@ -10,7 +10,7 @@
   <br>
   Aggregates vendor VEX statements from CSAF 2.0 and OVAL feeds, translates across identifier schemes (PURL ↔ CPE), and serves the result via HTTP API.
   <br><br>
-  <a href="https://getreel.dev/vex">Web UI</a> · API <code>vex.getreel.dev</code>
+  <a href="https://getreel.dev/vex">Web UI</a> · API <code>vex.getreel.dev</code> · <a href="./docs/api.md">API reference</a>
 </p>
 
 ## Why
@@ -203,7 +203,7 @@ Each returned statement carries a `match_reason` field (`direct`, `via_alias`, `
 
 ## API
 
-Base URL: `https://vex.getreel.dev`
+Base URL: `https://vex.getreel.dev`. Full field-level reference — including all enum values, `match_reason` precedence, and the opt-in OpenVEX 0.2.0 format — lives in [`docs/api.md`](./docs/api.md).
 
 ### Look up a CVE
 

@@ -2,6 +2,21 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.2.2] — Unreleased — OpenVEX opt-in output + native format as first-class
+
+### Added
+
+- **OpenVEX 0.2.0 output format on `/v1/resolve`.** Pass `"format": "openvex"` in the request body to receive an [OpenVEX 0.2.0](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md) document instead of the native reel-vex statements JSON. Designed for drop-in consumption by [`vexctl merge`](https://github.com/openvex/vexctl) and Trivy's `--vex` flag. Default behaviour is unchanged — native JSON remains the default response shape.
+- **`docs/api.md` — canonical API reference.** Every endpoint, every response field, every `status` / `justification` / `source_format` / `match_reason` enum value documented in one place. Linked from the README header. The native response format is now a first-class, versioned interface rather than something you reverse-engineer from examples.
+- **Input-echoing product resolution.** `/v1/resolve` now tracks which user-supplied product (in hierarchical base form — version and qualifiers stripped) expanded to each candidate base identifier. The OpenVEX encoder uses this map to place the user's PURL into each matched statement's `products[]`, so statements keyed on an upstream CPE (Red Hat OVAL) remain Trivy-matchable when queried via a PURL with `?repository_id=X`.
+- **`pkg/openvex/`** package — stdlib-only OpenVEX 0.2.0 types + encoder. Includes deterministic content-hashed `@id` generation (`https://openvex.dev/docs/public/vex-<sha256>`), per-statement `timestamp` carried from the source `updated` field so `vexctl merge` orders correctly across vendors, vendor attribution via `supplier`, and diagnostic round-trip via `status_notes` (carries `source_format` and `match_reason`). The OpenVEX 0.2.0 JSON Schema is embedded in `pkg/openvex/testdata/` and its `required` fields are checked against encoded output in unit tests.
+
+### Notes
+
+- **Empty OpenVEX results return `204 No Content`.** The OpenVEX 0.2.0 schema requires `statements.minItems: 1`; rather than emit an invalid document when no statements match, the handler returns 204.
+- **Trivy `--vex` matches on PURL only.** The encoder therefore emits user-supplied PURLs (not vendor CPEs) in `products[]`. Queries with only a CPE still produce a spec-valid document consumable by `vexctl` and Grype, but Trivy won't suppress anything.
+- **No cryptographic signing yet.** `author` is a plain string; consumers relying on signed provenance should wait for the planned signed-attestations work.
+
 ## [0.2.1] — Unreleased
 
 ### Added
