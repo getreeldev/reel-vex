@@ -24,6 +24,24 @@ func TestSplitPURL(t *testing.T) {
 		{"pkg:maven/org.apache/log4j@2.16.0#some/path", "pkg:maven/org.apache/log4j", "2.16.0"},
 		// CPE should pass through unchanged
 		{"cpe:/a:redhat:enterprise_linux:9", "cpe:/a:redhat:enterprise_linux:9", ""},
+		// distro qualifier is identity and must be preserved on the base.
+		{
+			"pkg:deb/ubuntu/openssl@3.0.13-0ubuntu3.1?arch=amd64&distro=ubuntu-24.04",
+			"pkg:deb/ubuntu/openssl?distro=ubuntu-24.04",
+			"3.0.13-0ubuntu3.1",
+		},
+		// distro-only qualifier, no version.
+		{
+			"pkg:deb/ubuntu/openssl?distro=ubuntu-22.04",
+			"pkg:deb/ubuntu/openssl?distro=ubuntu-22.04",
+			"",
+		},
+		// Qualifier present but no distro — base is bare.
+		{
+			"pkg:rpm/redhat/log4j@1.2?arch=noarch&repository_id=rhel-8",
+			"pkg:rpm/redhat/log4j",
+			"1.2",
+		},
 		// Empty
 		{"", "", ""},
 	}

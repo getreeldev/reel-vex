@@ -2,6 +2,13 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.2.5] — Unreleased — preserve `distro` qualifier on PURL base IDs
+
+### Fixed
+
+- **`/v1/resolve` now matches Ubuntu (and any deb) statements.** Both `csaf.SplitPURL` and the resolver's private `splitBase` were stripping *all* qualifiers from input PURLs, so a query for `pkg:deb/ubuntu/openssl@...?distro=ubuntu-24.04` was normalised to `pkg:deb/ubuntu/openssl` and never matched the stored Ubuntu `base_id` which carries the `distro` qualifier. Both functions now preserve `distro`, which is identity for deb packages — noble `openssl` and jammy `openssl` are different packages with different fixed versions. `arch`, `epoch`, `repository_id` remain scanner-side filters and are still stripped.
+- Symptom was visible on the hosted deployment after v0.2.4 landed Ubuntu ingest: `/v1/cve/<id>` returned Ubuntu statements correctly, but `/v1/resolve` with a versioned PURL returned empty. No effect on RH or SUSE queries (no `distro` qualifier in use).
+
 ## [0.2.4] — Unreleased — switch Ubuntu adapters to main USN feeds
 
 ### Changed

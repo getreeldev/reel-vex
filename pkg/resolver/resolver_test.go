@@ -39,6 +39,20 @@ func TestExpand_PURLPassthrough(t *testing.T) {
 	}
 }
 
+func TestExpand_PreservesDistroQualifier(t *testing.T) {
+	r := New(resolverTestDB(t))
+	// A deb PURL carries the distro qualifier as identity. splitBase must
+	// keep it on the base; otherwise a query for noble openssl falls
+	// through to jammy openssl statements and vice versa.
+	cands := r.Expand("pkg:deb/ubuntu/openssl@3.0.13-0ubuntu3.1?arch=amd64&distro=ubuntu-24.04")
+	if len(cands) != 1 {
+		t.Fatalf("got %d candidates, want 1: %+v", len(cands), cands)
+	}
+	if cands[0].ID != "pkg:deb/ubuntu/openssl?distro=ubuntu-24.04" {
+		t.Errorf("base: got %q, want pkg:deb/ubuntu/openssl?distro=ubuntu-24.04", cands[0].ID)
+	}
+}
+
 func TestExpand_PURLWithRepositoryID(t *testing.T) {
 	r := New(resolverTestDB(t))
 	in := "pkg:rpm/redhat/openssl@3.0?arch=x86_64&repository_id=rhel-8-for-x86_64-appstream-rpms"
