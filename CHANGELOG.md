@@ -2,6 +2,20 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.2.3] — Unreleased — Ubuntu OVAL adapter
+
+### Added
+
+- **Ubuntu OVAL adapter** (`pkg/source/ubuntuoval`). Ingests Canonical's USN OVAL feeds, delegating parse/translate to [`oval-to-vex` v0.2.0](https://github.com/getreeldev/oval-to-vex)'s new `FromUbuntuOVAL`. Adds non-distroless Ubuntu coverage — the highest-volume container base — alongside existing Red Hat and SUSE sources.
+- **Default config wires OCI feeds for focal/jammy/noble.** Three `ubuntu-oval` adapter entries in `config.yaml` pointing at Canonical's OCI-flavoured feeds (`oci.com.ubuntu.<release>.usn.oval.xml.bz2`) — kernel/HWE noise stripped, focused on container-scanning use cases. Main-feed adapters can be added by pointing a new entry at `com.ubuntu.<release>.usn.oval.xml.bz2`.
+
+### Notes
+
+- **Identifier shape.** Ubuntu statements emit PURLs in the form `pkg:deb/ubuntu/<name>?distro=ubuntu-<version>`. The distro qualifier is part of `BaseID` (not just `ProductID`) — noble `openssl` and jammy `openssl` are distinct products, since the fixed versions differ per release.
+- **Patches only, for now.** Ubuntu's USN OVAL feed publishes `class="patch"` statements only. Unfixed/"affected" statements live in Canonical's separate CVE OVAL feed, which is a future adapter.
+- **Supported release codenames** are `focal`, `jammy`, `noble`. Definitions for unsupported codenames are skipped by the translator; add new entries to the codename-version map in `oval-to-vex` when Canonical ships a new LTS.
+- **USNs with no CVE references are skipped.** Rare in practice (USNs almost always have ≥1 CVE); emitting USN-keyed statements as a fallback is future work.
+
 ## [0.2.2] — Unreleased — OpenVEX opt-in output + native format as first-class
 
 ### Added
