@@ -37,6 +37,22 @@ adapters:
     id: ubuntu-oval-focal
     name: Ubuntu 20.04 LTS
     url: https://security-metadata.canonical.com/oval/com.ubuntu.focal.usn.oval.xml.bz2
+  # Debian Security Tracker OVAL: per-release feeds covering both DSAs
+  # (class=patch) and per-CVE records (class=vulnerability) with fixed
+  # version bounds. One adapter per supported release; add new entries
+  # here as Debian ships new stable releases.
+  - type: debian-oval
+    id: debian-oval-bookworm
+    name: Debian 12 (bookworm)
+    url: https://www.debian.org/security/oval/oval-definitions-bookworm.xml.bz2
+  - type: debian-oval
+    id: debian-oval-bullseye
+    name: Debian 11 (bullseye)
+    url: https://www.debian.org/security/oval/oval-definitions-bullseye.xml.bz2
+  - type: debian-oval
+    id: debian-oval-trixie
+    name: Debian 13 (trixie)
+    url: https://www.debian.org/security/oval/oval-definitions-trixie.xml.bz2
 
 aliases:
   - type: redhat-repository-to-cpe

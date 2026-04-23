@@ -12,6 +12,8 @@ github.com/getreeldev/oval-to-vex v0.1.0 h1:NLhogrBAzku97xmoSAmsezXd7Tm2Yjj6kDRA
 github.com/getreeldev/oval-to-vex v0.1.0/go.mod h1:p4eTnzjEnEokb2Mk9tssUnTt2JRzJIJlwp9Nll5TTy0=
 github.com/getreeldev/oval-to-vex v0.2.0 h1:/LR51akB724gvxlsb2bws/HcMR0SvARC15HSXM6ky/E=
 github.com/getreeldev/oval-to-vex v0.2.0/go.mod h1:p4eTnzjEnEokb2Mk9tssUnTt2JRzJIJlwp9Nll5TTy0=
+github.com/getreeldev/oval-to-vex v0.2.1 h1:FzEe2Oaufk9qBT6HHP3QiALbXKCDMrvmc2k1ulXfmyc=
+github.com/getreeldev/oval-to-vex v0.2.1/go.mod h1:p4eTnzjEnEokb2Mk9tssUnTt2JRzJIJlwp9Nll5TTy0=
 github.com/gocsaf/csaf/v3 v3.5.1 h1:jTA1fLrK0/JIczPs7itTD53qANoO4tn2VaGvUeitePc=
 github.com/gocsaf/csaf/v3 v3.5.1/go.mod h1:pga89lE+iWJm7smTdzYcXuetYUbgY8caXfaIP4BJG98=
 github.com/google/go-cmp v0.5.9 h1:O2Tfq5qg4qc4AmwVlvv0oLiVAGB7enBSJ2x2DqQFi38=

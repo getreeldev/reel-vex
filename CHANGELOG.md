@@ -2,6 +2,19 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.2.6] — Unreleased — Debian OVAL adapter
+
+### Added
+
+- **Debian OVAL adapter** (`pkg/source/debianoval`). Ingests Debian Security Tracker OVAL feeds, delegating parse/translate to [`oval-to-vex` v0.2.1](https://github.com/getreeldev/oval-to-vex)'s new `FromDebianOVAL`. Adds Debian coverage alongside Red Hat, SUSE, and Ubuntu — completing the major deb/rpm vendor set for typical container bases and bare-metal Linux fleets.
+- **Default config wires three releases**: `bullseye` (11), `bookworm` (12), `trixie` (13). Buster (10) is end-of-life and Debian no longer publishes its OVAL feed; add it back if needed against an archived feed mirror.
+
+### Notes
+
+- **Identifier shape**: `pkg:deb/debian/<name>?distro=debian-<N>`. The `distro` qualifier is part of `BaseID` (same approach as Ubuntu) so bookworm `openssl` and bullseye `openssl` are distinct products. The v0.2.5 resolver fix (preserve `distro` in `splitBase`) means scanner queries with `?distro=debian-12` match correctly out of the box.
+- **Status mapping**: Debian's `class="vulnerability"` records carry the fix version as a `dpkginfo_state evr "less than"` bound; we emit those as `status="fixed"` with the bound as the fix version. `class="patch"` records (DSAs) emit the same way. Vulnerability records with no resolvable `dpkginfo_test` reference (unpatched CVEs Debian's tracker knows about but hasn't shipped a fix for) are skipped — emitting `affected` statements without a fix version isn't actionable for VEX consumers.
+- **Volume**: Bookworm alone has ~46k statements (Ubuntu noble is ~24k for comparison); per-release volume is high because Debian's tracker is comprehensive — every CVE that ever affected the release, going back decades.
+
 ## [0.2.5] — Unreleased — preserve `distro` qualifier on PURL base IDs
 
 ### Fixed

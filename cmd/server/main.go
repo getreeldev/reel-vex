@@ -18,6 +18,7 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/ingest"
 	"github.com/getreeldev/reel-vex/pkg/source"
 	"github.com/getreeldev/reel-vex/pkg/source/csafadapter"
+	"github.com/getreeldev/reel-vex/pkg/source/debianoval"
 	"github.com/getreeldev/reel-vex/pkg/source/redhatoval"
 	"github.com/getreeldev/reel-vex/pkg/source/ubuntuoval"
 )
@@ -29,6 +30,7 @@ func registerAdapters() {
 	source.Register(csafadapter.Type, csafadapter.New)
 	source.Register(redhatoval.Type, redhatoval.New)
 	source.Register(ubuntuoval.Type, ubuntuoval.New)
+	source.Register(debianoval.Type, debianoval.New)
 	aliases.Register(aliases.RedHatRepoToCPEType, aliases.NewRedHatRepoToCPE)
 }
 
