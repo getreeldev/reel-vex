@@ -13,22 +13,30 @@ adapters:
   - type: redhat-oval
     id: redhat-oval-rhel-9.6-eus
     url: https://security.access.redhat.com/data/oval/v2/RHEL9/rhel-9.6-eus.oval.xml.bz2
-  # Ubuntu OVAL (OCI variants): per-release USN feeds with kernel/HWE
-  # noise stripped, focused on container-scanning needs. One adapter per
-  # supported LTS release; add new entries here as Canonical ships new
-  # LTS releases (next: 26.04).
+  # Ubuntu OVAL: per-release USN feeds (the main, non-OCI variants). One
+  # adapter per supported LTS release; add new entries here as Canonical
+  # ships new LTS releases (next: 26.04).
+  #
+  # We deliberately do not use Canonical's OCI-flavoured feeds
+  # (oci.com.ubuntu.<release>...). Those scope to container-relevant
+  # packages by stripping kernel/HWE/driver content — a scoping decision
+  # that belongs to the scanner, not to us. vex.getreel.dev is a general
+  # VEX hub; a consumer scanning a bare-metal Ubuntu host or a VM
+  # filesystem should get the same coverage as one scanning a container.
+  # Using the main feeds keeps Ubuntu coverage consistent with Red Hat
+  # and SUSE (both of which we ingest in full).
   - type: ubuntu-oval
-    id: ubuntu-oval-noble-oci
-    name: Ubuntu 24.04 LTS (OCI)
-    url: https://security-metadata.canonical.com/oval/oci.com.ubuntu.noble.usn.oval.xml.bz2
+    id: ubuntu-oval-noble
+    name: Ubuntu 24.04 LTS
+    url: https://security-metadata.canonical.com/oval/com.ubuntu.noble.usn.oval.xml.bz2
   - type: ubuntu-oval
-    id: ubuntu-oval-jammy-oci
-    name: Ubuntu 22.04 LTS (OCI)
-    url: https://security-metadata.canonical.com/oval/oci.com.ubuntu.jammy.usn.oval.xml.bz2
+    id: ubuntu-oval-jammy
+    name: Ubuntu 22.04 LTS
+    url: https://security-metadata.canonical.com/oval/com.ubuntu.jammy.usn.oval.xml.bz2
   - type: ubuntu-oval
-    id: ubuntu-oval-focal-oci
-    name: Ubuntu 20.04 LTS (OCI)
-    url: https://security-metadata.canonical.com/oval/oci.com.ubuntu.focal.usn.oval.xml.bz2
+    id: ubuntu-oval-focal
+    name: Ubuntu 20.04 LTS
+    url: https://security-metadata.canonical.com/oval/com.ubuntu.focal.usn.oval.xml.bz2
 
 aliases:
   - type: redhat-repository-to-cpe

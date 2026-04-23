@@ -5,9 +5,11 @@
 // source.Adapter contract.
 //
 // One adapter instance per Ubuntu release feed file (focal, jammy,
-// noble, ...). The default deployment configures the OCI-flavoured feeds
-// (kernel/HWE noise stripped) since reel-vex's primary use case is
-// container scanning.
+// noble, ...). Configure against Canonical's main USN feeds
+// (com.ubuntu.<release>.usn.oval.xml.bz2), not the OCI variants: the
+// OCI feeds use a different OVAL test model (textfilecontent54_*)
+// that this adapter does not parse, and scoping the data to
+// container-relevant packages belongs to the scanner, not to us.
 package ubuntuoval
 
 import (

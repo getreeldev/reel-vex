@@ -2,6 +2,17 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.2.4] — Unreleased — switch Ubuntu adapters to main USN feeds
+
+### Changed
+
+- **Ubuntu OVAL adapters now point at the main USN feeds** (`com.ubuntu.<release>.usn.oval.xml.bz2`) instead of the OCI variants (`oci.com.ubuntu.<release>...`). The OCI feeds use a different OVAL test model (`textfilecontent54_*` rather than `dpkginfo_*`) that the adapter does not parse — v0.2.3 therefore ingested zero statements from them in practice. The fix is not to teach the adapter the OCI shape; it is to use the feed that carries everything Canonical publishes.
+- **Adapter IDs dropped the `-oci` suffix** to reflect the swap: `ubuntu-oval-noble`, `ubuntu-oval-jammy`, `ubuntu-oval-focal`. On the hosted deployment the existing `-oci`-suffixed adapter_state rows are left in place (with zero statements) and new rows are created under the new IDs on first sync.
+
+### Rationale
+
+vex.getreel.dev is a general VEX hub, not a container scanner. Scoping vulnerability data to "container-relevant" packages is a decision the scanner should make, based on what it is scanning — a container image, a VM filesystem, a bare-metal host, an initramfs. Our Red Hat and SUSE adapters already ingest the full vendor feeds; scoping Ubuntu to a subset broke symmetry for no principled reason. A consumer scanning a bare-metal Ubuntu host would otherwise receive less coverage from us than they would for the equivalent RHEL host.
+
 ## [0.2.3] — Unreleased — Ubuntu OVAL adapter
 
 ### Added
