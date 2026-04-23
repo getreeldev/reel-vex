@@ -811,6 +811,113 @@ func TestHandleResolve_SECDATA1220(t *testing.T) {
 	}
 }
 
+// TestHandleResolve_DebDistroIdentity is the end-to-end regression for a
+// v0.2.4 → v0.2.5 bug. Ubuntu (and any future deb) adapter emits statements
+// whose BaseID carries the `distro` qualifier (e.g.
+// `pkg:deb/ubuntu/openssl?distro=ubuntu-24.04`) because the same binary name
+// on different releases is a different package with different fixed
+// versions — distro is identity, not a filter. A scanner's query PURL
+// carries the same `distro=` qualifier (plus version + arch). Before the
+// fix, splitBase stripped every qualifier uniformly, so the scanner's PURL
+// normalised to `pkg:deb/ubuntu/openssl` and failed to match the stored
+// distro-qualified base_id. After the fix, distro survives normalisation
+// on both the ingest (SplitPURL) and query (splitBase) sides.
+//
+// The test seeds statements shaped exactly the way pkg/source/ubuntuoval
+// writes them and queries with a realistic versioned deb PURL. It covers:
+// (1) the noble match round-trips; (2) a jammy statement for the same
+// package is NOT returned (proves distro-aware indexing, not just match
+// preservation); (3) the MatchReason is `direct`.
+func TestHandleResolve_DebDistroIdentity(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.UpsertVendor("ubuntu", "Ubuntu"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Shape of statements the ubuntuoval adapter emits: BaseID == ProductID,
+	// both carry ?distro=. Seed one for noble, one for jammy; the scanner
+	// query targets noble specifically.
+	stmts := []db.Statement{
+		{
+			Vendor:       "ubuntu",
+			CVE:          "CVE-2024-26130",
+			ProductID:    "pkg:deb/ubuntu/python3-cryptography?distro=ubuntu-24.04",
+			BaseID:       "pkg:deb/ubuntu/python3-cryptography?distro=ubuntu-24.04",
+			Version:      "0:41.0.7-4ubuntu0.1",
+			IDType:       "purl",
+			Status:       "fixed",
+			Updated:      "2026-04-23T00:00:00Z",
+			SourceFormat: "oval",
+		},
+		{
+			Vendor:       "ubuntu",
+			CVE:          "CVE-2024-26130",
+			ProductID:    "pkg:deb/ubuntu/python3-cryptography?distro=ubuntu-22.04",
+			BaseID:       "pkg:deb/ubuntu/python3-cryptography?distro=ubuntu-22.04",
+			Version:      "0:38.0.4-3ubuntu2.2",
+			IDType:       "purl",
+			Status:       "fixed",
+			Updated:      "2026-04-23T00:00:00Z",
+			SourceFormat: "oval",
+		},
+	}
+	if err := database.BulkInsert(stmts); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := NewServer(database, nil)
+
+	// Realistic scanner PURL: versioned, carries arch + distro qualifiers.
+	body, _ := json.Marshal(resolveRequest{
+		CVEs:     []string{"CVE-2024-26130"},
+		Products: []string{"pkg:deb/ubuntu/python3-cryptography@41.0.7-3?arch=amd64&distro=ubuntu-24.04"},
+	})
+	req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp statementsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Statements) == 0 {
+		t.Fatal("expected at least one statement for a distro-qualified deb PURL; got zero — distro-identity regression (see CHANGELOG 0.2.5)")
+	}
+
+	// Must return exactly the noble row; jammy's same-package statement
+	// must not leak in.
+	var gotNoble, gotJammy int
+	for _, s := range resp.Statements {
+		if s.Vendor != "ubuntu" {
+			t.Errorf("expected vendor=ubuntu, got %q", s.Vendor)
+		}
+		if s.MatchReason != "direct" {
+			t.Errorf("expected match_reason=direct for exact-base PURL query, got %q", s.MatchReason)
+		}
+		switch s.ProductID {
+		case "pkg:deb/ubuntu/python3-cryptography?distro=ubuntu-24.04":
+			gotNoble++
+		case "pkg:deb/ubuntu/python3-cryptography?distro=ubuntu-22.04":
+			gotJammy++
+		}
+	}
+	if gotNoble != 1 {
+		t.Errorf("expected 1 noble statement, got %d", gotNoble)
+	}
+	if gotJammy != 0 {
+		t.Errorf("expected 0 jammy statements (different distro identity), got %d — distro qualifier not acting as identity", gotJammy)
+	}
+}
+
 // TestHandleResolve_AliasExpansion drives the Phase 3 translation layer
 // end-to-end. The scanner query carries a PURL with
 // `?repository_id=rhel-8-for-x86_64-appstream-rpms` (no direct CPE or bare
