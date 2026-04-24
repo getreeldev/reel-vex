@@ -92,34 +92,52 @@ func TestAdapter_Lifecycle(t *testing.T) {
 		t.Fatalf("Sync: %v", err)
 	}
 
-	// Fixture: 4 defs → 2 statements (CVE-2021-44228 + CVE-2022-0778).
-	if len(stmts) != 2 {
-		t.Fatalf("expected 2 statements, got %d", len(stmts))
+	// Fixture: 4 defs → 2 fixed statements (CVE-2021-44228, CVE-2022-0778)
+	// + 1 affected statement (CVE-2026-0001, unpatched).
+	if len(stmts) != 3 {
+		t.Fatalf("expected 3 statements, got %d", len(stmts))
 	}
 
-	wantPkgs := map[string]string{
+	wantFixed := map[string]string{
 		"pkg:deb/debian/apache-log4j2?distro=debian-12": "0:2.15.0-1",
 		"pkg:deb/debian/openssl?distro=debian-12":       "0:3.0.2-2",
 	}
+	var sawAffected bool
 	for _, s := range stmts {
 		if s.IDType != "purl" {
 			t.Errorf("IDType: got %q, want purl", s.IDType)
 		}
-		if s.Status != "fixed" {
-			t.Errorf("Status: got %q, want fixed", s.Status)
-		}
 		if !s.Updated.Equal(lastModified) {
 			t.Errorf("Updated: got %v, want %v", s.Updated, lastModified)
 		}
-		if want, ok := wantPkgs[s.ProductID]; ok {
+		switch s.Status {
+		case "fixed":
+			want, ok := wantFixed[s.ProductID]
+			if !ok {
+				t.Errorf("unexpected fixed statement for %q", s.ProductID)
+				continue
+			}
 			if s.Version != want {
 				t.Errorf("%q: got version %q, want %q", s.ProductID, s.Version, want)
 			}
-			delete(wantPkgs, s.ProductID)
+			delete(wantFixed, s.ProductID)
+		case "affected":
+			if s.ProductID != "pkg:deb/debian/curl?distro=debian-12" {
+				t.Errorf("affected: got %q", s.ProductID)
+			}
+			if s.Version != "" {
+				t.Errorf("affected statement must have empty version, got %q", s.Version)
+			}
+			sawAffected = true
+		default:
+			t.Errorf("unexpected status %q", s.Status)
 		}
 	}
-	for missing := range wantPkgs {
-		t.Errorf("missing statement for %q", missing)
+	for missing := range wantFixed {
+		t.Errorf("missing fixed statement for %q", missing)
+	}
+	if !sawAffected {
+		t.Errorf("missing affected statement for unpatched-CVE fixture def")
 	}
 }
 

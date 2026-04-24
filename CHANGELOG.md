@@ -6,13 +6,16 @@ All notable changes to reel-vex are documented here. Format loosely follows [Kee
 
 ### Added
 
-- **Debian OVAL adapter** (`pkg/source/debianoval`). Ingests Debian Security Tracker OVAL feeds, delegating parse/translate to [`oval-to-vex` v0.2.1](https://github.com/getreeldev/oval-to-vex)'s new `FromDebianOVAL`. Adds Debian coverage alongside Red Hat, SUSE, and Ubuntu — completing the major deb/rpm vendor set for typical container bases and bare-metal Linux fleets.
+- **Debian OVAL adapter** (`pkg/source/debianoval`). Ingests Debian Security Tracker OVAL feeds, delegating parse/translate to [`oval-to-vex` v0.2.2](https://github.com/getreeldev/oval-to-vex)'s new `FromDebianOVAL`. Adds Debian coverage alongside Red Hat, SUSE, and Ubuntu — completing the major deb/rpm vendor set for typical container bases and bare-metal Linux fleets.
 - **Default config wires three releases**: `bullseye` (11), `bookworm` (12), `trixie` (13). Buster (10) is end-of-life and Debian no longer publishes its OVAL feed; add it back if needed against an archived feed mirror.
 
 ### Notes
 
 - **Identifier shape**: `pkg:deb/debian/<name>?distro=debian-<N>`. The `distro` qualifier is part of `BaseID` (same approach as Ubuntu) so bookworm `openssl` and bullseye `openssl` are distinct products. The v0.2.5 resolver fix (preserve `distro` in `splitBase`) means scanner queries with `?distro=debian-12` match correctly out of the box.
-- **Status mapping**: Debian's `class="vulnerability"` records carry the fix version as a `dpkginfo_state evr "less than"` bound; we emit those as `status="fixed"` with the bound as the fix version. `class="patch"` records (DSAs) emit the same way. Vulnerability records with no resolvable `dpkginfo_test` reference (unpatched CVEs Debian's tracker knows about but hasn't shipped a fix for) are skipped — emitting `affected` statements without a fix version isn't actionable for VEX consumers.
+- **Status mapping** (mirror model — report what the vendor publishes, let consumers decide):
+  - `class="patch"` or `class="vulnerability"` with a dpkginfo evr bound → `status="fixed"`, `version=<evr>`
+  - `class="vulnerability"` with no resolvable dpkginfo test → `status="affected"` (empty version) keyed on the `<product>` name from metadata — Debian's tracker knows the CVE applies but no patch has shipped yet
+  - Consistent with our Red Hat OVAL posture. Trivy 0.70.0 was empirically verified to accept `affected`-containing VEX documents without errors. Debian's current feed happens not to include unpatched-vuln records in practice (every `class="vulnerability"` definition ships with a fix bound today), so the affected branch is mostly latent coverage for future records.
 - **Volume**: Bookworm alone has ~46k statements (Ubuntu noble is ~24k for comparison); per-release volume is high because Debian's tracker is comprehensive — every CVE that ever affected the release, going back decades.
 
 ## [0.2.5] — Unreleased — preserve `distro` qualifier on PURL base IDs

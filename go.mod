@@ -27,4 +27,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-require github.com/getreeldev/oval-to-vex v0.2.1
+require github.com/getreeldev/oval-to-vex v0.2.2
