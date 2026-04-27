@@ -67,39 +67,7 @@ reel-vex pulls from both formats, normalizes the statements into one database, a
 
 Single Go binary. Single SQLite file. No external dependencies at runtime.
 
-## Ingest pipeline
-
-The pipeline is driven by `config.yaml`: a list of adapters (VEX feeds) and alias fetchers (identifier mapping files). Each adapter implements the same `source.Adapter` interface — `Discover`, then `Sync` — so the orchestrator is format-agnostic.
-
-### CSAF adapter
-
-Each CSAF provider publishes a `provider-metadata.json` at a well-known URL. The adapter fetches it, finds the VEX distribution URL, reads `changes.csv`, and enumerates documents since the last-synced watermark.
-
-Parsing uses [`gocsaf/csaf`](https://github.com/gocsaf/csaf) (the strict path) with a permissive map-based fallback for vendor feeds that violate CSAF 2.0 schema rules (SUSE's CPE 2.3 deviations, for example). Extracted per document:
-
-- **Product IDs** from `product_tree.branches` (recursive walk) and `product_tree.relationships` (composite products). Both PURL and CPE identifiers, inherited from both sides of each relationship so platform CPEs end up on composite products.
-- **CVE statuses** from `vulnerabilities[].product_status`: `not_affected`, `fixed`, `affected`, `under_investigation`.
-- **Justifications** for `not_affected`: `component_not_present`, `vulnerable_code_not_present`, `vulnerable_code_not_in_execute_path`, `inline_mitigations_already_exist`.
-
-### OVAL adapters
-
-Three OVAL adapters share the same fetch/parse flow: Red Hat, Ubuntu, and Debian. Each adapter instance fetches a single bz2-compressed OVAL XML file (one config entry per file/release). A `HEAD` check against `Last-Modified` short-circuits the GET when upstream hasn't regenerated the file. On a pull, the response is streamed through `compress/bzip2` and parsed via [`getreeldev/oval-to-vex`](https://github.com/getreeldev/oval-to-vex) — a dedicated OVAL-to-VEX translator library maintained alongside reel-vex, with per-vendor parsers (`FromRedHatOVAL`, `FromUbuntuOVAL`, `FromDebianOVAL`).
-
-The Red Hat OVAL adapter exists to fill the coverage gap that Red Hat's CSAF feed intentionally leaves: EUS / AUS / E4S / SAP / HA / NFV stream-suffix CPEs (see [SECDATA-1181](https://redhat.atlassian.net/browse/SECDATA-1181)). OVAL has them; CSAF doesn't. Ubuntu and Debian don't publish CSAF, so OVAL is the primary feed for those vendors. Ubuntu deb-shaped statements emit `pkg:deb/ubuntu/<name>?distro=ubuntu-<version>` PURLs; Debian emits `pkg:deb/debian/<name>?distro=debian-<N>`. The `distro` qualifier is part of identity — focal `openssl` and noble `openssl` are distinct products with different fix versions.
-
-### Alias fetchers
-
-Independent from VEX adapters. Each fetcher pulls a vendor-published mapping file and writes rows into `product_aliases`. The first implementation is Red Hat's `repository-to-cpe.json` — lets a scanner querying with a PURL carrying `?repository_id=rhel-8-for-x86_64-appstream-rpms` match VEX statements keyed on `cpe:/a:redhat:enterprise_linux:8::appstream`.
-
-### Sync strategy
-
-- **First run**: adapters pull their entire feed. CSAF for Red Hat is ~313K per-CVE documents and takes hours; SUSE is ~54K. OVAL is one bz2 file per adapter, seconds to minutes.
-- **Incremental**: every adapter stores its own watermark in `adapter_state.last_synced`. CSAF adapters skip documents older than their watermark; OVAL adapters HEAD the feed and skip the GET when unchanged.
-- **Batch writes**: statements accumulate in memory and flush to SQLite in batches of 5,000.
-
-### Scheduling
-
-The `serve` command runs ingest automatically on a configurable interval (default 24h). First ingest starts on boot. On-demand ingest is available via `POST /v1/ingest` (requires admin token).
+For deeper reading: the ingest pipeline and project layout live in [`docs/architecture.md`](./docs/architecture.md), the database schema in [`docs/data-model.md`](./docs/data-model.md), and the field-level API reference (every endpoint, every enum value, OpenVEX 0.2.0 output) in [`docs/api.md`](./docs/api.md).
 
 ## Data sources
 
@@ -117,7 +85,7 @@ Alias sources:
 |--------|------|---------|
 | Red Hat | [repository-to-cpe.json](https://security.access.redhat.com/data/metrics/repository-to-cpe.json) | Maps RPM `repository_id` qualifiers → platform CPEs |
 
-### Adding adapters
+## Adding adapters
 
 `config.yaml` has two top-level lists, `adapters:` and `aliases:`:
 
@@ -160,49 +128,6 @@ aliases:
 
 Each adapter `id` must be unique across the config (used as the watermark key in `adapter_state`); the `vendor` written onto statements comes from `Adapter.Vendor()`. For CSAF adapters, `Vendor()` returns the same value as `id`. For OVAL adapters, `Vendor()` returns the canonical vendor name (`redhat`, `ubuntu`, `debian`) regardless of which OVAL file the adapter targets, so all statements from one vendor live under one vendor string and are distinguished by `source_format` and (for deb-shaped products) the `?distro=` qualifier on `product_id`.
 
-## Data model
-
-```sql
-CREATE TABLE vendors (
-    id   TEXT PRIMARY KEY,  -- e.g. "redhat", "suse"
-    name TEXT NOT NULL      -- e.g. "Red Hat"
-);
-
-CREATE TABLE adapter_state (
-    adapter_id  TEXT PRIMARY KEY,  -- unique per adapter instance
-    feed_url    TEXT,              -- canonical upstream URL
-    last_synced TEXT,              -- RFC3339; newest upstream data absorbed
-    updated     TEXT NOT NULL      -- RFC3339; last time we wrote this row
-);
-
-CREATE TABLE statements (
-    vendor        TEXT NOT NULL,   -- from Adapter.Vendor()
-    cve           TEXT NOT NULL,
-    product_id    TEXT NOT NULL,   -- full PURL or CPE
-    base_id       TEXT NOT NULL,   -- normalized base for indexing
-    version       TEXT,
-    id_type       TEXT NOT NULL,   -- "purl" or "cpe"
-    status        TEXT NOT NULL,   -- not_affected, fixed, affected, under_investigation
-    justification TEXT,            -- for not_affected only
-    updated       TEXT NOT NULL,   -- RFC3339 from the upstream advisory
-    source_format TEXT NOT NULL DEFAULT 'csaf',  -- "csaf" | "oval"
-    PRIMARY KEY (vendor, cve, product_id, source_format)
-);
-
-CREATE TABLE product_aliases (
-    vendor     TEXT NOT NULL,
-    source_ns  TEXT NOT NULL,      -- e.g. "repository_id"
-    source_id  TEXT NOT NULL,      -- e.g. "rhel-8-for-x86_64-appstream-rpms"
-    target_ns  TEXT NOT NULL,      -- e.g. "cpe"
-    target_id  TEXT NOT NULL,      -- e.g. "cpe:/a:redhat:enterprise_linux:8::appstream"
-    confidence REAL NOT NULL DEFAULT 1.0,
-    updated    TEXT NOT NULL,
-    PRIMARY KEY (vendor, source_ns, source_id, target_ns, target_id)
-);
-```
-
-A `schema_version` table tracks migrations. The DB is forward-migrated on every binary boot; rollback is manual (restore from a pre-upgrade backup).
-
 ## Resolver
 
 At query time, user-supplied product identifiers get expanded into candidate base IDs that are matched against `statements.base_id`. Three expansion rules apply:
@@ -215,46 +140,18 @@ Each returned statement carries a `match_reason` field (`direct`, `via_alias`, `
 
 ## API
 
-Base URL: `https://vex.getreel.dev`. Full field-level reference — including all enum values, `match_reason` precedence, and the opt-in OpenVEX 0.2.0 format — lives in [`docs/api.md`](./docs/api.md).
+Base URL: `https://vex.getreel.dev`. Full field-level reference — every endpoint, every enum value, the opt-in OpenVEX 0.2.0 format — lives in [`docs/api.md`](./docs/api.md).
 
-### Look up a CVE
-
-```bash
-curl https://vex.getreel.dev/v1/cve/CVE-2021-44228
-```
-
-```json
-{
-  "statements": [
-    {
-      "vendor": "redhat",
-      "cve": "CVE-2021-44228",
-      "product_id": "pkg:rpm/redhat/log4j",
-      "id_type": "purl",
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_present",
-      "updated": "2026-04-01T16:43:13Z",
-      "source_format": "csaf"
-    }
-  ]
-}
-```
-
-### Batch resolve
-
-Match CVEs against product IDs. The resolver expands each input before matching. Optional `source_formats` filters by upstream format.
+Quick batch resolve:
 
 ```bash
 curl -X POST https://vex.getreel.dev/v1/resolve \
   -H "Content-Type: application/json" \
   -d '{
     "cves": ["CVE-2021-44228"],
-    "products": ["pkg:rpm/redhat/log4j@2.14.0?repository_id=rhel-8-for-x86_64-appstream-rpms"],
-    "source_formats": ["csaf"]
+    "products": ["pkg:rpm/redhat/log4j@2.14.0?repository_id=rhel-8-for-x86_64-appstream-rpms"]
   }'
 ```
-
-Each returned statement includes `match_reason` so callers can tell a direct hit from an alias-driven one:
 
 ```json
 {
@@ -271,90 +168,7 @@ Each returned statement includes `match_reason` so callers can tell a direct hit
 }
 ```
 
-### Upload SBOM
-
-Upload a CycloneDX SBOM. The service extracts components + vulnerabilities, resolves through the translation layer, and returns the SBOM annotated with VEX analysis.
-
-```bash
-curl -X POST https://vex.getreel.dev/v1/sbom \
-  -H "Content-Type: application/json" \
-  -d @sbom.json
-```
-
-Each vulnerability with a matching vendor statement gets an `analysis` field:
-
-```json
-{
-  "id": "CVE-2021-44228",
-  "analysis": {
-    "state": "not_affected",
-    "justification": "code_not_present",
-    "detail": "redhat: not_affected (vulnerable_code_not_present)"
-  }
-}
-```
-
-When multiple vendors have statements for the same CVE, the most actionable status wins (`not_affected` > `fixed` > `under_investigation` > `affected`), with all vendors listed in `detail`.
-
-### Coverage stats
-
-```bash
-curl https://vex.getreel.dev/v1/stats
-```
-
-```json
-{
-  "vendors": 2,
-  "cves": 31247,
-  "statements": 2183441,
-  "aliases": 12298,
-  "last_updated": "2026-04-17T06:00:00Z"
-}
-```
-
-`aliases` counts rows in `product_aliases`; the website displays this as "Product mappings".
-
-### Ingest status
-
-```bash
-curl https://vex.getreel.dev/v1/ingest
-curl -X POST https://vex.getreel.dev/v1/ingest \
-  -H "Authorization: Bearer your-admin-token"
-```
-
-## Project structure
-
-```
-reel-vex/
-  cmd/server/main.go           -- entry point; registers adapters + fetchers
-  pkg/
-    csaf/                      -- CSAF 2.0 parsing primitives (strict + permissive)
-      provider.go, feed.go, extract.go, extract_permissive.go, purl.go
-    source/                    -- source-adapter framework
-      adapter.go               -- Adapter interface
-      config.go, registry.go   -- AdapterConfig + factory registry
-      csafadapter/             -- CSAF adapter (wraps pkg/csaf)
-      redhatoval/              -- Red Hat OVAL adapter (wraps oval-to-vex)
-      ubuntuoval/              -- Ubuntu OVAL adapter (wraps oval-to-vex)
-      debianoval/              -- Debian OVAL adapter (wraps oval-to-vex)
-    aliases/                   -- alias-fetcher framework
-      aliases.go               -- Fetcher interface + registry
-      redhat.go                -- Red Hat repository-to-cpe.json fetcher
-    resolver/                  -- query-time identifier expansion
-      cpe.go                   -- CPE 2.2 5-part prefix
-      resolver.go              -- direct / via_alias / via_cpe_prefix
-    ingest/ingest.go           -- orchestrator (adapters → statements; fetchers → aliases)
-    db/                        -- SQLite + schema migrations
-      db.go, migrations.go
-    api/                       -- HTTP handlers
-      handler.go, sbom.go, ingest.go
-  test/integration/api_test.go -- end-to-end tests (binary + DB + HTTP)
-  testdata/                    -- fixtures: CSAF slices, OVAL fixture, alias sample
-  config.yaml                  -- adapter + alias-fetcher configuration
-  Dockerfile                   -- golang:1.26-alpine → alpine:3.21
-```
-
-**Companion library**: [`getreeldev/oval-to-vex`](https://github.com/getreeldev/oval-to-vex) — standalone Go library that parses Red Hat, Ubuntu, and Debian OVAL XML into VEX-shaped statements. Zero dependencies beyond stdlib. reel-vex's three OVAL adapters delegate to it; anyone else building scanners can `go get github.com/getreeldev/oval-to-vex/translator`.
+See [`docs/api.md`](./docs/api.md) for `/v1/cve/{id}`, `/v1/sbom`, `/v1/stats`, `/v1/ingest`, the OpenVEX output format, and the full field reference.
 
 ## Run it yourself
 
@@ -387,31 +201,11 @@ The SQLite database lives in the mounted `data/` directory so it survives contai
 ### From source
 
 ```bash
-# Build the binary
 go build -o reel-vex ./cmd/server
-
-# Ingest (useful for first population or testing)
-./reel-vex -config config.yaml -db vex.db ingest
-
-# Limit to N statements per adapter (dev convenience)
-./reel-vex -config config.yaml -db vex.db -limit 100 ingest
-
-# Start the server (runs ingest automatically on schedule)
 ./reel-vex -config config.yaml -db vex.db serve
-
-# All flags
-./reel-vex \
-  -config config.yaml \
-  -db vex.db \
-  -addr :8080 \
-  -ingest-interval 24h \
-  -admin-token your-secret-token \
-  serve
-
-# Query the local database
-./reel-vex -db vex.db query CVE-2021-44228
-./reel-vex -db vex.db stats
 ```
+
+`-addr`, `-ingest-interval`, `-admin-token`, and `-limit` are also available; `./reel-vex --help` for the full list. `./reel-vex -db vex.db query CVE-2021-44228` and `./reel-vex -db vex.db stats` query a local database without starting the server.
 
 ## Tests
 
@@ -430,7 +224,7 @@ All adapters have httptest-backed tests serving committed fixtures, so the test 
 The most impactful contributions:
 
 1. **New CSAF providers.** If a vendor publishes CSAF 2.0 VEX feeds with a `provider-metadata.json` + `changes.csv`, add an entry to `config.yaml` under `adapters:` and open a PR.
-2. **New OVAL sources.** Each new OVAL source means: extending `oval-to-vex` with a `translator.FromXOVAL()` for that vendor (Ubuntu, Debian, SUSE), plus a new adapter package under `pkg/source/xoval/`.
+2. **New OVAL sources.** Each new OVAL source means: extending `oval-to-vex` with a `translator.FromXOVAL()` for that vendor, plus a new adapter package under `pkg/source/xoval/`.
 3. **New alias mappings.** Vendor-published identifier translation files (similar to Red Hat's `repository-to-cpe.json`) plug into `pkg/aliases/` as new `Fetcher` implementations.
 
 For other formats (upstream `.vex/` repos, OCI attestations, OpenVEX files), open an issue to discuss before implementing.
