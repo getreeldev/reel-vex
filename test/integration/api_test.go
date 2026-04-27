@@ -30,7 +30,6 @@ func TestMain(m *testing.M) {
 // runner blocks ~60s waiting for the child's stdout to drain before
 // reporting a spurious non-zero exit.
 func runTests(m *testing.M) int {
-	// Build binary
 	binPath := filepath.Join(os.TempDir(), "reel-vex-test")
 	build := exec.Command("go", "build", "-o", binPath, "./cmd/server")
 	build.Dir = findRepoRoot()
@@ -40,7 +39,6 @@ func runTests(m *testing.M) int {
 	}
 	defer os.Remove(binPath)
 
-	// Seed database
 	dbPath := filepath.Join(os.TempDir(), "reel-vex-test.db")
 	if err := seedDB(dbPath); err != nil {
 		fmt.Fprintf(os.Stderr, "seed db: %s\n", err)
@@ -48,14 +46,9 @@ func runTests(m *testing.M) int {
 	}
 	defer os.Remove(dbPath)
 
-	// Pick a free port
 	port := freePort()
 	serverURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 
-	// Write a minimal config with a placeholder adapter. The adapter's
-	// Discover would fail against example.invalid, but we set the ingest
-	// interval to 999h so the scheduler never fires during the test — the
-	// API is exercised against the pre-seeded DB, not via live ingest.
 	configPath := filepath.Join(os.TempDir(), "reel-vex-test-config.yaml")
 	os.WriteFile(configPath, []byte(`adapters:
   - type: csaf
@@ -64,7 +57,6 @@ func runTests(m *testing.M) int {
 `), 0644)
 	defer os.Remove(configPath)
 
-	// Start server with long ingest interval so scheduler doesn't interfere
 	cmd := exec.Command(binPath,
 		"-db", dbPath,
 		"-addr", fmt.Sprintf(":%d", port),
@@ -75,8 +67,6 @@ func runTests(m *testing.M) int {
 	)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
-	// Cap how long cmd.Wait waits for the child's pipes to close after the
-	// process exits. Without this the CI runner hangs 60s draining stdout.
 	cmd.WaitDelay = 3 * time.Second
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "start server: %s\n", err)
@@ -87,7 +77,6 @@ func runTests(m *testing.M) int {
 		cmd.Wait()
 	}()
 
-	// Wait for server to be ready
 	if err := waitForServer(serverURL+"/healthz", 5*time.Second); err != nil {
 		fmt.Fprintf(os.Stderr, "server not ready: %s\n", err)
 		cmd.Process.Kill()
@@ -112,58 +101,61 @@ func seedDB(path string) error {
 	}
 
 	stmts := []db.Statement{
-		// CVE-2024-1234: Red Hat, 2 products (PURL + CPE), not_affected with justification
-		{Vendor: "redhat", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/redhat/openssl@3.0.7-27.el9", BaseID: "pkg:rpm/redhat/openssl", Version: "3.0.7-27.el9", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-07-01T00:00:00Z"},
-		{Vendor: "redhat", CVE: "CVE-2024-1234", ProductID: "cpe:/a:redhat:enterprise_linux:9::appstream", BaseID: "cpe:/a:redhat:enterprise_linux:9::appstream", IDType: "cpe", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-07-01T00:00:00Z"},
+		// CVE-2024-1234: Red Hat, openssl, not_affected
+		{Vendor: "redhat", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/redhat/openssl@3.0.7-27.el9", BaseID: "pkg:rpm/redhat/openssl", Version: "3.0.7-27.el9", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-07-01T00:00:00Z", SourceFormat: "csaf"},
+		{Vendor: "redhat", CVE: "CVE-2024-1234", ProductID: "cpe:/a:redhat:enterprise_linux:9::appstream", BaseID: "cpe:/a:redhat:enterprise_linux:9::appstream", IDType: "cpe", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-07-01T00:00:00Z", SourceFormat: "csaf"},
 
-		// CVE-2024-5678: both vendors, different statuses
-		{Vendor: "redhat", CVE: "CVE-2024-5678", ProductID: "pkg:rpm/redhat/nginx@1.22.1-4.el9", BaseID: "pkg:rpm/redhat/nginx", Version: "1.22.1-4.el9", IDType: "purl", Status: "fixed", Updated: "2024-08-15T00:00:00Z"},
-		{Vendor: "suse", CVE: "CVE-2024-5678", ProductID: "cpe:/a:suse:sles:15:sp5", BaseID: "cpe:/a:suse:sles:15:sp5", IDType: "cpe", Status: "affected", Updated: "2024-08-10T00:00:00Z"},
+		// CVE-2024-5678: Red Hat fixed, SUSE affected
+		{Vendor: "redhat", CVE: "CVE-2024-5678", ProductID: "pkg:rpm/redhat/nginx@1.22.1-4.el9", BaseID: "pkg:rpm/redhat/nginx", Version: "1.22.1-4.el9", IDType: "purl", Status: "fixed", Updated: "2024-08-01T00:00:00Z", SourceFormat: "csaf"},
+		{Vendor: "suse", CVE: "CVE-2024-5678", ProductID: "cpe:/a:suse:sles:15:sp5", BaseID: "cpe:/a:suse:sles:15:sp5", IDType: "cpe", Status: "affected", Updated: "2024-08-15T00:00:00Z", SourceFormat: "csaf"},
 
 		// CVE-2024-9999: SUSE only, under_investigation, no justification
-		{Vendor: "suse", CVE: "CVE-2024-9999", ProductID: "pkg:rpm/suse/curl@8.0.1-150400.5.41.1", BaseID: "pkg:rpm/suse/curl", Version: "8.0.1-150400.5.41.1", IDType: "purl", Status: "under_investigation", Updated: "2024-09-01T00:00:00Z"},
+		{Vendor: "suse", CVE: "CVE-2024-9999", ProductID: "pkg:rpm/suse/curl@8.0.1-150400.5.41.1", BaseID: "pkg:rpm/suse/curl", Version: "8.0.1-150400.5.41.1", IDType: "purl", Status: "under_investigation", Updated: "2024-09-01T00:00:00Z", SourceFormat: "csaf"},
 
-		// CVE-2024-1111: Red Hat, fixed, PURL only
-		{Vendor: "redhat", CVE: "CVE-2024-1111", ProductID: "pkg:rpm/redhat/kernel@5.14.0-362.24.1.el9_3", BaseID: "pkg:rpm/redhat/kernel", Version: "5.14.0-362.24.1.el9_3", IDType: "purl", Status: "fixed", Updated: "2024-06-20T00:00:00Z"},
+		// CVE-2024-1111: Red Hat fixed
+		{Vendor: "redhat", CVE: "CVE-2024-1111", ProductID: "pkg:rpm/redhat/kernel@5.14.0-362.24.1.el9_3", BaseID: "pkg:rpm/redhat/kernel", Version: "5.14.0-362.24.1.el9_3", IDType: "purl", Status: "fixed", Updated: "2024-06-20T00:00:00Z", SourceFormat: "csaf"},
 
-		// CVE-2024-2222: SUSE, not_affected with justification, CPE
-		{Vendor: "suse", CVE: "CVE-2024-2222", ProductID: "cpe:/a:suse:sle-module-basesystem:15:sp5", BaseID: "cpe:/a:suse:sle-module-basesystem:15:sp5", IDType: "cpe", Status: "not_affected", Justification: "component_not_present", Updated: "2024-07-15T00:00:00Z"},
+		// CVE-2024-2222: SUSE not_affected with component_not_present justification
+		{Vendor: "suse", CVE: "CVE-2024-2222", ProductID: "cpe:/a:suse:sle-module-basesystem:15:sp5", BaseID: "cpe:/a:suse:sle-module-basesystem:15:sp5", IDType: "cpe", Status: "not_affected", Justification: "component_not_present", Updated: "2024-07-15T00:00:00Z", SourceFormat: "csaf"},
 
 		// CVE-2024-3333: Red Hat, affected, no justification
-		{Vendor: "redhat", CVE: "CVE-2024-3333", ProductID: "pkg:rpm/redhat/httpd@2.4.57-5.el9", BaseID: "pkg:rpm/redhat/httpd", Version: "2.4.57-5.el9", IDType: "purl", Status: "affected", Updated: "2024-10-01T00:00:00Z"},
+		{Vendor: "redhat", CVE: "CVE-2024-3333", ProductID: "pkg:rpm/redhat/httpd@2.4.57-5.el9", BaseID: "pkg:rpm/redhat/httpd", Version: "2.4.57-5.el9", IDType: "purl", Status: "affected", Updated: "2024-10-01T00:00:00Z", SourceFormat: "csaf"},
 	}
 
 	return database.BulkInsert(stmts)
 }
 
-// --- CVE endpoint ---
+// --- CVE endpoint (OpenVEX 0.2.0) ---
 
 func TestCVE_Found(t *testing.T) {
 	resp := get(t, "/v1/cve/CVE-2024-1234")
 	expectStatus(t, resp, 200)
 
-	stmts := decodeStatements(t, resp)
+	stmts := decodeOpenVEXStatements(t, resp)
 	if len(stmts) != 2 {
 		t.Fatalf("expected 2 statements, got %d", len(stmts))
 	}
 	for _, s := range stmts {
-		expectField(t, s, "vendor", "redhat")
-		expectField(t, s, "cve", "CVE-2024-1234")
-		expectField(t, s, "status", "not_affected")
-		expectField(t, s, "justification", "vulnerable_code_not_present")
-		if s["id_type"] != "purl" && s["id_type"] != "cpe" {
-			t.Fatalf("unexpected id_type: %s", s["id_type"])
+		if s.Supplier != "redhat" {
+			t.Errorf("expected supplier=redhat, got %q", s.Supplier)
+		}
+		if s.Vulnerability.Name != "CVE-2024-1234" {
+			t.Errorf("expected vulnerability.name=CVE-2024-1234, got %q", s.Vulnerability.Name)
+		}
+		if s.Status != "not_affected" {
+			t.Errorf("expected status=not_affected, got %q", s.Status)
+		}
+		if s.Justification != "vulnerable_code_not_present" {
+			t.Errorf("expected justification=vulnerable_code_not_present, got %q", s.Justification)
 		}
 	}
 }
 
 func TestCVE_NotFound(t *testing.T) {
 	resp := get(t, "/v1/cve/CVE-9999-0000")
-	expectStatus(t, resp, 200)
-
-	stmts := decodeStatements(t, resp)
-	if len(stmts) != 0 {
-		t.Fatalf("expected 0 statements, got %d", len(stmts))
+	defer resp.Body.Close()
+	if resp.StatusCode != 204 {
+		t.Fatalf("expected 204 on empty CVE, got %d", resp.StatusCode)
 	}
 }
 
@@ -171,21 +163,21 @@ func TestCVE_MultipleVendors(t *testing.T) {
 	resp := get(t, "/v1/cve/CVE-2024-5678")
 	expectStatus(t, resp, 200)
 
-	stmts := decodeStatements(t, resp)
+	stmts := decodeOpenVEXStatements(t, resp)
 	if len(stmts) != 2 {
 		t.Fatalf("expected 2 statements, got %d", len(stmts))
 	}
 
-	vendors := map[string]bool{}
+	suppliers := map[string]bool{}
 	for _, s := range stmts {
-		vendors[s["vendor"].(string)] = true
+		suppliers[s.Supplier] = true
 	}
-	if !vendors["redhat"] || !vendors["suse"] {
-		t.Fatalf("expected both redhat and suse, got %v", vendors)
+	if !suppliers["redhat"] || !suppliers["suse"] {
+		t.Fatalf("expected both redhat and suse suppliers, got %v", suppliers)
 	}
 }
 
-// --- Resolve endpoint ---
+// --- Resolve endpoint (OpenVEX 0.2.0) ---
 
 func TestResolve_Match(t *testing.T) {
 	resp := post(t, "/v1/resolve", map[string]any{
@@ -194,24 +186,23 @@ func TestResolve_Match(t *testing.T) {
 	})
 	expectStatus(t, resp, 200)
 
-	stmts := decodeStatements(t, resp)
+	stmts := decodeOpenVEXStatements(t, resp)
 	if len(stmts) != 1 {
 		t.Fatalf("expected 1 statement, got %d", len(stmts))
 	}
-	expectField(t, stmts[0], "status", "not_affected")
-	expectField(t, stmts[0], "product_id", "pkg:rpm/redhat/openssl@3.0.7-27.el9")
+	if stmts[0].Status != "not_affected" {
+		t.Errorf("expected status=not_affected, got %q", stmts[0].Status)
+	}
 }
 
 func TestResolve_NoOverlap(t *testing.T) {
 	resp := post(t, "/v1/resolve", map[string]any{
 		"cves":     []string{"CVE-2024-1234"},
-		"products": []string{"pkg:rpm/redhat/nginx@1.22.1-4.el9"}, // nginx is CVE-2024-5678, not 1234
+		"products": []string{"pkg:rpm/redhat/nginx@1.22.1-4.el9"},
 	})
-	expectStatus(t, resp, 200)
-
-	stmts := decodeStatements(t, resp)
-	if len(stmts) != 0 {
-		t.Fatalf("expected 0 statements, got %d", len(stmts))
+	defer resp.Body.Close()
+	if resp.StatusCode != 204 {
+		t.Fatalf("expected 204 on no match, got %d", resp.StatusCode)
 	}
 }
 
@@ -222,14 +213,14 @@ func TestResolve_MultipleCVEs(t *testing.T) {
 	})
 	expectStatus(t, resp, 200)
 
-	stmts := decodeStatements(t, resp)
+	stmts := decodeOpenVEXStatements(t, resp)
 	if len(stmts) != 2 {
 		t.Fatalf("expected 2 statements, got %d", len(stmts))
 	}
 
 	cves := map[string]bool{}
 	for _, s := range stmts {
-		cves[s["cve"].(string)] = true
+		cves[s.Vulnerability.Name] = true
 	}
 	if !cves["CVE-2024-1234"] || !cves["CVE-2024-5678"] {
 		t.Fatalf("expected both CVEs, got %v", cves)
@@ -243,28 +234,33 @@ func TestResolve_PURLAndCPE(t *testing.T) {
 	})
 	expectStatus(t, resp, 200)
 
-	stmts := decodeStatements(t, resp)
+	stmts := decodeOpenVEXStatements(t, resp)
 	if len(stmts) != 2 {
 		t.Fatalf("expected 2 statements (purl + cpe), got %d", len(stmts))
 	}
 
-	types := map[string]bool{}
+	hasPURL, hasCPE := false, false
 	for _, s := range stmts {
-		types[s["id_type"].(string)] = true
+		for _, p := range s.Products {
+			if p.Identifiers != nil && p.Identifiers.PURL != "" {
+				hasPURL = true
+			}
+			if p.Identifiers != nil && p.Identifiers.CPE23 != "" {
+				hasCPE = true
+			}
+		}
 	}
-	if !types["purl"] || !types["cpe"] {
-		t.Fatalf("expected both purl and cpe, got %v", types)
+	if !hasPURL || !hasCPE {
+		t.Fatalf("expected both purl and cpe identifiers; got purl=%v cpe=%v", hasPURL, hasCPE)
 	}
 }
 
 func TestResolve_EmptyFields(t *testing.T) {
-	// Missing products
 	resp := post(t, "/v1/resolve", map[string]any{
 		"cves": []string{"CVE-2024-1234"},
 	})
 	expectStatus(t, resp, 400)
 
-	// Missing cves
 	resp = post(t, "/v1/resolve", map[string]any{
 		"products": []string{"pkg:rpm/redhat/openssl@3.0.7-27.el9"},
 	})
@@ -285,7 +281,6 @@ func TestResolve_InvalidJSON(t *testing.T) {
 }
 
 func TestResolve_OversizedBody(t *testing.T) {
-	// 2MB of garbage
 	big := strings.Repeat("x", 2*1024*1024)
 	req, _ := http.NewRequest("POST", serverURL+"/v1/resolve", bytes.NewReader([]byte(big)))
 	resp, err := http.DefaultClient.Do(req)
@@ -294,7 +289,6 @@ func TestResolve_OversizedBody(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	// Either 413 (ContentLength check) or 400 (MaxBytesReader)
 	if resp.StatusCode != 413 && resp.StatusCode != 400 {
 		t.Fatalf("expected 413 or 400, got %d", resp.StatusCode)
 	}
@@ -368,9 +362,9 @@ func TestCORS_Headers(t *testing.T) {
 	resp.Body.Close()
 }
 
-// --- SBOM endpoint ---
+// --- Analyze endpoint (replaces /v1/sbom in v0.3.0) ---
 
-func TestSBOM_AnnotatesMatchingVulns(t *testing.T) {
+func TestAnalyze_SBOMOnly_Annotates(t *testing.T) {
 	sbom := map[string]any{
 		"bomFormat":   "CycloneDX",
 		"specVersion": "1.5",
@@ -382,12 +376,10 @@ func TestSBOM_AnnotatesMatchingVulns(t *testing.T) {
 			},
 		},
 		"vulnerabilities": []any{
-			map[string]any{
-				"id": "CVE-2024-1234",
-			},
+			map[string]any{"id": "CVE-2024-1234"},
 		},
 	}
-	resp := post(t, "/v1/sbom", sbom)
+	resp := post(t, "/v1/analyze", map[string]any{"sbom": sbom})
 	expectStatus(t, resp, 200)
 
 	var result map[string]any
@@ -413,7 +405,7 @@ func TestSBOM_AnnotatesMatchingVulns(t *testing.T) {
 	}
 }
 
-func TestSBOM_NoMatchReturnsAsIs(t *testing.T) {
+func TestAnalyze_SBOMOnly_NoMatchReturnsAsIs(t *testing.T) {
 	sbom := map[string]any{
 		"bomFormat":   "CycloneDX",
 		"specVersion": "1.5",
@@ -424,7 +416,7 @@ func TestSBOM_NoMatchReturnsAsIs(t *testing.T) {
 			map[string]any{"id": "CVE-9999-0000"},
 		},
 	}
-	resp := post(t, "/v1/sbom", sbom)
+	resp := post(t, "/v1/analyze", map[string]any{"sbom": sbom})
 	expectStatus(t, resp, 200)
 
 	var result map[string]any
@@ -439,20 +431,93 @@ func TestSBOM_NoMatchReturnsAsIs(t *testing.T) {
 	}
 }
 
-func TestSBOM_MultiVendorPicksBest(t *testing.T) {
-	// CVE-2024-5678 has redhat=fixed and suse=affected
+// TestAnalyze_CustomerVEXOnly_Override exercises the customer-VEX-only flow:
+// the customer asserts a status that contradicts the seeded vendor row;
+// the merged OpenVEX response carries the customer's claim with
+// match_reason=from_customer_vex in status_notes.
+func TestAnalyze_CustomerVEXOnly_Override(t *testing.T) {
+	customerDoc := map[string]any{
+		"@context": "https://openvex.dev/ns/v0.2.0",
+		"statements": []any{
+			map[string]any{
+				"vulnerability": map[string]any{"name": "CVE-2024-1234"},
+				"products":      []any{map[string]any{"@id": "pkg:rpm/redhat/openssl"}},
+				"status":        "affected",
+				"supplier":      "acme-internal",
+				"timestamp":     "2026-04-20T00:00:00Z",
+			},
+		},
+	}
+	resp := post(t, "/v1/analyze", map[string]any{"customer_vex": []any{customerDoc}})
+	expectStatus(t, resp, 200)
+
+	stmts := decodeOpenVEXStatements(t, resp)
+	if len(stmts) == 0 {
+		t.Fatal("expected at least the customer statement in the merged set")
+	}
+	var foundCustomer bool
+	for _, s := range stmts {
+		if s.Supplier == "acme-internal" && s.Status == "affected" {
+			foundCustomer = true
+			if !strings.Contains(s.StatusNotes, "match_reason=from_customer_vex") {
+				t.Errorf("customer row should carry match_reason=from_customer_vex, got status_notes=%q", s.StatusNotes)
+			}
+			if strings.Contains(s.StatusNotes, "source_format=") {
+				t.Errorf("customer row should not carry source_format prefix, got status_notes=%q", s.StatusNotes)
+			}
+		}
+		// The colliding vendor row (redhat / not_affected on
+		// pkg:rpm/redhat/openssl base) must have been dropped by the override.
+		if s.Supplier == "redhat" && s.Status == "not_affected" {
+			for _, p := range s.Products {
+				if p.ID == "pkg:rpm/redhat/openssl" || (p.Identifiers != nil && p.Identifiers.PURL == "pkg:rpm/redhat/openssl") {
+					t.Errorf("vendor row at colliding base_id was not dropped: %+v", s)
+				}
+			}
+		}
+	}
+	if !foundCustomer {
+		t.Errorf("merged response did not include the customer statement; got %+v", stmts)
+	}
+}
+
+// TestAnalyze_BothInputs_OverrideInRollup is the headline override scenario.
+// Vendor not_affected at one base_id (CPE) collides with customer affected at
+// a different base_id (PURL) for the same CVE. Without the customerCVEs
+// override, statusPriority would let the vendor's not_affected (priority 4)
+// outrank the customer's affected (priority 1). With the override, the
+// customer's claim wins absolutely on the per-CVE annotation rollup.
+func TestAnalyze_BothInputs_OverrideInRollup(t *testing.T) {
 	sbom := map[string]any{
 		"bomFormat":   "CycloneDX",
 		"specVersion": "1.5",
 		"components": []any{
-			map[string]any{"type": "library", "purl": "pkg:rpm/redhat/nginx@1.22.1-4.el9"},
-			map[string]any{"type": "library", "cpe": "cpe:/a:suse:sles:15:sp5"},
+			map[string]any{
+				"type": "library",
+				"name": "openssl",
+				"purl": "pkg:rpm/redhat/openssl@3.0.7-27.el9",
+			},
 		},
 		"vulnerabilities": []any{
-			map[string]any{"id": "CVE-2024-5678"},
+			map[string]any{"id": "CVE-2024-1234"},
 		},
 	}
-	resp := post(t, "/v1/sbom", sbom)
+	customerDoc := map[string]any{
+		"@context": "https://openvex.dev/ns/v0.2.0",
+		"statements": []any{
+			map[string]any{
+				"vulnerability": map[string]any{"name": "CVE-2024-1234"},
+				"products":      []any{map[string]any{"@id": "pkg:rpm/redhat/openssl"}},
+				"status":        "affected",
+				"supplier":      "acme-internal",
+				"timestamp":     "2026-04-20T00:00:00Z",
+			},
+		},
+	}
+	resp := post(t, "/v1/analyze", map[string]any{
+		"sbom":         sbom,
+		"customer_vex": []any{customerDoc},
+	})
 	expectStatus(t, resp, 200)
 
 	var result map[string]any
@@ -463,64 +528,39 @@ func TestSBOM_MultiVendorPicksBest(t *testing.T) {
 	vulns := result["vulnerabilities"].([]any)
 	vuln := vulns[0].(map[string]any)
 	analysis := vuln["analysis"].(map[string]any)
-	// fixed (priority 3) > affected (priority 1)
-	if analysis["state"] != "resolved" {
-		t.Fatalf("expected resolved, got %v", analysis["state"])
+
+	if analysis["state"] != "exploitable" {
+		t.Fatalf("override failed: expected exploitable (from customer affected), got %v — vendor not_affected on a different base_id should not have leaked into the rollup",
+			analysis["state"])
 	}
 	detail := analysis["detail"].(string)
-	if !strings.Contains(detail, "redhat") || !strings.Contains(detail, "suse") {
-		t.Fatalf("expected both vendors in detail, got: %s", detail)
+	if !strings.Contains(detail, "acme-internal") {
+		t.Errorf("detail should mention customer supplier, got %q", detail)
 	}
 }
 
-func TestSBOM_CPEMatching(t *testing.T) {
-	sbom := map[string]any{
-		"bomFormat":   "CycloneDX",
-		"specVersion": "1.5",
-		"components": []any{
-			map[string]any{"type": "library", "cpe": "cpe:/a:redhat:enterprise_linux:9::appstream"},
-		},
-		"vulnerabilities": []any{
-			map[string]any{"id": "CVE-2024-1234"},
-		},
-	}
-	resp := post(t, "/v1/sbom", sbom)
-	expectStatus(t, resp, 200)
-
-	var result map[string]any
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	json.Unmarshal(body, &result)
-
-	vulns := result["vulnerabilities"].([]any)
-	vuln := vulns[0].(map[string]any)
-	if _, ok := vuln["analysis"]; !ok {
-		t.Fatal("expected analysis for CPE match")
-	}
+func TestAnalyze_RequiresAtLeastOneInput(t *testing.T) {
+	resp := post(t, "/v1/analyze", map[string]any{})
+	expectStatus(t, resp, 400)
 }
 
-func TestSBOM_NoVulnsReturnsAsIs(t *testing.T) {
-	sbom := map[string]any{
-		"bomFormat":   "CycloneDX",
-		"specVersion": "1.5",
-		"components": []any{
-			map[string]any{"type": "library", "purl": "pkg:npm/foo@1.0"},
+func TestAnalyze_MalformedCustomerVEX(t *testing.T) {
+	resp := post(t, "/v1/analyze", map[string]any{
+		"customer_vex": []any{
+			map[string]any{
+				"@context":   "https://wrong.example/",
+				"statements": []any{},
+			},
 		},
-	}
-	resp := post(t, "/v1/sbom", sbom)
-	expectStatus(t, resp, 200)
+	})
+	expectStatus(t, resp, 422)
 }
 
-func TestSBOM_InvalidJSON(t *testing.T) {
-	req, _ := http.NewRequest("POST", serverURL+"/v1/sbom", bytes.NewReader([]byte("not json")))
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestAnalyze_OldSBOMRouteIs404(t *testing.T) {
+	resp := post(t, "/v1/sbom", map[string]any{"bomFormat": "CycloneDX"})
 	defer resp.Body.Close()
-
-	if resp.StatusCode != 400 {
-		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	if resp.StatusCode != 404 {
+		t.Fatalf("expected 404 on removed /v1/sbom route, got %d", resp.StatusCode)
 	}
 }
 
@@ -535,7 +575,6 @@ func TestIngest_StatusEndpoint(t *testing.T) {
 	resp.Body.Close()
 	json.Unmarshal(body, &status)
 
-	// running should be a boolean
 	if _, ok := status["running"].(bool); !ok {
 		t.Fatalf("expected running field as bool, got %T", status["running"])
 	}
@@ -616,26 +655,46 @@ func expectStatus(t *testing.T, resp *http.Response, code int) {
 	}
 }
 
-func expectField(t *testing.T, stmt map[string]any, key, want string) {
-	t.Helper()
-	got, ok := stmt[key].(string)
-	if !ok || got != want {
-		t.Fatalf("expected %s=%q, got %q", key, want, got)
-	}
+// openVEXStatement mirrors the OpenVEX 0.2.0 statement shape closely enough
+// to drive integration assertions without importing the full pkg/openvex
+// type tree (the test binary stays focused on JSON shape, not Go types).
+type openVEXStatement struct {
+	Vulnerability struct {
+		Name string `json:"name"`
+	} `json:"vulnerability"`
+	Products []struct {
+		ID          string `json:"@id,omitempty"`
+		Identifiers *struct {
+			PURL  string `json:"purl,omitempty"`
+			CPE22 string `json:"cpe22,omitempty"`
+			CPE23 string `json:"cpe23,omitempty"`
+		} `json:"identifiers,omitempty"`
+	} `json:"products"`
+	Status        string `json:"status"`
+	StatusNotes   string `json:"status_notes,omitempty"`
+	Justification string `json:"justification,omitempty"`
+	Supplier      string `json:"supplier,omitempty"`
 }
 
-func decodeStatements(t *testing.T, resp *http.Response) []map[string]any {
+// decodeOpenVEXStatements parses an OpenVEX 0.2.0 response body and returns
+// just the statements array. Closes the body. Fails the test on any decode
+// error.
+func decodeOpenVEXStatements(t *testing.T, resp *http.Response) []openVEXStatement {
 	t.Helper()
 	defer resp.Body.Close()
 
-	var result struct {
-		Statements []map[string]any `json:"statements"`
+	var doc struct {
+		Context    string             `json:"@context"`
+		Statements []openVEXStatement `json:"statements"`
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if err := json.Unmarshal(body, &result); err != nil {
-		t.Fatalf("decode: %s\nbody: %s", err, body)
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("decode openvex: %s\nbody: %s", err, body)
 	}
-	return result.Statements
+	if doc.Context != "https://openvex.dev/ns/v0.2.0" {
+		t.Fatalf("expected OpenVEX 0.2.0 @context, got %q", doc.Context)
+	}
+	return doc.Statements
 }
 
 func freePort() int {

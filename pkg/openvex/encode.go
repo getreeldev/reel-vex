@@ -115,10 +115,17 @@ func toStatement(s db.Statement, baseToInputs map[string][]string, baseToReason 
 		products = append(products, componentFor(in))
 	}
 
-	notes := "source_format=" + s.SourceFormat
-	if reason := baseToReason[s.BaseID]; reason != "" {
-		notes += "; match_reason=" + reason
+	// status_notes carries diagnostic provenance reel-vex wants to surface
+	// without a custom OpenVEX field. Customer-sourced rows (no upstream
+	// feed) skip the source_format= prefix entirely.
+	var notesParts []string
+	if s.SourceFormat != "" {
+		notesParts = append(notesParts, "source_format="+s.SourceFormat)
 	}
+	if reason := baseToReason[s.BaseID]; reason != "" {
+		notesParts = append(notesParts, "match_reason="+reason)
+	}
+	notes := strings.Join(notesParts, "; ")
 	out := Statement{
 		Vulnerability: Vulnerability{Name: s.CVE},
 		Products:      products,

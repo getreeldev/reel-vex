@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
 )
 
@@ -57,7 +58,7 @@ func (r *Resolver) Expand(id string) []Candidate {
 	}
 
 	// direct: the base form of the input.
-	base, _ := splitBase(id)
+	base, _ := csaf.SplitPURL(id)
 	add(base, "direct")
 
 	// via_alias: repository_id qualifier on a PURL → CPEs in the alias table.
@@ -87,41 +88,6 @@ func (r *Resolver) Expand(id string) []Candidate {
 		out = append(out, Candidate{ID: c, MatchReason: seen[c]})
 	}
 	return out
-}
-
-// splitBase mirrors csaf.SplitPURL but is duplicated here to keep pkg/resolver
-// free of a dependency on pkg/csaf. PURLs get stripped of version and most
-// qualifiers; everything else (including CPEs) is returned unchanged.
-//
-// The `distro` qualifier is preserved because it is identity, not a filter:
-// noble `openssl` and jammy `openssl` are genuinely different packages with
-// different fixed versions, so their base IDs must differ. `arch`, `epoch`,
-// `repository_id` and other qualifiers remain scanner-side filters and are
-// stripped.
-func splitBase(id string) (string, string) {
-	if !strings.HasPrefix(id, "pkg:") {
-		return id, ""
-	}
-	var distro string
-	if q := strings.IndexByte(id, '?'); q >= 0 {
-		if vals, err := url.ParseQuery(id[q+1:]); err == nil {
-			distro = vals.Get("distro")
-		}
-		id = id[:q]
-	}
-	if i := strings.IndexByte(id, '#'); i >= 0 {
-		id = id[:i]
-	}
-	var base, version string
-	if i := strings.LastIndexByte(id, '@'); i >= 0 {
-		base, version = id[:i], id[i+1:]
-	} else {
-		base = id
-	}
-	if distro != "" {
-		base += "?distro=" + distro
-	}
-	return base, version
 }
 
 // extractRepositoryID pulls the repository_id qualifier out of a PURL. Returns

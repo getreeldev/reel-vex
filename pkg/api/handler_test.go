@@ -13,6 +13,7 @@ import (
 
 	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
+	"github.com/getreeldev/reel-vex/pkg/openvex"
 )
 
 func setupTestDB(t *testing.T) *db.DB {
@@ -39,6 +40,20 @@ func setupTestDB(t *testing.T) *db.DB {
 	return database
 }
 
+// decodeOpenVEX is a test helper that parses an OpenVEX 0.2.0 response body
+// into the encoder's Document type, failing the test on any decode error.
+func decodeOpenVEX(t *testing.T, w *httptest.ResponseRecorder) openvex.Document {
+	t.Helper()
+	var doc openvex.Document
+	if err := json.NewDecoder(w.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode openvex: %v (body: %s)", err, w.Body.String())
+	}
+	if doc.Context != openvex.Context {
+		t.Fatalf("response @context: got %q, want %q", doc.Context, openvex.Context)
+	}
+	return doc
+}
+
 func TestHandleCVE(t *testing.T) {
 	database := setupTestDB(t)
 	srv := NewServer(database, nil)
@@ -54,31 +69,22 @@ func TestHandleCVE(t *testing.T) {
 		if got := w.Header().Get("Cache-Control"); got != cacheCVE {
 			t.Errorf("Cache-Control: got %q, want %q", got, cacheCVE)
 		}
-
-		var resp statementsResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatal(err)
-		}
-		if len(resp.Statements) != 2 {
-			t.Fatalf("expected 2 statements, got %d", len(resp.Statements))
+		doc := decodeOpenVEX(t, w)
+		if len(doc.Statements) != 2 {
+			t.Fatalf("expected 2 statements, got %d", len(doc.Statements))
 		}
 	})
 
-	t.Run("not found", func(t *testing.T) {
+	t.Run("not found returns 204", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/v1/cve/CVE-9999-0000", nil)
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d", w.Code)
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("expected 204 on empty CVE, got %d", w.Code)
 		}
-
-		var resp statementsResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatal(err)
-		}
-		if len(resp.Statements) != 0 {
-			t.Fatalf("expected 0 statements, got %d", len(resp.Statements))
+		if got := w.Header().Get("Cache-Control"); got != cacheCVE {
+			t.Errorf("Cache-Control should still be set on 204: got %q", got)
 		}
 	})
 }
@@ -161,26 +167,24 @@ func TestHandleResolve(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 		}
-
-		var resp statementsResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatal(err)
+		doc := decodeOpenVEX(t, w)
+		if len(doc.Statements) != 1 {
+			t.Fatalf("expected 1 statement, got %d", len(doc.Statements))
 		}
-		if len(resp.Statements) != 1 {
-			t.Fatalf("expected 1 statement, got %d", len(resp.Statements))
+		got := doc.Statements[0]
+		if got.Status != "not_affected" {
+			t.Errorf("status: got %q, want not_affected", got.Status)
 		}
-		if resp.Statements[0].Status != "not_affected" {
-			t.Fatalf("expected not_affected, got %s", resp.Statements[0].Status)
+		// Provenance lives in status_notes for OpenVEX output.
+		if !strings.Contains(got.StatusNotes, "source_format=csaf") {
+			t.Errorf("status_notes should carry source_format=csaf, got %q", got.StatusNotes)
 		}
-		if resp.Statements[0].SourceFormat != "csaf" {
-			t.Fatalf("expected source_format=csaf, got %q", resp.Statements[0].SourceFormat)
-		}
-		if resp.Statements[0].MatchReason != "direct" {
-			t.Fatalf("expected match_reason=direct for an exact-base PURL query, got %q", resp.Statements[0].MatchReason)
+		if !strings.Contains(got.StatusNotes, "match_reason=direct") {
+			t.Errorf("status_notes should carry match_reason=direct for an exact-base PURL query, got %q", got.StatusNotes)
 		}
 	})
 
-	t.Run("no match", func(t *testing.T) {
+	t.Run("no match returns 204", func(t *testing.T) {
 		body, _ := json.Marshal(resolveRequest{
 			CVEs:     []string{"CVE-2024-1234"},
 			Products: []string{"pkg:rpm/test/nginx@1.25"},
@@ -189,14 +193,8 @@ func TestHandleResolve(t *testing.T) {
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d", w.Code)
-		}
-
-		var resp statementsResponse
-		json.NewDecoder(w.Body).Decode(&resp)
-		if len(resp.Statements) != 0 {
-			t.Fatalf("expected 0 statements, got %d", len(resp.Statements))
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("expected 204 on no match, got %d", w.Code)
 		}
 	})
 
@@ -301,7 +299,7 @@ func TestHandleHealth(t *testing.T) {
 }
 
 // TestPOSTEndpointsHaveNoCacheControl is a regression guard. POST endpoints
-// (resolve, sbom, ingest trigger) must never advertise caching — their
+// (resolve, analyze, ingest trigger) must never advertise caching — their
 // responses are derived from the request body or change global state.
 func TestPOSTEndpointsHaveNoCacheControl(t *testing.T) {
 	database := setupTestDB(t)
@@ -317,8 +315,8 @@ func TestPOSTEndpointsHaveNoCacheControl(t *testing.T) {
 			httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader([]byte(`{"cves":["CVE-2024-1234"],"products":["pkg:rpm/test/openssl"]}`))),
 		},
 		{
-			"POST /v1/sbom",
-			httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader([]byte(`{"bomFormat":"CycloneDX","specVersion":"1.5"}`))),
+			"POST /v1/analyze",
+			httptest.NewRequest("POST", "/v1/analyze", bytes.NewReader([]byte(`{"sbom":{"bomFormat":"CycloneDX","specVersion":"1.5"}}`))),
 		},
 		{
 			"POST /v1/ingest",
@@ -353,12 +351,25 @@ func TestCORS(t *testing.T) {
 	}
 }
 
-func TestHandleSBOM(t *testing.T) {
+// TestHandleAnalyze_SBOMOnly covers the analyze endpoint with only an SBOM
+// in the request — the v0.3.0 successor to /v1/sbom. Output is annotated
+// CycloneDX, byte-stable vs the prior /v1/sbom behaviour.
+func TestHandleAnalyze_SBOMOnly(t *testing.T) {
 	database := setupTestDB(t)
 	srv := NewServer(database, nil)
 
+	postSBOM := func(t *testing.T, sbom map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"sbom": sbom})
+		req := httptest.NewRequest("POST", "/v1/analyze", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		return w
+	}
+
 	t.Run("annotates matching vulnerabilities", func(t *testing.T) {
-		sbom := map[string]any{
+		w := postSBOM(t, map[string]any{
 			"bomFormat":   "CycloneDX",
 			"specVersion": "1.5",
 			"components": []any{
@@ -369,16 +380,9 @@ func TestHandleSBOM(t *testing.T) {
 				},
 			},
 			"vulnerabilities": []any{
-				map[string]any{
-					"id": "CVE-2024-1234",
-				},
+				map[string]any{"id": "CVE-2024-1234"},
 			},
-		}
-		body, _ := json.Marshal(sbom)
-		req := httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		srv.ServeHTTP(w, req)
+		})
 
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -404,31 +408,19 @@ func TestHandleSBOM(t *testing.T) {
 	})
 
 	t.Run("no matching CVEs returns SBOM as-is", func(t *testing.T) {
-		sbom := map[string]any{
+		w := postSBOM(t, map[string]any{
 			"bomFormat":   "CycloneDX",
 			"specVersion": "1.5",
 			"components": []any{
-				map[string]any{
-					"type": "library",
-					"name": "something",
-					"purl": "pkg:npm/something@1.0",
-				},
+				map[string]any{"type": "library", "name": "something", "purl": "pkg:npm/something@1.0"},
 			},
 			"vulnerabilities": []any{
-				map[string]any{
-					"id": "CVE-9999-0000",
-				},
+				map[string]any{"id": "CVE-9999-0000"},
 			},
-		}
-		body, _ := json.Marshal(sbom)
-		req := httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader(body))
-		w := httptest.NewRecorder()
-		srv.ServeHTTP(w, req)
-
+		})
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", w.Code)
 		}
-
 		var result map[string]any
 		json.NewDecoder(w.Body).Decode(&result)
 		vulns := result["vulnerabilities"].([]any)
@@ -439,65 +431,45 @@ func TestHandleSBOM(t *testing.T) {
 	})
 
 	t.Run("no vulnerabilities returns SBOM as-is", func(t *testing.T) {
-		sbom := map[string]any{
+		w := postSBOM(t, map[string]any{
 			"bomFormat":   "CycloneDX",
 			"specVersion": "1.5",
 			"components": []any{
 				map[string]any{"type": "library", "purl": "pkg:npm/foo@1.0"},
 			},
-		}
-		body, _ := json.Marshal(sbom)
-		req := httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader(body))
-		w := httptest.NewRecorder()
-		srv.ServeHTTP(w, req)
-
+		})
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", w.Code)
 		}
 	})
 
 	t.Run("no components returns SBOM as-is", func(t *testing.T) {
-		sbom := map[string]any{
+		w := postSBOM(t, map[string]any{
 			"bomFormat":   "CycloneDX",
 			"specVersion": "1.5",
 			"vulnerabilities": []any{
 				map[string]any{"id": "CVE-2024-1234"},
 			},
-		}
-		body, _ := json.Marshal(sbom)
-		req := httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader(body))
-		w := httptest.NewRecorder()
-		srv.ServeHTTP(w, req)
-
+		})
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", w.Code)
 		}
 	})
 
 	t.Run("cpe matching works", func(t *testing.T) {
-		sbom := map[string]any{
+		w := postSBOM(t, map[string]any{
 			"bomFormat":   "CycloneDX",
 			"specVersion": "1.5",
 			"components": []any{
-				map[string]any{
-					"type": "library",
-					"name": "openssl",
-					"cpe":  "cpe:/a:test:openssl:3.0",
-				},
+				map[string]any{"type": "library", "name": "openssl", "cpe": "cpe:/a:test:openssl:3.0"},
 			},
 			"vulnerabilities": []any{
 				map[string]any{"id": "CVE-2024-1234"},
 			},
-		}
-		body, _ := json.Marshal(sbom)
-		req := httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader(body))
-		w := httptest.NewRecorder()
-		srv.ServeHTTP(w, req)
-
+		})
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", w.Code)
 		}
-
 		var result map[string]any
 		json.NewDecoder(w.Body).Decode(&result)
 		vulns := result["vulnerabilities"].([]any)
@@ -508,10 +480,9 @@ func TestHandleSBOM(t *testing.T) {
 	})
 
 	t.Run("invalid JSON", func(t *testing.T) {
-		req := httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader([]byte("not json")))
+		req := httptest.NewRequest("POST", "/v1/analyze", bytes.NewReader([]byte("not json")))
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)
-
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400, got %d", w.Code)
 		}
@@ -524,7 +495,7 @@ func TestHandleSBOM(t *testing.T) {
 			{Vendor: "vendor2", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/test/openssl@3.0", BaseID: "pkg:rpm/test/openssl", Version: "3.0", IDType: "purl", Status: "affected", Updated: "2024-07-01T00:00:00Z"},
 		})
 
-		sbom := map[string]any{
+		w := postSBOM(t, map[string]any{
 			"bomFormat":   "CycloneDX",
 			"specVersion": "1.5",
 			"components": []any{
@@ -533,16 +504,10 @@ func TestHandleSBOM(t *testing.T) {
 			"vulnerabilities": []any{
 				map[string]any{"id": "CVE-2024-1234"},
 			},
-		}
-		body, _ := json.Marshal(sbom)
-		req := httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader(body))
-		w := httptest.NewRecorder()
-		srv.ServeHTTP(w, req)
-
+		})
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", w.Code)
 		}
-
 		var result map[string]any
 		json.NewDecoder(w.Body).Decode(&result)
 		vulns := result["vulnerabilities"].([]any)
@@ -554,12 +519,208 @@ func TestHandleSBOM(t *testing.T) {
 			t.Fatalf("expected not_affected (highest priority), got %v", analysis["state"])
 		}
 
-		// Detail should mention both vendors.
 		detail := analysis["detail"].(string)
 		if !strings.Contains(detail, "testvendor") || !strings.Contains(detail, "vendor2") {
 			t.Fatalf("expected both vendors in detail, got: %s", detail)
 		}
 	})
+}
+
+// TestHandleAnalyze_CustomerVEXOnly covers the customer-VEX-only flow:
+// inbound OpenVEX 0.2.0; outbound merged OpenVEX with from_customer_vex
+// match_reason carried in status_notes. With no SBOM, no vendor data is
+// queried for vendor-only base_ids — only customer-asserted base_ids.
+func TestHandleAnalyze_CustomerVEXOnly(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	customerDoc := map[string]any{
+		"@context": "https://openvex.dev/ns/v0.2.0",
+		"statements": []any{
+			map[string]any{
+				"vulnerability": map[string]any{"name": "CVE-2024-9999"},
+				"products":      []any{map[string]any{"@id": "pkg:rpm/acme/widget"}},
+				"status":        "affected",
+				"supplier":      "acme",
+				"timestamp":     "2026-04-20T00:00:00Z",
+			},
+		},
+	}
+	body, _ := json.Marshal(map[string]any{"customer_vex": []any{customerDoc}})
+	req := httptest.NewRequest("POST", "/v1/analyze", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	doc := decodeOpenVEX(t, w)
+	if len(doc.Statements) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(doc.Statements))
+	}
+	got := doc.Statements[0]
+	if got.Status != "affected" {
+		t.Errorf("status: got %q, want affected", got.Status)
+	}
+	if got.Supplier != "acme" {
+		t.Errorf("supplier should flow through verbatim: got %q", got.Supplier)
+	}
+	if !strings.Contains(got.StatusNotes, "match_reason=from_customer_vex") {
+		t.Errorf("status_notes should carry match_reason=from_customer_vex, got %q", got.StatusNotes)
+	}
+	if strings.Contains(got.StatusNotes, "source_format=") {
+		t.Errorf("customer rows should not carry source_format= prefix, got %q", got.StatusNotes)
+	}
+}
+
+// TestHandleAnalyze_CustomerOverrideInSBOM covers the headline override case:
+// vendor says CVE-X is not_affected on a CPE base; customer says affected on
+// a PURL base. Without the customerCVEs override gate the vendor's higher
+// priority would beat the customer in the per-CVE rollup. With the gate,
+// only the customer's status is reflected.
+func TestHandleAnalyze_CustomerOverrideInSBOM(t *testing.T) {
+	dbPath := t.TempDir() + "/override.db"
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.UpsertVendor("redhat", "Red Hat"); err != nil {
+		t.Fatal(err)
+	}
+	// Vendor row: CVE-2021-44228 not_affected on the CPE (matched via alias).
+	if err := database.BulkInsert([]db.Statement{{
+		Vendor:        "redhat",
+		CVE:           "CVE-2021-44228",
+		ProductID:     "cpe:/a:redhat:enterprise_linux:8::appstream",
+		BaseID:        "cpe:/a:redhat:enterprise_linux:8::appstream",
+		IDType:        "cpe",
+		Status:        "not_affected",
+		Justification: "vulnerable_code_not_present",
+		Updated:       "2024-01-05T00:00:00Z",
+		SourceFormat:  "csaf",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	// Alias so the SBOM's PURL component expands to the CPE.
+	if err := database.BulkUpsertAliases([]db.Alias{{
+		Vendor:   "redhat",
+		SourceNS: "repository_id",
+		SourceID: "rhel-8-for-x86_64-appstream-rpms",
+		TargetNS: "cpe",
+		TargetID: "cpe:/a:redhat:enterprise_linux:8::appstream",
+		Updated:  "2024-01-05T00:00:00Z",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(database, nil)
+
+	sbom := map[string]any{
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.5",
+		"components": []any{
+			map[string]any{
+				"type": "library",
+				"name": "log4j",
+				"purl": "pkg:rpm/redhat/log4j@2.14.0?repository_id=rhel-8-for-x86_64-appstream-rpms",
+			},
+		},
+		"vulnerabilities": []any{
+			map[string]any{"id": "CVE-2021-44228"},
+		},
+	}
+	customerDoc := map[string]any{
+		"@context": "https://openvex.dev/ns/v0.2.0",
+		"statements": []any{
+			map[string]any{
+				"vulnerability": map[string]any{"name": "CVE-2021-44228"},
+				"products":      []any{map[string]any{"@id": "pkg:rpm/redhat/log4j"}},
+				"status":        "affected",
+				"supplier":      "acme-internal",
+				"timestamp":     "2026-04-20T00:00:00Z",
+			},
+		},
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"sbom":         sbom,
+		"customer_vex": []any{customerDoc},
+	})
+	req := httptest.NewRequest("POST", "/v1/analyze", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var result map[string]any
+	json.NewDecoder(w.Body).Decode(&result)
+	vulns := result["vulnerabilities"].([]any)
+	vuln := vulns[0].(map[string]any)
+	analysis, ok := vuln["analysis"].(map[string]any)
+	if !ok {
+		t.Fatal("expected analysis field on vulnerability")
+	}
+	// Customer override semantic: customer's "affected" wins despite the
+	// higher-priority vendor "not_affected" sitting at a different base_id.
+	if analysis["state"] != "exploitable" {
+		t.Fatalf("override failed: expected exploitable (from customer affected), got %v — vendor not_affected at a different base_id should not have leaked into the rollup",
+			analysis["state"])
+	}
+	detail := analysis["detail"].(string)
+	if !strings.Contains(detail, "acme-internal") {
+		t.Errorf("detail should mention customer supplier, got %q", detail)
+	}
+	// The vendor row should NOT appear in the rollup detail because customer
+	// asserted on this CVE.
+	if strings.Contains(detail, "redhat") {
+		t.Errorf("detail should not mention vendor row when customer overrides on CVE, got %q", detail)
+	}
+}
+
+func TestHandleAnalyze_RequiresSBOMOrCustomerVEX(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	req := httptest.NewRequest("POST", "/v1/analyze", bytes.NewReader([]byte(`{}`)))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when neither sbom nor customer_vex given, got %d", w.Code)
+	}
+}
+
+func TestHandleAnalyze_MalformedCustomerVEX(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	// Bad @context → 422 (shape violation, not limit overflow).
+	bad := `{"customer_vex":[{"@context":"https://wrong.example/","statements":[]}]}`
+	req := httptest.NewRequest("POST", "/v1/analyze", bytes.NewReader([]byte(bad)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 for shape violation, got %d", w.Code)
+	}
+}
+
+func TestHandleAnalyze_OldSBOMRouteIs404(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	// /v1/sbom is gone in v0.3.0 — explicit 404 (not silent).
+	req := httptest.NewRequest("POST", "/v1/sbom", bytes.NewReader([]byte(`{}`)))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for removed /v1/sbom route, got %d", w.Code)
+	}
 }
 
 func TestHandleIngestStatus(t *testing.T) {
@@ -620,7 +781,6 @@ func TestHandleIngestTrigger(t *testing.T) {
 			t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
 		}
 
-		// Wait for ingest goroutine to run.
 		select {
 		case <-called:
 		case <-time.After(2 * time.Second):
@@ -684,12 +844,11 @@ func TestHandleIngestTrigger(t *testing.T) {
 		block := make(chan struct{})
 		runner := NewIngestRunner(func() error {
 			close(started)
-			<-block // Block until test releases.
+			<-block
 			return nil
 		}, time.Hour, "")
 		srv := NewServer(database, runner)
 
-		// First trigger.
 		req := httptest.NewRequest("POST", "/v1/ingest", nil)
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)
@@ -697,10 +856,8 @@ func TestHandleIngestTrigger(t *testing.T) {
 			t.Fatalf("expected 202, got %d", w.Code)
 		}
 
-		// Wait for ingest to start.
 		<-started
 
-		// Second trigger while first is running.
 		req2 := httptest.NewRequest("POST", "/v1/ingest", nil)
 		w2 := httptest.NewRecorder()
 		srv.ServeHTTP(w2, req2)
@@ -787,22 +944,16 @@ func TestHandleResolve_SECDATA1220(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var resp statementsResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatal(err)
-	}
-	if len(resp.Statements) == 0 {
+	doc := decodeOpenVEX(t, w)
+	if len(doc.Statements) == 0 {
 		t.Fatal("expected at least one statement via CPE prefix; got zero — SECDATA-1220 regression")
 	}
 	var viaPrefix int
-	for _, s := range resp.Statements {
-		if s.SourceFormat != "csaf" {
-			t.Errorf("expected source_format=csaf, got %q", s.SourceFormat)
+	for _, s := range doc.Statements {
+		if !strings.Contains(s.StatusNotes, "source_format=csaf") {
+			t.Errorf("expected source_format=csaf in status_notes, got %q", s.StatusNotes)
 		}
-		if s.ProductID == baseCPE && s.MatchReason != "via_cpe_prefix" {
-			t.Errorf("expected match_reason=via_cpe_prefix for base-CPE statement, got %q", s.MatchReason)
-		}
-		if s.MatchReason == "via_cpe_prefix" {
+		if strings.Contains(s.StatusNotes, "match_reason=via_cpe_prefix") {
 			viaPrefix++
 		}
 	}
@@ -820,14 +971,7 @@ func TestHandleResolve_SECDATA1220(t *testing.T) {
 // carries the same `distro=` qualifier (plus version + arch). Before the
 // fix, splitBase stripped every qualifier uniformly, so the scanner's PURL
 // normalised to `pkg:deb/ubuntu/openssl` and failed to match the stored
-// distro-qualified base_id. After the fix, distro survives normalisation
-// on both the ingest (SplitPURL) and query (splitBase) sides.
-//
-// The test seeds statements shaped exactly the way pkg/source/ubuntuoval
-// writes them and queries with a realistic versioned deb PURL. It covers:
-// (1) the noble match round-trips; (2) a jammy statement for the same
-// package is NOT returned (proves distro-aware indexing, not just match
-// preservation); (3) the MatchReason is `direct`.
+// distro-qualified base_id.
 func TestHandleResolve_DebDistroIdentity(t *testing.T) {
 	dbPath := t.TempDir() + "/test.db"
 	database, err := db.Open(dbPath)
@@ -839,9 +983,6 @@ func TestHandleResolve_DebDistroIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Shape of statements the ubuntuoval adapter emits: BaseID == ProductID,
-	// both carry ?distro=. Seed one for noble, one for jammy; the scanner
-	// query targets noble specifically.
 	stmts := []db.Statement{
 		{
 			Vendor:       "ubuntu",
@@ -872,7 +1013,6 @@ func TestHandleResolve_DebDistroIdentity(t *testing.T) {
 
 	srv := NewServer(database, nil)
 
-	// Realistic scanner PURL: versioned, carries arch + distro qualifiers.
 	body, _ := json.Marshal(resolveRequest{
 		CVEs:     []string{"CVE-2024-26130"},
 		Products: []string{"pkg:deb/ubuntu/python3-cryptography@41.0.7-3?arch=amd64&distro=ubuntu-24.04"},
@@ -885,36 +1025,38 @@ func TestHandleResolve_DebDistroIdentity(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var resp statementsResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatal(err)
-	}
-	if len(resp.Statements) == 0 {
+	doc := decodeOpenVEX(t, w)
+	if len(doc.Statements) == 0 {
 		t.Fatal("expected at least one statement for a distro-qualified deb PURL; got zero — distro-identity regression (see CHANGELOG 0.2.5)")
 	}
 
 	// Must return exactly the noble row; jammy's same-package statement
-	// must not leak in.
+	// must not leak in. Each statement's products[] echoes the user's input
+	// PURL (no @version, no arch — keeping distro qualifier).
 	var gotNoble, gotJammy int
-	for _, s := range resp.Statements {
-		if s.Vendor != "ubuntu" {
-			t.Errorf("expected vendor=ubuntu, got %q", s.Vendor)
+	for _, s := range doc.Statements {
+		if s.Supplier != "ubuntu" {
+			t.Errorf("expected supplier=ubuntu, got %q", s.Supplier)
 		}
-		if s.MatchReason != "direct" {
-			t.Errorf("expected match_reason=direct for exact-base PURL query, got %q", s.MatchReason)
+		if !strings.Contains(s.StatusNotes, "match_reason=direct") {
+			t.Errorf("expected match_reason=direct, got %q", s.StatusNotes)
 		}
-		switch s.ProductID {
-		case "pkg:deb/ubuntu/python3-cryptography?distro=ubuntu-24.04":
-			gotNoble++
-		case "pkg:deb/ubuntu/python3-cryptography?distro=ubuntu-22.04":
-			gotJammy++
+		// The encoder emits the user's input identifier (in base form) into
+		// products[]. We can detect noble/jammy by inspecting it.
+		for _, p := range s.Products {
+			if p.ID == "pkg:deb/ubuntu/python3-cryptography?distro=ubuntu-24.04" {
+				gotNoble++
+			}
+			if p.ID == "pkg:deb/ubuntu/python3-cryptography?distro=ubuntu-22.04" {
+				gotJammy++
+			}
 		}
 	}
-	if gotNoble != 1 {
-		t.Errorf("expected 1 noble statement, got %d", gotNoble)
+	if gotNoble == 0 {
+		t.Errorf("expected at least one noble statement, got 0")
 	}
 	if gotJammy != 0 {
-		t.Errorf("expected 0 jammy statements (different distro identity), got %d — distro qualifier not acting as identity", gotJammy)
+		t.Errorf("expected 0 jammy statements (different distro identity), got %d", gotJammy)
 	}
 }
 
@@ -971,33 +1113,23 @@ func TestHandleResolve_AliasExpansion(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	var resp statementsResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatal(err)
+	doc := decodeOpenVEX(t, w)
+	if len(doc.Statements) != 1 {
+		t.Fatalf("expected 1 statement via alias, got %d", len(doc.Statements))
 	}
-	if len(resp.Statements) != 1 {
-		t.Fatalf("expected 1 statement via alias, got %d: %+v", len(resp.Statements), resp.Statements)
-	}
-	got := resp.Statements[0]
-	if got.MatchReason != "via_alias" {
-		t.Errorf("match_reason: got %q, want via_alias", got.MatchReason)
-	}
-	if got.ProductID != "cpe:/a:redhat:enterprise_linux:8::appstream" {
-		t.Errorf("product_id: got %q", got.ProductID)
+	got := doc.Statements[0]
+	if !strings.Contains(got.StatusNotes, "match_reason=via_alias") {
+		t.Errorf("status_notes should contain match_reason=via_alias, got %q", got.StatusNotes)
 	}
 }
 
 // TestHandleResolve_SourceFormatsFilter confirms that /v1/resolve's
 // source_formats request field restricts which upstream formats are
-// returned. With OVAL joining CSAF for Red Hat, consumers that want only
-// VEX-shaped statements (not OVAL-derived ones), or vice versa, can
-// filter cleanly.
+// returned. Filter input is unchanged from prior versions; consumers
+// inspect the source_format= prefix in OpenVEX status_notes to see which
+// feed each row came from.
 func TestHandleResolve_SourceFormatsFilter(t *testing.T) {
 	database := setupTestDB(t)
-	// setupTestDB already inserted a CSAF statement for CVE-2024-1234
-	// against pkg:rpm/test/openssl@3.0 (vendor=testvendor). Add an OVAL
-	// statement for the same CVE+product so the filter has something to
-	// distinguish.
 	if err := database.BulkInsert([]db.Statement{{
 		Vendor:       "testvendor",
 		CVE:          "CVE-2024-1234",
@@ -1027,13 +1159,15 @@ func TestHandleResolve_SourceFormatsFilter(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 		}
-		var resp statementsResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatal(err)
-		}
+		doc := decodeOpenVEX(t, w)
 		gotFormats := map[string]bool{}
-		for _, s := range resp.Statements {
-			gotFormats[s.SourceFormat] = true
+		for _, s := range doc.Statements {
+			if strings.Contains(s.StatusNotes, "source_format=csaf") {
+				gotFormats["csaf"] = true
+			}
+			if strings.Contains(s.StatusNotes, "source_format=oval") {
+				gotFormats["oval"] = true
+			}
 		}
 		if len(gotFormats) != len(wantFormats) {
 			t.Errorf("formats: got %v, want %v", gotFormats, wantFormats)

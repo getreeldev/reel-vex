@@ -2,6 +2,44 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.3.0] — Unreleased — API format unification + customer-VEX merge
+
+> **Breaking changes — three migrations.** This release folds long-standing API tidying into one cut so future migrations stay singular.
+>
+> 1. **`POST /v1/sbom` is removed.** Migrate to `POST /v1/analyze` with `{"sbom": <cyclonedx>}` wrapping. The annotation logic and CycloneDX output shape are unchanged; only the request envelope and route differ. Requests to the old route now return `404`.
+> 2. **`/v1/resolve` always returns OpenVEX 0.2.0.** The `format` request field is removed; the reel-vex-native flat response is gone. Existing OpenVEX consumers (Trivy `--vex`, `vexctl`) are unaffected. Native-format consumers must migrate to OpenVEX — `source_format` and `match_reason` are now carried in `status_notes` (`source_format=csaf; match_reason=direct` etc.).
+> 3. **`/v1/cve/{id}` returns OpenVEX 0.2.0.** Empty results return `204 No Content` instead of a 200 with an empty array (OpenVEX schema requires `statements: minItems 1`). `/v1/cve/{id}/summary` is unaffected — it serves a separate counts-style response.
+
+### Added
+
+- **`POST /v1/analyze` — single endpoint for SBOM annotation and customer-VEX merging.** Accepts an SBOM (CycloneDX 1.4+), one or more customer-supplied OpenVEX 0.2.0 documents, or both:
+  - `sbom` only → annotated CycloneDX (preserves prior `/v1/sbom` behaviour byte-for-byte).
+  - `customer_vex` only → merged OpenVEX 0.2.0 doc (vendor data + customer's claims, with override on collision).
+  - Both → annotated CycloneDX where the per-CVE rollup honours customer override.
+  Inline JSON only; no multipart, no URL fetch.
+- **Customer-VEX merge with absolute override.** Customer statements override vendor statements when `(cve, base_id)` matches. In the SBOM-annotation flow, customer-asserted CVEs are tracked in a set so vendor rows are excluded from the per-CVE rollup — even when they sit at a different base_id. Without this guard, a higher-priority vendor `not_affected` would silently outrank a customer `affected` on a different identifier.
+- **New `pkg/customervex/`** package: parses OpenVEX 0.2.0 inbound, validates against a leaner inbound-only ruleset (separate from `pkg/openvex.Validate` which is outbound-focused), enforces request-time limits, and merges with vendor data. Customer VEX is processed strictly in memory: parsed, merged, returned, discarded. No source-tree code logs or persists customer payload content.
+- **`from_customer_vex` match reason.** Customer-sourced rows in OpenVEX output carry `status_notes` with `match_reason=from_customer_vex` (no `source_format=` prefix, since customer rows have no upstream feed).
+
+### Changed
+
+- **`pkg/openvex` is the single response writer for VEX-statement-emitting endpoints.** Replaces the prior native scaffolding (`statementJSON`, `statementsResponse`, `writeStatements`, `writeStatementsWithMatch`) which is deleted from source.
+- **`csaf.SplitPURL` consolidates the PURL-base-normalisation logic.** The previously private `resolver.splitBase` (line-for-line equivalent) is removed; `pkg/resolver` now imports `pkg/csaf` and calls `SplitPURL` directly. Single source of truth.
+- **`pkg/openvex/encode.go` skips the `source_format=` prefix in `status_notes`** when the source row's `SourceFormat` is empty (customer-sourced rows). Vendor rows are unchanged.
+- **Limits on `/v1/analyze`**: 5 MB body; 10 customer_vex docs / 1000 customer statements / 100 products per customer statement; 50 000 SBOM components / 10 000 SBOM vulnerabilities. 4xx codes split: 400 for limit overflow / shape requirements; 422 for spec-violation rejections (bad `@context`, status enum, justification placement, missing required fields).
+
+### Removed
+
+- **`POST /v1/sbom`** — return `404`. Use `POST /v1/analyze` with `{"sbom": <cyclonedx>}`.
+- **`format` request field on `/v1/resolve`** — OpenVEX is the only format. Trying to send `format: ...` is silently ignored (Go JSON decoder drops unknown fields).
+- **Native flat response shape** (`{vendor, cve, product_id, ...}` rows). All endpoints emit OpenVEX 0.2.0. The `cve` / `vendor` / `product_id` semantic content is preserved as `vulnerability.name` / `supplier` / `products[].@id` (or `products[].identifiers.{purl,cpe22,cpe23}`); `source_format` / `match_reason` move into `status_notes`.
+
+### Notes
+
+- `source_formats` request filter on `/v1/resolve` is unchanged — it still restricts which upstream feeds match. Filtering happens at query time; the filter is a request parameter, not a response annotation.
+- Empty `/v1/resolve` results have always returned `204` for OpenVEX output. This is now the default since OpenVEX is the only output.
+- The `@id` of any emitted document is a deterministic SHA-256 over the canonical body (timestamps zeroed); identical queries produce byte-identical `@id`s. Useful for caching.
+
 ## [0.2.6] — Unreleased — Debian OVAL adapter
 
 ### Added

@@ -56,7 +56,7 @@ reel-vex pulls from both formats, normalizes the statements into one database, a
 │                                                           │
 │  GET  /v1/cve/{id}                                        │
 │  POST /v1/resolve        (with optional source_formats)   │
-│  POST /v1/sbom           (annotates CycloneDX with VEX)   │
+│  POST /v1/analyze        (annotated SBOM + customer VEX)  │
 │  GET  /v1/stats                                           │
 │  GET  /v1/ingest         (status) ·  POST /v1/ingest      │
 │  GET  /healthz                                            │
@@ -140,7 +140,7 @@ Each returned statement carries a `match_reason` field (`direct`, `via_alias`, `
 
 ## API
 
-Base URL: `https://vex.getreel.dev`. Full field-level reference — every endpoint, every enum value, the opt-in OpenVEX 0.2.0 format — lives in [`docs/api.md`](./docs/api.md).
+Base URL: `https://vex.getreel.dev`. All VEX-statement-emitting endpoints return [OpenVEX 0.2.0](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md). Full field-level reference — every endpoint, every enum value, customer-VEX merge semantics — lives in [`docs/api.md`](./docs/api.md).
 
 Quick batch resolve:
 
@@ -155,20 +155,25 @@ curl -X POST https://vex.getreel.dev/v1/resolve \
 
 ```json
 {
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://openvex.dev/docs/public/vex-...",
+  "author": "reel-vex aggregator <vex@getreel.dev>",
+  "role": "aggregator",
+  "version": 1,
   "statements": [
     {
-      "vendor": "redhat",
-      "cve": "CVE-2021-44228",
-      "product_id": "cpe:/a:redhat:enterprise_linux:8::appstream",
+      "vulnerability": {"name": "CVE-2021-44228"},
+      "products": [{"@id": "pkg:rpm/redhat/log4j", "identifiers": {"purl": "pkg:rpm/redhat/log4j"}}],
       "status": "not_affected",
-      "source_format": "csaf",
-      "match_reason": "via_alias"
+      "status_notes": "source_format=csaf; match_reason=via_alias",
+      "justification": "vulnerable_code_not_present",
+      "supplier": "redhat"
     }
   ]
 }
 ```
 
-See [`docs/api.md`](./docs/api.md) for `/v1/cve/{id}`, `/v1/sbom`, `/v1/stats`, `/v1/ingest`, the OpenVEX output format, and the full field reference.
+`status_notes` carries `source_format=` (which feed) and `match_reason=` (which rule fired) for diagnostic traceability without inventing custom OpenVEX fields. See [`docs/api.md`](./docs/api.md) for `/v1/cve/{id}`, `/v1/analyze` (SBOM annotation + customer-VEX merge), `/v1/stats`, `/v1/ingest`, and the full field reference.
 
 ## Run it yourself
 

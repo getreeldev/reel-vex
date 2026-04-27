@@ -54,7 +54,7 @@ func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 	s.mux.HandleFunc("GET /v1/cve/{id}/summary", s.handleCVESummary)
 	s.mux.HandleFunc("POST /v1/resolve", s.handleResolve)
 	s.mux.HandleFunc("GET /v1/stats", s.handleStats)
-	s.mux.HandleFunc("POST /v1/sbom", s.handleSBOM)
+	s.mux.HandleFunc("POST /v1/analyze", s.handleAnalyze)
 	s.mux.HandleFunc("GET /v1/ingest", s.handleIngestStatus)
 	s.mux.HandleFunc("POST /v1/ingest", s.handleIngestTrigger)
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
@@ -92,8 +92,25 @@ func (s *Server) handleCVE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 204 on empty: OpenVEX 0.2.0 schema requires statements: minItems 1, so
+	// we cannot emit a valid doc with zero statements. 204 mirrors the
+	// /v1/resolve empty-response contract and keeps Cache-Control on the
+	// "no info" answer so clients don't re-poll constantly.
 	setCacheControl(w, cacheCVE)
-	writeStatements(w, stmts)
+	if len(stmts) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// /v1/cve/{id} doesn't do product expansion (queries by CVE only), so
+	// pass nil for both maps. The encoder's defensive fallback at
+	// pkg/openvex/encode.go falls back to each statement's own ProductID
+	// when baseToInputs is empty.
+	doc := openvex.Encode(stmts, nil, nil)
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(doc); err != nil {
+		slog.Error("openvex encode failed", "cve", cve, "error", err)
+	}
 }
 
 // cveSummary is the aggregated view of all VEX statements for a single CVE.
@@ -148,10 +165,6 @@ type resolveRequest struct {
 	// SourceFormats, when non-empty, restricts matches to statements from
 	// those upstream formats ("csaf", "oval"). Empty = all formats.
 	SourceFormats []string `json:"source_formats,omitempty"`
-	// Format selects the response shape. "" (default) returns native
-	// reel-vex JSON with match_reason + source_format. "openvex" returns
-	// an OpenVEX 0.2.0 document for consumers like vexctl and Trivy.
-	Format string `json:"format,omitempty"`
 }
 
 const maxResolveItems = 10000
@@ -176,10 +189,6 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "too many items (max 10000 each)")
 		return
 	}
-	if req.Format != "" && req.Format != "openvex" {
-		writeError(w, http.StatusBadRequest, `invalid format (must be "" or "openvex")`)
-		return
-	}
 
 	// Normalize user-provided PURLs into base form and expand CPE variants
 	// into their RedHat-documented 5-part prefix, tagging each candidate with
@@ -200,22 +209,18 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Format == "openvex" {
-		// Spec requires statements: minItems 1. 204 signals "query worked,
-		// no statements matched" cleanly without emitting an invalid doc.
-		if len(stmts) == 0 {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		doc := openvex.Encode(stmts, baseToInputs, baseToReason)
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(doc); err != nil {
-			slog.Error("openvex encode failed", "error", err)
-		}
+	// OpenVEX 0.2.0 schema requires statements: minItems 1. 204 on empty
+	// keeps the response schema-valid. Cache-Control is intentionally not
+	// set on /v1/resolve since the request body isn't a stable cache key.
+	if len(stmts) == 0 {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-
-	writeStatementsWithMatch(w, stmts, baseToReason)
+	doc := openvex.Encode(stmts, baseToInputs, baseToReason)
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(doc); err != nil {
+		slog.Error("openvex encode failed", "error", err)
+	}
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -269,58 +274,6 @@ func (s *Server) handleIngestTrigger(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"status": "started"})
-}
-
-type statementsResponse struct {
-	Statements []statementJSON `json:"statements"`
-}
-
-type statementJSON struct {
-	Vendor        string `json:"vendor"`
-	CVE           string `json:"cve"`
-	ProductID     string `json:"product_id"`
-	Version       string `json:"version,omitempty"`
-	IDType        string `json:"id_type"`
-	Status        string `json:"status"`
-	Justification string `json:"justification,omitempty"`
-	Updated       string `json:"updated"`
-	SourceFormat  string `json:"source_format"`
-	MatchReason   string `json:"match_reason,omitempty"`
-}
-
-// writeStatements serializes statements without a match_reason. Used by
-// endpoints that don't do product matching (/v1/cve/{id}).
-func writeStatements(w http.ResponseWriter, stmts []db.Statement) {
-	writeStatementsWithMatch(w, stmts, nil)
-}
-
-// writeStatementsWithMatch serializes statements and, when baseToReason is
-// non-nil, tags each row with the match_reason that caused it to be selected.
-// Endpoints that do product expansion (/v1/resolve, /v1/sbom) pass the map
-// they built during expansion.
-func writeStatementsWithMatch(w http.ResponseWriter, stmts []db.Statement, baseToReason map[string]string) {
-	out := statementsResponse{
-		Statements: make([]statementJSON, len(stmts)),
-	}
-	for i, s := range stmts {
-		row := statementJSON{
-			Vendor:        s.Vendor,
-			CVE:           s.CVE,
-			ProductID:     s.ProductID,
-			Version:       s.Version,
-			IDType:        s.IDType,
-			Status:        s.Status,
-			Justification: s.Justification,
-			Updated:       s.Updated,
-			SourceFormat:  s.SourceFormat,
-		}
-		if baseToReason != nil {
-			row.MatchReason = baseToReason[s.BaseID]
-		}
-		out.Statements[i] = row
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(out)
 }
 
 // expandProducts turns the user-supplied product list into two maps, keyed
