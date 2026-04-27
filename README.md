@@ -181,7 +181,7 @@ curl -X POST https://vex.getreel.dev/v1/resolve \
 
 Prebuilt images are published to Docker Hub on every release, scanned for vulnerabilities before publishing (see `.github/workflows/release.yml`):
 
-- `getreel/vex-hub:<version>` — pinned to a specific release (e.g. `v0.2.0`)
+- `getreel/vex-hub:<version>` — pinned to a specific release tag
 - `getreel/vex-hub:v0` — latest in the 0.x series
 - `getreel/vex-hub:latest` — latest release
 
