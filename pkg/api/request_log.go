@@ -3,7 +3,6 @@ package api
 import (
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -33,12 +32,18 @@ func (r *recordingWriter) Write(b []byte) (int, error) {
 
 // logRequest emits a single structured "api_request" slog line per HTTP
 // request once the handler has returned. Fields: method, path, status,
-// latency_ms, bytes, and — for /v1/cve/{id}[/summary] routes — the CVE ID.
+// latency_ms, bytes.
 //
 // Operators running reel-vex can consume these lines with any slog-aware
 // log shipper (Vector, Promtail, Fluent Bit, plain jq) and forward them to
 // whatever observability backend they run. No vendor coupling in this
 // binary.
+//
+// Per-CVE attribution was attempted in v0.2.x via path-pattern extraction
+// when CVE was in the URL (`/v1/cve/{id}`); v0.4.0 collapsed that route
+// into POST /v1/statements, so the CVE moved into the request body. Body
+// peeking from middleware is heavy (body-buffer + reset); we drop the
+// per-request CVE attribute rather than carry that complexity.
 func logRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -47,32 +52,12 @@ func logRequest(next http.Handler) http.Handler {
 		if rw.status == 0 {
 			rw.status = http.StatusOK
 		}
-		attrs := []any{
+		slog.Info("api_request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rw.status,
 			"latency_ms", time.Since(start).Milliseconds(),
 			"bytes", rw.bytes,
-		}
-		if cve := extractCVE(r.URL.Path); cve != "" {
-			attrs = append(attrs, "cve", cve)
-		}
-		slog.Info("api_request", attrs...)
+		)
 	})
-}
-
-// extractCVE pulls the CVE identifier from a /v1/cve/{id} or
-// /v1/cve/{id}/summary URL path. Returns "" for any other path. Kept
-// deliberately simple — anything more structured belongs in a router-level
-// observation point, not a path parser.
-func extractCVE(path string) string {
-	const prefix = "/v1/cve/"
-	if !strings.HasPrefix(path, prefix) {
-		return ""
-	}
-	rest := path[len(prefix):]
-	if i := strings.Index(rest, "/"); i >= 0 {
-		return rest[:i]
-	}
-	return rest
 }

@@ -181,7 +181,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 	// customer-vex-only: emit OpenVEX of the merged set. Empty merged set
 	// can't happen in practice once parse succeeds (customer rows are
-	// always in the merged set), but we 204 anyway to mirror /v1/resolve
+	// always in the merged set), but we 204 anyway to mirror /v1/statements
 	// and stay schema-valid.
 	if len(merged) == 0 {
 		w.WriteHeader(http.StatusNoContent)

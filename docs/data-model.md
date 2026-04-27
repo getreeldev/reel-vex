@@ -46,6 +46,6 @@ CREATE TABLE product_aliases (
 ## Notes
 
 - `statements` PK is `(vendor, cve, product_id, source_format)` — the same vendor + CVE + product combo can appear under different upstream feeds (CSAF and OVAL for Red Hat, for example) and both rows are preserved.
-- `base_id` is the normalized form of `product_id` used by the resolver: PURLs stripped of `@version` and most qualifiers (but `distro` preserved for deb-shaped identity); CPEs as-is. Indexed for `/v1/resolve` lookups.
+- `base_id` is the normalized form of `product_id` used by the resolver: PURLs stripped of `@version` and most qualifiers (but `distro` preserved for deb-shaped identity); CPEs as-is. Indexed for `/v1/statements` lookups.
 - `vendors` is display metadata only; runtime data (feed URLs, watermarks) lives in `adapter_state` so multiple adapters under one vendor (e.g., several Red Hat OVAL streams) don't stomp on each other.
 - A `schema_version` table tracks migration state. Forward-migration is automatic on every binary boot; rollback is manual (restore from a pre-upgrade backup).

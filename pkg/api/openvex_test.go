@@ -10,9 +10,10 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/openvex"
 )
 
-// TestHandleStatements_OpenVEXSchema validates that /v1/resolve produces a
+// TestHandleStatements_OpenVEXSchema validates that /v1/statements produces a
 // structurally valid OpenVEX 0.2.0 document with the user's input PURL
-// echoed into products[]. /v1/resolve became OpenVEX-only in v0.3.0.
+// echoed into products[]. OpenVEX became the only response format in v0.3.0;
+// /v1/statements (the unified query endpoint) absorbed it in v0.4.0.
 func TestHandleStatements_OpenVEXSchema(t *testing.T) {
 	database := setupTestDB(t)
 	srv := NewServer(database, nil)

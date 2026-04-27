@@ -1208,7 +1208,7 @@ func TestHandleStatements_AliasExpansion(t *testing.T) {
 	}
 }
 
-// TestHandleStatements_SourceFormatsFilter confirms that /v1/resolve's
+// TestHandleStatements_SourceFormatsFilter confirms that /v1/statements's
 // source_formats request field restricts which upstream formats are
 // returned. Filter input is unchanged from prior versions; consumers
 // inspect the source_format= prefix in OpenVEX status_notes to see which
