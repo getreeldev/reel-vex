@@ -200,7 +200,7 @@ func runQuery(dbPath, cve string) error {
 	}
 	defer database.Close()
 
-	stmts, err := database.QueryByCVE(cve)
+	stmts, err := database.QueryStatements(db.QueryFilters{CVEs: []string{cve}})
 	if err != nil {
 		return fmt.Errorf("query: %w", err)
 	}

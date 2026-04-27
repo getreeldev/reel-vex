@@ -70,7 +70,7 @@ func TestMigrateV0ToV1_PreservesData(t *testing.T) {
 	}
 
 	// Pre-existing rows come back with source_format='csaf' backfilled.
-	rows, err := d.QueryByCVE("CVE-2024-1111")
+	rows, err := d.QueryStatements(QueryFilters{CVEs: []string{"CVE-2024-1111"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestMigrateV0ToV1_FreshDB(t *testing.T) {
 	if err := d.BulkInsert(stmts); err != nil {
 		t.Fatalf("BulkInsert: %v", err)
 	}
-	rows, err := d.QueryByCVE("CVE-1")
+	rows, err := d.QueryStatements(QueryFilters{CVEs: []string{"CVE-1"}})
 	if err != nil {
 		t.Fatal(err)
 	}

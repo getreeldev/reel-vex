@@ -125,10 +125,12 @@ func seedDB(path string) error {
 	return database.BulkInsert(stmts)
 }
 
-// --- CVE endpoint (OpenVEX 0.2.0) ---
+// --- /v1/statements (unified query endpoint, v0.4.0) ---
 
-func TestCVE_Found(t *testing.T) {
-	resp := get(t, "/v1/cve/CVE-2024-1234")
+func TestStatements_CVEOnly(t *testing.T) {
+	resp := post(t, "/v1/statements", map[string]any{
+		"cves": []string{"CVE-2024-1234"},
+	})
 	expectStatus(t, resp, 200)
 
 	stmts := decodeOpenVEXStatements(t, resp)
@@ -151,16 +153,20 @@ func TestCVE_Found(t *testing.T) {
 	}
 }
 
-func TestCVE_NotFound(t *testing.T) {
-	resp := get(t, "/v1/cve/CVE-9999-0000")
+func TestStatements_CVEOnly_NotFound(t *testing.T) {
+	resp := post(t, "/v1/statements", map[string]any{
+		"cves": []string{"CVE-9999-0000"},
+	})
 	defer resp.Body.Close()
 	if resp.StatusCode != 204 {
 		t.Fatalf("expected 204 on empty CVE, got %d", resp.StatusCode)
 	}
 }
 
-func TestCVE_MultipleVendors(t *testing.T) {
-	resp := get(t, "/v1/cve/CVE-2024-5678")
+func TestStatements_MultipleVendors(t *testing.T) {
+	resp := post(t, "/v1/statements", map[string]any{
+		"cves": []string{"CVE-2024-5678"},
+	})
 	expectStatus(t, resp, 200)
 
 	stmts := decodeOpenVEXStatements(t, resp)
@@ -177,10 +183,8 @@ func TestCVE_MultipleVendors(t *testing.T) {
 	}
 }
 
-// --- Resolve endpoint (OpenVEX 0.2.0) ---
-
-func TestResolve_Match(t *testing.T) {
-	resp := post(t, "/v1/resolve", map[string]any{
+func TestStatements_WithProducts_Match(t *testing.T) {
+	resp := post(t, "/v1/statements", map[string]any{
 		"cves":     []string{"CVE-2024-1234"},
 		"products": []string{"pkg:rpm/redhat/openssl@3.0.7-27.el9"},
 	})
@@ -195,8 +199,8 @@ func TestResolve_Match(t *testing.T) {
 	}
 }
 
-func TestResolve_NoOverlap(t *testing.T) {
-	resp := post(t, "/v1/resolve", map[string]any{
+func TestStatements_WithProducts_NoOverlap(t *testing.T) {
+	resp := post(t, "/v1/statements", map[string]any{
 		"cves":     []string{"CVE-2024-1234"},
 		"products": []string{"pkg:rpm/redhat/nginx@1.22.1-4.el9"},
 	})
@@ -206,8 +210,8 @@ func TestResolve_NoOverlap(t *testing.T) {
 	}
 }
 
-func TestResolve_MultipleCVEs(t *testing.T) {
-	resp := post(t, "/v1/resolve", map[string]any{
+func TestStatements_MultipleCVEs(t *testing.T) {
+	resp := post(t, "/v1/statements", map[string]any{
 		"cves":     []string{"CVE-2024-1234", "CVE-2024-5678"},
 		"products": []string{"pkg:rpm/redhat/openssl@3.0.7-27.el9", "pkg:rpm/redhat/nginx@1.22.1-4.el9"},
 	})
@@ -227,8 +231,8 @@ func TestResolve_MultipleCVEs(t *testing.T) {
 	}
 }
 
-func TestResolve_PURLAndCPE(t *testing.T) {
-	resp := post(t, "/v1/resolve", map[string]any{
+func TestStatements_PURLAndCPE(t *testing.T) {
+	resp := post(t, "/v1/statements", map[string]any{
 		"cves":     []string{"CVE-2024-1234"},
 		"products": []string{"pkg:rpm/redhat/openssl@3.0.7-27.el9", "cpe:/a:redhat:enterprise_linux:9::appstream"},
 	})
@@ -255,20 +259,20 @@ func TestResolve_PURLAndCPE(t *testing.T) {
 	}
 }
 
-func TestResolve_EmptyFields(t *testing.T) {
-	resp := post(t, "/v1/resolve", map[string]any{
-		"cves": []string{"CVE-2024-1234"},
-	})
-	expectStatus(t, resp, 400)
-
-	resp = post(t, "/v1/resolve", map[string]any{
+func TestStatements_RequiresCVEs(t *testing.T) {
+	// products without cves → 400
+	resp := post(t, "/v1/statements", map[string]any{
 		"products": []string{"pkg:rpm/redhat/openssl@3.0.7-27.el9"},
 	})
 	expectStatus(t, resp, 400)
+
+	// empty body → 400
+	resp = post(t, "/v1/statements", map[string]any{})
+	expectStatus(t, resp, 400)
 }
 
-func TestResolve_InvalidJSON(t *testing.T) {
-	req, _ := http.NewRequest("POST", serverURL+"/v1/resolve", bytes.NewReader([]byte("{not json")))
+func TestStatements_InvalidJSON(t *testing.T) {
+	req, _ := http.NewRequest("POST", serverURL+"/v1/statements", bytes.NewReader([]byte("{not json")))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -280,9 +284,9 @@ func TestResolve_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestResolve_OversizedBody(t *testing.T) {
+func TestStatements_OversizedBody(t *testing.T) {
 	big := strings.Repeat("x", 2*1024*1024)
-	req, _ := http.NewRequest("POST", serverURL+"/v1/resolve", bytes.NewReader([]byte(big)))
+	req, _ := http.NewRequest("POST", serverURL+"/v1/statements", bytes.NewReader([]byte(big)))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -291,6 +295,33 @@ func TestResolve_OversizedBody(t *testing.T) {
 
 	if resp.StatusCode != 413 && resp.StatusCode != 400 {
 		t.Fatalf("expected 413 or 400, got %d", resp.StatusCode)
+	}
+}
+
+// TestStatements_OldRoutesAre404 is the breaking-change regression guard.
+// /v1/cve/{id}, /v1/cve/{id}/summary, and /v1/resolve were all replaced by
+// /v1/statements in v0.4.0. They must 404 explicitly.
+func TestStatements_OldRoutesAre404(t *testing.T) {
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{"GET", "/v1/cve/CVE-2024-1234"},
+		{"GET", "/v1/cve/CVE-2024-1234/summary"},
+		{"POST", "/v1/resolve"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req, _ := http.NewRequest(tc.method, serverURL+tc.path, bytes.NewReader([]byte(`{}`)))
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != 404 {
+				t.Fatalf("expected 404, got %d", resp.StatusCode)
+			}
+		})
 	}
 }
 
@@ -610,17 +641,17 @@ func TestIngest_TriggerWithAuth(t *testing.T) {
 
 // --- vexctl interop ---
 
-// TestVexctl_AcceptsResolveOutput verifies that the OpenVEX 0.2.0 doc
-// emitted by /v1/resolve passes through `vexctl merge` cleanly. This is the
-// canonical interchange surface — if vexctl rejects our output, every
+// TestVexctl_AcceptsStatementsOutput verifies that the OpenVEX 0.2.0 doc
+// emitted by /v1/statements passes through `vexctl merge` cleanly. This is
+// the canonical interchange surface — if vexctl rejects our output, every
 // downstream pipeline that relies on it (Trivy, Grype, custom OPA gates)
 // falls over too. Skips cleanly when vexctl isn't installed.
-func TestVexctl_AcceptsResolveOutput(t *testing.T) {
+func TestVexctl_AcceptsStatementsOutput(t *testing.T) {
 	if _, err := exec.LookPath("vexctl"); err != nil {
 		t.Skip("vexctl not installed; skipping interop check")
 	}
 
-	resp := post(t, "/v1/resolve", map[string]any{
+	resp := post(t, "/v1/statements", map[string]any{
 		"cves":     []string{"CVE-2024-1234"},
 		"products": []string{"pkg:rpm/redhat/openssl@3.0.7-27.el9"},
 	})
@@ -628,7 +659,7 @@ func TestVexctl_AcceptsResolveOutput(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	f, err := os.CreateTemp("", "vexctl-resolve-*.json")
+	f, err := os.CreateTemp("", "vexctl-statements-*.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -640,7 +671,7 @@ func TestVexctl_AcceptsResolveOutput(t *testing.T) {
 
 	out, err := exec.Command("vexctl", "merge", f.Name()).CombinedOutput()
 	if err != nil {
-		t.Fatalf("vexctl merge rejected /v1/resolve output: %v\noutput: %s", err, out)
+		t.Fatalf("vexctl merge rejected /v1/statements output: %v\noutput: %s", err, out)
 	}
 }
 
@@ -690,7 +721,8 @@ func TestVexctl_AcceptsAnalyzeCustomerVEXOutput(t *testing.T) {
 // --- Method not allowed ---
 
 func TestMethodNotAllowed(t *testing.T) {
-	req, _ := http.NewRequest("POST", serverURL+"/v1/cve/CVE-2024-1234", nil)
+	// /v1/stats is registered as GET-only; POST should yield 405.
+	req, _ := http.NewRequest("POST", serverURL+"/v1/stats", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

@@ -54,112 +54,49 @@ func decodeOpenVEX(t *testing.T, w *httptest.ResponseRecorder) openvex.Document 
 	return doc
 }
 
-func TestHandleCVE(t *testing.T) {
+func TestHandleStatements_CVEOnly(t *testing.T) {
 	database := setupTestDB(t)
 	srv := NewServer(database, nil)
 
 	t.Run("found", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/v1/cve/CVE-2024-1234", nil)
+		body, _ := json.Marshal(statementsRequest{CVEs: []string{"CVE-2024-1234"}})
+		req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)
 
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", w.Code)
 		}
-		if got := w.Header().Get("Cache-Control"); got != cacheCVE {
-			t.Errorf("Cache-Control: got %q, want %q", got, cacheCVE)
-		}
 		doc := decodeOpenVEX(t, w)
+		// CVE-2024-1234 has 2 seeded statements (purl + cpe variants).
 		if len(doc.Statements) != 2 {
 			t.Fatalf("expected 2 statements, got %d", len(doc.Statements))
 		}
 	})
 
 	t.Run("not found returns 204", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/v1/cve/CVE-9999-0000", nil)
+		body, _ := json.Marshal(statementsRequest{CVEs: []string{"CVE-9999-0000"}})
+		req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)
 
 		if w.Code != http.StatusNoContent {
 			t.Fatalf("expected 204 on empty CVE, got %d", w.Code)
 		}
-		if got := w.Header().Get("Cache-Control"); got != cacheCVE {
-			t.Errorf("Cache-Control should still be set on 204: got %q", got)
-		}
 	})
 }
 
-func TestHandleCVESummary(t *testing.T) {
-	database := setupTestDB(t)
-	srv := NewServer(database, nil)
-
-	t.Run("found", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/v1/cve/CVE-2024-1234/summary", nil)
-		w := httptest.NewRecorder()
-		srv.ServeHTTP(w, req)
-
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d", w.Code)
-		}
-		if hdr := w.Header().Get("Cache-Control"); hdr != cacheCVE {
-			t.Errorf("Cache-Control: got %q, want %q", hdr, cacheCVE)
-		}
-
-		var got struct {
-			CVE      string         `json:"cve"`
-			Total    int            `json:"total"`
-			ByStatus map[string]int `json:"by_status"`
-			Vendors  []string       `json:"vendors"`
-		}
-		if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-			t.Fatal(err)
-		}
-		if got.CVE != "CVE-2024-1234" {
-			t.Fatalf("cve: got %q, want CVE-2024-1234", got.CVE)
-		}
-		if got.Total != 2 {
-			t.Fatalf("total: got %d, want 2", got.Total)
-		}
-		if got.ByStatus["not_affected"] != 2 {
-			t.Fatalf("not_affected: got %d, want 2", got.ByStatus["not_affected"])
-		}
-		if len(got.Vendors) != 1 || got.Vendors[0] != "testvendor" {
-			t.Fatalf("vendors: got %v, want [testvendor]", got.Vendors)
-		}
-	})
-
-	t.Run("not found returns zero totals", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/v1/cve/CVE-9999-0000/summary", nil)
-		w := httptest.NewRecorder()
-		srv.ServeHTTP(w, req)
-
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d", w.Code)
-		}
-
-		var got struct {
-			Total    int            `json:"total"`
-			ByStatus map[string]int `json:"by_status"`
-		}
-		if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-			t.Fatal(err)
-		}
-		if got.Total != 0 {
-			t.Fatalf("expected 0 total for missing CVE, got %d", got.Total)
-		}
-	})
-}
-
-func TestHandleResolve(t *testing.T) {
+func TestHandleStatements_WithProducts(t *testing.T) {
 	database := setupTestDB(t)
 	srv := NewServer(database, nil)
 
 	t.Run("match", func(t *testing.T) {
-		body, _ := json.Marshal(resolveRequest{
+		body, _ := json.Marshal(statementsRequest{
 			CVEs:     []string{"CVE-2024-1234"},
 			Products: []string{"pkg:rpm/test/openssl@3.0"},
 		})
-		req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+		req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)
@@ -185,11 +122,11 @@ func TestHandleResolve(t *testing.T) {
 	})
 
 	t.Run("no match returns 204", func(t *testing.T) {
-		body, _ := json.Marshal(resolveRequest{
+		body, _ := json.Marshal(statementsRequest{
 			CVEs:     []string{"CVE-2024-1234"},
 			Products: []string{"pkg:rpm/test/nginx@1.25"},
 		})
-		req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+		req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)
 
@@ -197,25 +134,173 @@ func TestHandleResolve(t *testing.T) {
 			t.Fatalf("expected 204 on no match, got %d", w.Code)
 		}
 	})
+}
 
-	t.Run("missing fields", func(t *testing.T) {
-		body, _ := json.Marshal(resolveRequest{CVEs: []string{"CVE-2024-1234"}})
-		req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+func TestHandleStatements_RequiresCVEs(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	t.Run("empty body", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader([]byte("{}")))
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)
-
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400, got %d", w.Code)
 		}
 	})
 
-	t.Run("invalid json", func(t *testing.T) {
-		req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader([]byte("not json")))
+	t.Run("products without cves", func(t *testing.T) {
+		body, _ := json.Marshal(statementsRequest{Products: []string{"pkg:rpm/test/openssl"}})
+		req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 (cves required), got %d", w.Code)
+		}
+	})
 
+	t.Run("invalid json", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader([]byte("not json")))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400, got %d", w.Code)
+		}
+	})
+}
+
+// TestHandleStatements_OldRoutesAre404 is the explicit breaking-change
+// regression guard for v0.4.0 — the three endpoints replaced by
+// /v1/statements must return 404, not silently route somewhere unexpected.
+func TestHandleStatements_OldRoutesAre404(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"GET /v1/cve/{id}", "GET", "/v1/cve/CVE-2024-1234"},
+		{"GET /v1/cve/{id}/summary", "GET", "/v1/cve/CVE-2024-1234/summary"},
+		{"POST /v1/resolve", "POST", "/v1/resolve"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, bytes.NewReader([]byte(`{}`)))
+			w := httptest.NewRecorder()
+			srv.ServeHTTP(w, req)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("expected 404 on removed route, got %d", w.Code)
+			}
+		})
+	}
+}
+
+// TestHandleStatements_NewFilters verifies the v0.4.0 additional filter
+// dimensions (vendors, statuses, justifications, since) all narrow the
+// result set as documented.
+func TestHandleStatements_NewFilters(t *testing.T) {
+	database := setupTestDB(t)
+	// Seed extra rows so each filter has something distinguishing to do.
+	if err := database.UpsertVendor("vendor2", "Vendor Two"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.BulkInsert([]db.Statement{
+		{Vendor: "vendor2", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/test/openssl@3.0", BaseID: "pkg:rpm/test/openssl", Version: "3.0", IDType: "purl", Status: "affected", Updated: "2026-04-15T00:00:00Z", SourceFormat: "oval"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(database, nil)
+
+	post := func(t *testing.T, req statementsRequest) []openvex.Statement {
+		t.Helper()
+		body, _ := json.Marshal(req)
+		r := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		if w.Code == http.StatusNoContent {
+			return nil
+		}
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		return decodeOpenVEX(t, w).Statements
+	}
+
+	t.Run("vendors filter", func(t *testing.T) {
+		stmts := post(t, statementsRequest{
+			CVEs:    []string{"CVE-2024-1234"},
+			Vendors: []string{"vendor2"},
+		})
+		if len(stmts) != 1 {
+			t.Fatalf("expected 1 statement (vendor2 only), got %d", len(stmts))
+		}
+		if stmts[0].Supplier != "vendor2" {
+			t.Errorf("supplier: got %q, want vendor2", stmts[0].Supplier)
+		}
+	})
+
+	t.Run("statuses filter", func(t *testing.T) {
+		stmts := post(t, statementsRequest{
+			CVEs:     []string{"CVE-2024-1234"},
+			Statuses: []string{"affected"},
+		})
+		if len(stmts) != 1 {
+			t.Fatalf("expected 1 affected statement, got %d", len(stmts))
+		}
+		if stmts[0].Status != "affected" {
+			t.Errorf("status: got %q, want affected", stmts[0].Status)
+		}
+	})
+
+	t.Run("justifications filter", func(t *testing.T) {
+		stmts := post(t, statementsRequest{
+			CVEs:           []string{"CVE-2024-1234"},
+			Justifications: []string{"vulnerable_code_not_present"},
+		})
+		// Both seeded testvendor not_affected rows carry that justification;
+		// the vendor2 affected row has no justification → excluded.
+		if len(stmts) != 2 {
+			t.Fatalf("expected 2 statements with that justification, got %d", len(stmts))
+		}
+	})
+
+	t.Run("since filter", func(t *testing.T) {
+		stmts := post(t, statementsRequest{
+			CVEs:  []string{"CVE-2024-1234"},
+			Since: "2026-01-01T00:00:00Z",
+		})
+		// vendor2's row updated 2026-04-15 passes; testvendor seed rows from
+		// 2024 are excluded.
+		if len(stmts) != 1 {
+			t.Fatalf("expected 1 since-filtered statement, got %d", len(stmts))
+		}
+		if stmts[0].Supplier != "vendor2" {
+			t.Errorf("expected vendor2 row, got %q", stmts[0].Supplier)
+		}
+	})
+
+	t.Run("combined filters", func(t *testing.T) {
+		// vendors AND statuses combined — restricts to vendor2 + affected.
+		stmts := post(t, statementsRequest{
+			CVEs:     []string{"CVE-2024-1234"},
+			Vendors:  []string{"vendor2"},
+			Statuses: []string{"affected"},
+		})
+		if len(stmts) != 1 {
+			t.Fatalf("expected 1 statement, got %d", len(stmts))
+		}
+	})
+
+	t.Run("source_formats filter (back-compat smoke)", func(t *testing.T) {
+		stmts := post(t, statementsRequest{
+			CVEs:          []string{"CVE-2024-1234"},
+			SourceFormats: []string{"oval"},
+		})
+		if len(stmts) != 1 {
+			t.Fatalf("expected 1 OVAL statement, got %d", len(stmts))
 		}
 	})
 }
@@ -311,8 +396,8 @@ func TestPOSTEndpointsHaveNoCacheControl(t *testing.T) {
 		req  *http.Request
 	}{
 		{
-			"POST /v1/resolve",
-			httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader([]byte(`{"cves":["CVE-2024-1234"],"products":["pkg:rpm/test/openssl"]}`))),
+			"POST /v1/statements",
+			httptest.NewRequest("POST", "/v1/statements", bytes.NewReader([]byte(`{"cves":["CVE-2024-1234"],"products":["pkg:rpm/test/openssl"]}`))),
 		},
 		{
 			"POST /v1/analyze",
@@ -869,14 +954,14 @@ func TestHandleIngestTrigger(t *testing.T) {
 	})
 }
 
-// TestHandleResolve_SECDATA1220 exercises the CPE-prefix expansion end-to-end
+// TestHandleStatements_SECDATA1220 exercises the CPE-prefix expansion end-to-end
 // against the real Red Hat CSAF VEX document for CVE-2024-0217. The document
 // emits only the base CPE (cpe:/o:redhat:enterprise_linux:8) for the unfixed
 // RHEL 8 branch — no ::baseos / ::appstream variants. A scanner querying with
 // a variant CPE must still match via the RedHat-documented 5-part prefix rule.
 // Reference: redhat.atlassian.net/browse/SECDATA-1220 (closed "Not a bug";
 // Red Hat's position is that scanners should prefix-match on the first 5 parts).
-func TestHandleResolve_SECDATA1220(t *testing.T) {
+func TestHandleStatements_SECDATA1220(t *testing.T) {
 	path := filepath.Join("..", "..", "testdata", "secdata-1220-cve-2024-0217.json")
 	stmts, err := csaf.ExtractFromFile(path)
 	if err != nil {
@@ -932,11 +1017,11 @@ func TestHandleResolve_SECDATA1220(t *testing.T) {
 	}
 
 	srv := NewServer(database, nil)
-	body, _ := json.Marshal(resolveRequest{
+	body, _ := json.Marshal(statementsRequest{
 		CVEs:     []string{"CVE-2024-0217"},
 		Products: []string{variantCPE},
 	})
-	req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
@@ -962,7 +1047,7 @@ func TestHandleResolve_SECDATA1220(t *testing.T) {
 	}
 }
 
-// TestHandleResolve_DebDistroIdentity is the end-to-end regression for a
+// TestHandleStatements_DebDistroIdentity is the end-to-end regression for a
 // v0.2.4 → v0.2.5 bug. Ubuntu (and any future deb) adapter emits statements
 // whose BaseID carries the `distro` qualifier (e.g.
 // `pkg:deb/ubuntu/openssl?distro=ubuntu-24.04`) because the same binary name
@@ -972,7 +1057,7 @@ func TestHandleResolve_SECDATA1220(t *testing.T) {
 // fix, splitBase stripped every qualifier uniformly, so the scanner's PURL
 // normalised to `pkg:deb/ubuntu/openssl` and failed to match the stored
 // distro-qualified base_id.
-func TestHandleResolve_DebDistroIdentity(t *testing.T) {
+func TestHandleStatements_DebDistroIdentity(t *testing.T) {
 	dbPath := t.TempDir() + "/test.db"
 	database, err := db.Open(dbPath)
 	if err != nil {
@@ -1013,11 +1098,11 @@ func TestHandleResolve_DebDistroIdentity(t *testing.T) {
 
 	srv := NewServer(database, nil)
 
-	body, _ := json.Marshal(resolveRequest{
+	body, _ := json.Marshal(statementsRequest{
 		CVEs:     []string{"CVE-2024-26130"},
 		Products: []string{"pkg:deb/ubuntu/python3-cryptography@41.0.7-3?arch=amd64&distro=ubuntu-24.04"},
 	})
-	req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
@@ -1060,13 +1145,13 @@ func TestHandleResolve_DebDistroIdentity(t *testing.T) {
 	}
 }
 
-// TestHandleResolve_AliasExpansion drives the Phase 3 translation layer
+// TestHandleStatements_AliasExpansion drives the Phase 3 translation layer
 // end-to-end. The scanner query carries a PURL with
 // `?repository_id=rhel-8-for-x86_64-appstream-rpms` (no direct CPE or bare
 // PURL match); the stored statement is keyed on the CPE
 // `cpe:/a:redhat:enterprise_linux:8::appstream`. The resolver must consult
 // product_aliases to translate the repository_id into the CPE, then match.
-func TestHandleResolve_AliasExpansion(t *testing.T) {
+func TestHandleStatements_AliasExpansion(t *testing.T) {
 	dbPath := t.TempDir() + "/alias-test.db"
 	database, err := db.Open(dbPath)
 	if err != nil {
@@ -1101,11 +1186,11 @@ func TestHandleResolve_AliasExpansion(t *testing.T) {
 	}
 
 	srv := NewServer(database, nil)
-	body, _ := json.Marshal(resolveRequest{
+	body, _ := json.Marshal(statementsRequest{
 		CVEs:     []string{"CVE-2024-9999"},
 		Products: []string{"pkg:rpm/redhat/openssl@3.0?arch=x86_64&repository_id=rhel-8-for-x86_64-appstream-rpms"},
 	})
-	req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
@@ -1123,12 +1208,12 @@ func TestHandleResolve_AliasExpansion(t *testing.T) {
 	}
 }
 
-// TestHandleResolve_SourceFormatsFilter confirms that /v1/resolve's
+// TestHandleStatements_SourceFormatsFilter confirms that /v1/resolve's
 // source_formats request field restricts which upstream formats are
 // returned. Filter input is unchanged from prior versions; consumers
 // inspect the source_format= prefix in OpenVEX status_notes to see which
 // feed each row came from.
-func TestHandleResolve_SourceFormatsFilter(t *testing.T) {
+func TestHandleStatements_SourceFormatsFilter(t *testing.T) {
 	database := setupTestDB(t)
 	if err := database.BulkInsert([]db.Statement{{
 		Vendor:       "testvendor",
@@ -1147,12 +1232,12 @@ func TestHandleResolve_SourceFormatsFilter(t *testing.T) {
 
 	run := func(t *testing.T, filter []string, wantFormats map[string]bool) {
 		t.Helper()
-		body, _ := json.Marshal(resolveRequest{
+		body, _ := json.Marshal(statementsRequest{
 			CVEs:          []string{"CVE-2024-1234"},
 			Products:      []string{"pkg:rpm/test/openssl@3.0"},
 			SourceFormats: filter,
 		})
-		req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+		req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)

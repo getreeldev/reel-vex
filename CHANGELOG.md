@@ -2,6 +2,49 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.4.0] — Unreleased — unified `/v1/statements` query endpoint
+
+> **Breaking change.** Three v0.3.0 endpoints are removed and replaced by a single `POST /v1/statements`. The split between `/v1/cve/{id}` (CVE-only lookup) and `/v1/resolve` (CVE × product matrix) was a transport-level convenience, not a semantic distinction; v0.4.0 collapses them into one filter-rich query primitive.
+>
+> Migration:
+>
+> | Old | New |
+> |---|---|
+> | `GET /v1/cve/{id}` | `POST /v1/statements` with `{"cves": ["<id>"]}` |
+> | `GET /v1/cve/{id}/summary` | No replacement; was unused. The website computes per-CVE breakdown client-side from the full statement list. |
+> | `POST /v1/resolve` | `POST /v1/statements` with the same body shape |
+>
+> All three old paths return `404` after the upgrade. URLs like `https://vex.getreel.dev/v1/cve/<id>` shared in bookmarks or chat will break — the trade-off for unifying the API behind one query primitive.
+
+### Added
+
+- **`POST /v1/statements`** — unified query primitive over the VEX statements database. Replaces `/v1/cve/{id}`, `/v1/cve/{id}/summary`, and `/v1/resolve`. `cves` is required (≥1); every other filter is optional and narrows the result set further.
+- **Four new filter dimensions** beyond v0.3.0's `source_formats`:
+  - `vendors` — `["redhat"]`, `["redhat", "suse"]`, etc.
+  - `statuses` — `["not_affected", "fixed"]`. Useful for noise-reduction policies.
+  - `justifications` — OpenVEX 0.2.0 enum values. Filters to `not_affected` rows with the given justifications.
+  - `since` — RFC3339 timestamp; statements with `updated >= since`. Enables incremental sync from a downstream cache.
+
+  Filter semantics: AND across populated dimensions, IN within each non-empty list. Empty list (or omitted field) → no filter on that dimension. `source_formats` carries forward from v0.3.0 unchanged.
+
+### Removed
+
+- `GET /v1/cve/{id}` — returns `404`. Migrate to `POST /v1/statements` with `{"cves": ["<id>"]}`.
+- `GET /v1/cve/{id}/summary` — returns `404`. The website computes the breakdown client-side; no migration needed.
+- `POST /v1/resolve` — returns `404`. Migrate to `POST /v1/statements` (same body shape).
+- Internal: `db.QueryByCVE` and `db.QueryResolve` are deleted; replaced by `db.QueryStatements(QueryFilters)` with a struct-based filter parameter.
+
+### Changed
+
+- **CVE-only queries are POST now.** The browser-friendly `GET /v1/cve/{id}` URL is gone. The trade-off: one canonical query method that scales to N filters cleanly. URLs the website previously shared (e.g. `getreel.dev/vex?cve=CVE-X`) still work — the website does the POST internally.
+- **`/v1/analyze` flow internals**: the SBOM-merge code path now calls `db.QueryStatements` instead of `db.QueryResolve`. No external behaviour change; covered by existing regression tests.
+
+### Notes
+
+- The encoder (`pkg/openvex/Encode`) is unchanged. CVE-only queries (no `products`) get nil expansion maps and the encoder falls back to each statement's stored `product_id` — same shape `/v1/cve/{id}` produced in v0.3.0. CVE+products queries echo the user's input PURLs into `products[]` — same shape `/v1/resolve` produced.
+- `vexctl merge` interop verified end-to-end against `/v1/statements` output (existing integration test renamed; same behaviour).
+- All existing `/v1/analyze` behaviour is preserved (override semantics, customer-VEX merge, sample fixtures).
+
 ## [0.3.0] — Unreleased — API format unification + customer-VEX merge
 
 > **Breaking changes — three migrations.** This release folds long-standing API tidying into one cut so future migrations stay singular.

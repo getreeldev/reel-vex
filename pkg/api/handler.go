@@ -50,9 +50,7 @@ func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 		mux:      http.NewServeMux(),
 		ingest:   ingest,
 	}
-	s.mux.HandleFunc("GET /v1/cve/{id}", s.handleCVE)
-	s.mux.HandleFunc("GET /v1/cve/{id}/summary", s.handleCVESummary)
-	s.mux.HandleFunc("POST /v1/resolve", s.handleResolve)
+	s.mux.HandleFunc("POST /v1/statements", s.handleStatements)
 	s.mux.HandleFunc("GET /v1/stats", s.handleStats)
 	s.mux.HandleFunc("POST /v1/analyze", s.handleAnalyze)
 	s.mux.HandleFunc("GET /v1/ingest", s.handleIngestStatus)
@@ -78,140 +76,82 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.handler.ServeHTTP(w, r)
 }
 
-func (s *Server) handleCVE(w http.ResponseWriter, r *http.Request) {
-	cve := r.PathValue("id")
-	if cve == "" {
-		writeError(w, http.StatusBadRequest, "missing CVE ID")
-		return
-	}
-
-	stmts, err := s.db.QueryByCVE(cve)
-	if err != nil {
-		slog.Error("query failed", "cve", cve, "error", err)
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-
-	// 204 on empty: OpenVEX 0.2.0 schema requires statements: minItems 1, so
-	// we cannot emit a valid doc with zero statements. 204 mirrors the
-	// /v1/resolve empty-response contract and keeps Cache-Control on the
-	// "no info" answer so clients don't re-poll constantly.
-	setCacheControl(w, cacheCVE)
-	if len(stmts) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
-	// /v1/cve/{id} doesn't do product expansion (queries by CVE only), so
-	// pass nil for both maps. The encoder's defensive fallback at
-	// pkg/openvex/encode.go falls back to each statement's own ProductID
-	// when baseToInputs is empty.
-	doc := openvex.Encode(stmts, nil, nil)
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(doc); err != nil {
-		slog.Error("openvex encode failed", "cve", cve, "error", err)
-	}
+// statementsRequest is the v0.4.0 unified VEX statement query body.
+//
+// CVEs is required (≥1). Every other field is an optional filter; an empty
+// slice (or empty Since) means "no filter on this dimension." Filter
+// semantics: AND across populated dimensions, IN within each.
+//
+// Products, when present, runs through the resolver — alias expansion +
+// CPE-prefix matching — and the OpenVEX encoder echoes the user's input
+// PURLs into products[] so Trivy can match them. Without Products the
+// encoder falls back to each statement's stored product_id, which may be
+// a CPE for OVAL-derived rows.
+type statementsRequest struct {
+	CVEs           []string `json:"cves"`
+	Products       []string `json:"products,omitempty"`
+	Vendors        []string `json:"vendors,omitempty"`
+	SourceFormats  []string `json:"source_formats,omitempty"`
+	Statuses       []string `json:"statuses,omitempty"`
+	Justifications []string `json:"justifications,omitempty"`
+	Since          string   `json:"since,omitempty"`
 }
 
-// cveSummary is the aggregated view of all VEX statements for a single CVE.
-// Useful for scripting and dashboards that want counts instead of the full list.
-type cveSummary struct {
-	CVE      string         `json:"cve"`
-	Total    int            `json:"total"`
-	ByStatus map[string]int `json:"by_status"`
-	Vendors  []string       `json:"vendors"`
-}
+const maxStatementsItems = 10000
 
-func (s *Server) handleCVESummary(w http.ResponseWriter, r *http.Request) {
-	cve := r.PathValue("id")
-	if cve == "" {
-		writeError(w, http.StatusBadRequest, "missing CVE ID")
-		return
-	}
-
-	stmts, err := s.db.QueryByCVE(cve)
-	if err != nil {
-		slog.Error("summary query failed", "cve", cve, "error", err)
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-
-	byStatus := make(map[string]int)
-	vendorSet := make(map[string]struct{})
-	for _, stmt := range stmts {
-		byStatus[stmt.Status]++
-		vendorSet[stmt.Vendor] = struct{}{}
-	}
-	vendors := make([]string, 0, len(vendorSet))
-	for v := range vendorSet {
-		vendors = append(vendors, v)
-	}
-
-	out := cveSummary{
-		CVE:      cve,
-		Total:    len(stmts),
-		ByStatus: byStatus,
-		Vendors:  vendors,
-	}
-
-	setCacheControl(w, cacheCVE)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
-}
-
-type resolveRequest struct {
-	Products []string `json:"products"`
-	CVEs     []string `json:"cves"`
-	// SourceFormats, when non-empty, restricts matches to statements from
-	// those upstream formats ("csaf", "oval"). Empty = all formats.
-	SourceFormats []string `json:"source_formats,omitempty"`
-}
-
-const maxResolveItems = 10000
-
-func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength > 1<<20 { // 1MB
 		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
 		return
 	}
 
-	var req resolveRequest
+	var req statementsRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
-	if len(req.CVEs) == 0 || len(req.Products) == 0 {
-		writeError(w, http.StatusBadRequest, "cves and products are required")
+	if len(req.CVEs) == 0 {
+		writeError(w, http.StatusBadRequest, "cves is required (at least one CVE)")
 		return
 	}
-	if len(req.CVEs) > maxResolveItems || len(req.Products) > maxResolveItems {
-		writeError(w, http.StatusBadRequest, "too many items (max 10000 each)")
+	if len(req.CVEs) > maxStatementsItems || len(req.Products) > maxStatementsItems {
+		writeError(w, http.StatusBadRequest, "too many items (max 10000 per array)")
 		return
 	}
 
-	// Normalize user-provided PURLs into base form and expand CPE variants
-	// into their RedHat-documented 5-part prefix, tagging each candidate with
-	// the match_reason it would carry if a statement matches. baseToInputs
-	// tracks which user inputs (in base form) produced each candidate — the
-	// OpenVEX emitter echoes those inputs into products[] so Trivy sees
-	// PURLs it can actually match when a CPE-keyed statement is returned.
-	baseToReason, baseToInputs := s.expandProducts(req.Products)
-	bases := make([]string, 0, len(baseToReason))
-	for b := range baseToReason {
-		bases = append(bases, b)
+	// Resolve user-supplied products into candidate base IDs only when the
+	// caller provided a Products filter. With no Products, the query runs
+	// without a base_id constraint and the encoder falls back to each
+	// statement's own ProductID for the response's products[] field.
+	var baseToReason map[string]string
+	var baseToInputs map[string][]string
+	var bases []string
+	if len(req.Products) > 0 {
+		baseToReason, baseToInputs = s.expandProducts(req.Products)
+		bases = make([]string, 0, len(baseToReason))
+		for b := range baseToReason {
+			bases = append(bases, b)
+		}
 	}
 
-	stmts, err := s.db.QueryResolve(req.CVEs, bases, req.SourceFormats)
+	stmts, err := s.db.QueryStatements(db.QueryFilters{
+		CVEs:           req.CVEs,
+		ProductBaseIDs: bases,
+		Vendors:        req.Vendors,
+		SourceFormats:  req.SourceFormats,
+		Statuses:       req.Statuses,
+		Justifications: req.Justifications,
+		Since:          req.Since,
+	})
 	if err != nil {
-		slog.Error("resolve failed", "error", err)
+		slog.Error("statements query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 
 	// OpenVEX 0.2.0 schema requires statements: minItems 1. 204 on empty
-	// keeps the response schema-valid. Cache-Control is intentionally not
-	// set on /v1/resolve since the request body isn't a stable cache key.
+	// keeps the response schema-valid.
 	if len(stmts) == 0 {
 		w.WriteHeader(http.StatusNoContent)
 		return

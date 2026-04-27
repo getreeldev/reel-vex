@@ -4,25 +4,22 @@ Canonical reference for every HTTP endpoint and response field. The live service
 
 - [Endpoints](#endpoints)
 - [Response format — OpenVEX 0.2.0](#response-format--openvex-020)
+- [`POST /v1/statements`](#post-v1statements)
 - [`POST /v1/analyze`](#post-v1analyze)
-- [`POST /v1/resolve`](#post-v1resolve)
-- [`GET /v1/cve/{id}`](#get-v1cveid)
 - [Recipes](#recipes)
 
 ## Endpoints
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET`  | `/v1/cve/{id}` | All VEX statements for one CVE. |
-| `GET`  | `/v1/cve/{id}/summary` | Counts + vendor list for one CVE. |
-| `POST` | `/v1/resolve` | Batch query: CVEs × products → matching statements. |
+| `POST` | `/v1/statements` | Unified query: filter VEX statements by CVE, product, vendor, status, justification, source format, or update timestamp. |
 | `POST` | `/v1/analyze` | Annotate a CycloneDX SBOM and/or merge customer-supplied VEX with vendor data. |
 | `GET`  | `/v1/stats` | Coverage statistics. |
 | `GET`  | `/v1/ingest` | Current ingest status. |
 | `POST` | `/v1/ingest` | Trigger a manual ingest (admin token). |
 | `GET`  | `/healthz` | Liveness probe. |
 
-`/v1/resolve` is the endpoint most consumers use for query-style lookups; `/v1/analyze` is the SBOM-annotation and customer-VEX-merge endpoint.
+`/v1/statements` is the endpoint most consumers use for query-style lookups; `/v1/analyze` is the SBOM-annotation and customer-VEX-merge endpoint.
 
 ## Response format — OpenVEX 0.2.0
 
@@ -205,22 +202,40 @@ curl -X POST https://vex.getreel.dev/v1/analyze \
   -d @- > annotated-with-override.json
 ```
 
-## `POST /v1/resolve`
+## `POST /v1/statements`
 
-Batch query: given a set of CVEs and a set of product identifiers, return all matching VEX statements as an OpenVEX 0.2.0 document. The endpoint runs each input identifier through the resolver (`direct`, `via_alias`, `via_cpe_prefix` expansion) before matching.
+Unified query primitive over the VEX statements database. `cves` is required; everything else is an optional filter that narrows the result set further. Returns an OpenVEX 0.2.0 document; 204 on empty match.
+
+Replaces the v0.3.0 trio (`GET /v1/cve/{id}`, `GET /v1/cve/{id}/summary`, `POST /v1/resolve`). All three paths now return `404`; migrate to `POST /v1/statements`.
 
 ### Request
 
 ```json
-POST /v1/resolve
+POST /v1/statements
 {
-  "cves": ["CVE-2021-44228"],
-  "products": ["pkg:rpm/redhat/log4j@2.14.0?repository_id=rhel-8-for-x86_64-appstream-rpms"],
-  "source_formats": ["csaf"]   // optional; ["csaf"], ["oval"], or omit for both
+  "cves":           ["CVE-2021-44228"],                                       // required, ≥1
+  "products":       ["pkg:rpm/redhat/log4j@2.14.0?repository_id=rhel-8-..."], // optional
+  "vendors":        ["redhat", "suse"],                                        // optional
+  "source_formats": ["csaf"],                                                  // optional
+  "statuses":       ["not_affected", "fixed"],                                 // optional
+  "justifications": ["vulnerable_code_not_present"],                           // optional
+  "since":          "2026-01-01T00:00:00Z"                                     // optional, RFC3339
 }
 ```
 
-`cves` and `products` are required (each capped at 10 000 entries). `source_formats` is an optional filter to restrict matches to specific upstream feed formats.
+### Filter semantics
+
+- **AND** across populated dimensions, **IN** within each non-empty list. So `vendors: [a, b]` AND `statuses: [c, d]` reads as `(vendor IN (a, b)) AND (status IN (c, d))`.
+- An empty list (or omitted field) means "no filter on that dimension."
+- `cves` is required (≥ 1 entry). Missing or empty → 400. This bounds the query — vex-hub returns vendor opinions about CVEs, not all-CVEs-on-a-product.
+- `cves` and `products` are each capped at 10 000 entries.
+- `since` filters by the statement's `updated` timestamp (`updated >= since`). RFC3339 string ordering matches chronological ordering, so e.g. `2026-04-01T00:00:00Z` returns rows updated on or after April 1, 2026.
+
+### Resolver behaviour with `products`
+
+When `products` is provided, each identifier runs through the resolver (`direct` / `via_alias` / `via_cpe_prefix` expansion) before matching, and the OpenVEX encoder echoes the user's input PURL into each statement's `products[]` so Trivy can match it.
+
+When `products` is absent, no expansion happens and the encoder emits each statement's stored `product_id` (which may be a CPE for OVAL-derived rows). Trivy will ignore CPE-only entries; `vexctl` and other consumers accept them.
 
 ### Response
 
@@ -232,7 +247,7 @@ POST /v1/resolve
   "@id": "https://openvex.dev/docs/public/vex-...",
   "author": "reel-vex aggregator <vex@getreel.dev>",
   "role": "aggregator",
-  "timestamp": "2026-04-21T12:00:00Z",
+  "timestamp": "2026-04-27T12:00:00Z",
   "version": 1,
   "statements": [
     {
@@ -248,22 +263,31 @@ POST /v1/resolve
 }
 ```
 
+### Common shapes
+
+- **CVE-only lookup** (replaces `GET /v1/cve/{id}`):
+  ```json
+  {"cves": ["CVE-2021-44228"]}
+  ```
+- **CVE × product matrix** (replaces `POST /v1/resolve`):
+  ```json
+  {"cves": ["CVE-..."], "products": ["pkg:..."]}
+  ```
+- **Filter to one vendor**:
+  ```json
+  {"cves": ["CVE-..."], "vendors": ["redhat"]}
+  ```
+- **Only "fixed" rows since a date** (incremental sync from a downstream cache):
+  ```json
+  {"cves": ["..."], "statuses": ["fixed"], "since": "2026-04-01T00:00:00Z"}
+  ```
+
 ### What Trivy will and won't match
 
-Trivy's `--vex` implementation matches on **PURL only** — it ignores `identifiers.cpe23` even when set. The encoder takes that into account by emitting your input PURLs (not the vendor's underlying CPEs) in `products[]`. Trade-offs:
+Trivy's `--vex` implementation matches on **PURL only** — it ignores `identifiers.cpe23` even when set. The encoder takes that into account by emitting your input PURLs (not the vendor's underlying CPEs) in `products[]` whenever `products` is provided. Trade-offs:
 
 - Query with a PURL → hierarchical PURL in the doc → Trivy suppresses matching scan findings. ✓
-- Query with only a CPE → CPE-only `products[]` → Trivy ignores, though `vexctl` and other OpenVEX consumers still accept the doc.
-
-## `GET /v1/cve/{id}`
-
-Returns all VEX statements for a single CVE as an OpenVEX 0.2.0 document. Empty results return `204 No Content`.
-
-```bash
-curl https://vex.getreel.dev/v1/cve/CVE-2021-44228
-```
-
-The companion `/v1/cve/{id}/summary` endpoint returns counts (status breakdown + distinct vendors) for dashboards and lightweight scripts; its response shape is `{cve, total, by_status, vendors}` and is unaffected by the OpenVEX format unification.
+- CVE-only query (no `products`) → `products[]` carries each statement's stored identifier, which may be CPE → Trivy ignores. Use `vexctl` or any other OpenVEX consumer instead, or add `products` to the request.
 
 ## Recipes
 
@@ -276,7 +300,7 @@ PURLS=$(jq -r '.Results[].Vulnerabilities[]?.PkgRef' scan.json | sort -u)
 CVES=$(jq -r '.Results[].Vulnerabilities[].VulnerabilityID' scan.json | sort -u)
 
 # 2. Ask reel-vex which ones the vendor says don't apply.
-curl -s -X POST https://vex.getreel.dev/v1/resolve \
+curl -s -X POST https://vex.getreel.dev/v1/statements \
   -H "Content-Type: application/json" \
   -d "$(jq -n --argjson cves "$(echo "$CVES" | jq -R . | jq -s .)" \
                --argjson purls "$(echo "$PURLS" | jq -R . | jq -s .)" \
@@ -307,7 +331,7 @@ The annotated CycloneDX output reflects vendor + customer merged with customer o
 OpenVEX `status_notes` carries `source_format=` and `match_reason=` so consumers can see which feed produced a row and which rule fired:
 
 ```bash
-curl -X POST https://vex.getreel.dev/v1/resolve \
+curl -X POST https://vex.getreel.dev/v1/statements \
   -H "Content-Type: application/json" \
   -d '{"cves": ["CVE-2021-44228"], "products": ["pkg:rpm/redhat/log4j?repository_id=rhel-8-for-x86_64-appstream-rpms"]}' \
   | jq '.statements[].status_notes'

@@ -138,10 +138,13 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			baseSlice = append(baseSlice, b)
 		}
 		var err error
-		vendorStmts, err = s.db.QueryResolve(cveSlice, baseSlice, nil)
+		vendorStmts, err = s.db.QueryStatements(db.QueryFilters{
+			CVEs:           cveSlice,
+			ProductBaseIDs: baseSlice,
+		})
 		if err != nil {
-			slog.Error("analyze resolve failed", "error", err)
-			writeError(w, http.StatusInternalServerError, "resolve failed")
+			slog.Error("analyze query failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
 	}

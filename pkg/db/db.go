@@ -149,58 +149,82 @@ func (db *DB) BulkInsert(stmts []Statement) error {
 	return tx.Commit()
 }
 
-// QueryByCVE returns all statements for a given CVE.
-func (db *DB) QueryByCVE(cve string) ([]Statement, error) {
-	rows, err := db.db.Query(`
-		SELECT vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format
-		FROM statements WHERE cve = ?
-	`, cve)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanStatements(rows)
+// QueryFilters specifies the WHERE-clause inputs for QueryStatements.
+//
+// CVEs is required (≥1); empty CVE list returns no rows. Every other field is
+// optional. An empty slice (or empty Since) means "no filter on this
+// dimension" — that dimension contributes no clause to the query.
+//
+// Within a non-empty slice, IN semantics. Across populated dimensions, AND
+// semantics. So:
+//
+//	QueryFilters{
+//	    CVEs:    []string{"CVE-X", "CVE-Y"},
+//	    Vendors: []string{"redhat", "suse"},
+//	    Statuses:[]string{"not_affected"},
+//	}
+//
+// reads as: cve IN (CVE-X, CVE-Y) AND vendor IN (redhat, suse) AND
+// status IN (not_affected).
+//
+// ProductBaseIDs callers should pass already-normalized base IDs (PURLs
+// without @version and most qualifiers; CPEs as-is). Higher-level handler
+// code is expected to run user-supplied PURLs through the resolver before
+// passing them here.
+//
+// Since is an RFC3339 timestamp; rows whose `updated` is lexicographically
+// greater than or equal to it are returned. RFC3339 string ordering
+// matches chronological ordering, so no parsing is required.
+type QueryFilters struct {
+	CVEs           []string
+	ProductBaseIDs []string
+	Vendors        []string
+	SourceFormats  []string
+	Statuses       []string
+	Justifications []string
+	Since          string
 }
 
-// QueryResolve returns statements matching any of the given CVEs AND any of the
-// given product base IDs, optionally filtered to specific source_formats.
-// Callers should pass already-normalized base IDs (PURLs without @version
-// and qualifiers; CPEs as-is). Empty sourceFormats means "no filter" —
-// every format matches.
-func (db *DB) QueryResolve(cves, productBaseIDs, sourceFormats []string) ([]Statement, error) {
-	if len(cves) == 0 || len(productBaseIDs) == 0 {
+// QueryStatements is the unified VEX statement query primitive — replaces
+// the v0.3.0 QueryResolve + QueryByCVE pair. CVEs is required; everything
+// else narrows the result set further.
+func (db *DB) QueryStatements(f QueryFilters) ([]Statement, error) {
+	if len(f.CVEs) == 0 {
 		return nil, nil
 	}
 
-	cvePlaceholders := strings.Repeat("?,", len(cves))
-	cvePlaceholders = cvePlaceholders[:len(cvePlaceholders)-1]
+	clauses := make([]string, 0, 7)
+	args := make([]any, 0)
 
-	prodPlaceholders := strings.Repeat("?,", len(productBaseIDs))
-	prodPlaceholders = prodPlaceholders[:len(prodPlaceholders)-1]
-
-	args := make([]any, 0, len(cves)+len(productBaseIDs)+len(sourceFormats))
-	for _, c := range cves {
-		args = append(args, c)
-	}
-	for _, p := range productBaseIDs {
-		args = append(args, p)
-	}
-
-	sourceFilter := ""
-	if len(sourceFormats) > 0 {
-		srcPlaceholders := strings.Repeat("?,", len(sourceFormats))
-		srcPlaceholders = srcPlaceholders[:len(srcPlaceholders)-1]
-		sourceFilter = fmt.Sprintf(" AND source_format IN (%s)", srcPlaceholders)
-		for _, sf := range sourceFormats {
-			args = append(args, sf)
+	addIn := func(col string, vals []string) {
+		if len(vals) == 0 {
+			return
 		}
+		placeholders := strings.Repeat("?,", len(vals))
+		placeholders = placeholders[:len(placeholders)-1]
+		clauses = append(clauses, fmt.Sprintf("%s IN (%s)", col, placeholders))
+		for _, v := range vals {
+			args = append(args, v)
+		}
+	}
+
+	addIn("cve", f.CVEs)
+	addIn("base_id", f.ProductBaseIDs)
+	addIn("vendor", f.Vendors)
+	addIn("source_format", f.SourceFormats)
+	addIn("status", f.Statuses)
+	addIn("justification", f.Justifications)
+
+	if f.Since != "" {
+		clauses = append(clauses, "updated >= ?")
+		args = append(args, f.Since)
 	}
 
 	query := fmt.Sprintf(`
 		SELECT vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format
 		FROM statements
-		WHERE cve IN (%s) AND base_id IN (%s)%s
-	`, cvePlaceholders, prodPlaceholders, sourceFilter)
+		WHERE %s
+	`, strings.Join(clauses, " AND "))
 
 	rows, err := db.db.Query(query, args...)
 	if err != nil {

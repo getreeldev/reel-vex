@@ -10,18 +10,18 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/openvex"
 )
 
-// TestHandleResolve_OpenVEXSchema validates that /v1/resolve produces a
+// TestHandleStatements_OpenVEXSchema validates that /v1/resolve produces a
 // structurally valid OpenVEX 0.2.0 document with the user's input PURL
 // echoed into products[]. /v1/resolve became OpenVEX-only in v0.3.0.
-func TestHandleResolve_OpenVEXSchema(t *testing.T) {
+func TestHandleStatements_OpenVEXSchema(t *testing.T) {
 	database := setupTestDB(t)
 	srv := NewServer(database, nil)
 
-	body, _ := json.Marshal(resolveRequest{
+	body, _ := json.Marshal(statementsRequest{
 		CVEs:     []string{"CVE-2024-1234"},
 		Products: []string{"pkg:rpm/test/openssl@3.0"},
 	})
-	req := httptest.NewRequest("POST", "/v1/resolve", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)

@@ -54,8 +54,8 @@ reel-vex pulls from both formats, normalizes the statements into one database, a
 ┌──────────────────────────────────────────────────────────┐
 │                        HTTP API                           │
 │                                                           │
-│  GET  /v1/cve/{id}                                        │
-│  POST /v1/resolve        (with optional source_formats)   │
+│  POST /v1/statements     (CVE / product / vendor /        │
+│                           status / since filters)         │
 │  POST /v1/analyze        (annotated SBOM + customer VEX)  │
 │  GET  /v1/stats                                           │
 │  GET  /v1/ingest         (status) ·  POST /v1/ingest      │
@@ -142,10 +142,10 @@ Each returned statement carries a `match_reason` field (`direct`, `via_alias`, `
 
 Base URL: `https://vex.getreel.dev`. All VEX-statement-emitting endpoints return [OpenVEX 0.2.0](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md). Full field-level reference — every endpoint, every enum value, customer-VEX merge semantics — lives in [`docs/api.md`](./docs/api.md).
 
-Quick batch resolve:
+Quick batch query:
 
 ```bash
-curl -X POST https://vex.getreel.dev/v1/resolve \
+curl -X POST https://vex.getreel.dev/v1/statements \
   -H "Content-Type: application/json" \
   -d '{
     "cves": ["CVE-2021-44228"],
@@ -173,7 +173,7 @@ curl -X POST https://vex.getreel.dev/v1/resolve \
 }
 ```
 
-`status_notes` carries `source_format=` (which feed) and `match_reason=` (which rule fired) for diagnostic traceability without inventing custom OpenVEX fields. See [`docs/api.md`](./docs/api.md) for `/v1/cve/{id}`, `/v1/analyze` (SBOM annotation + customer-VEX merge), `/v1/stats`, `/v1/ingest`, and the full field reference.
+`status_notes` carries `source_format=` (which feed) and `match_reason=` (which rule fired) for diagnostic traceability without inventing custom OpenVEX fields. See [`docs/api.md`](./docs/api.md) for `/v1/statements` filter shapes, `/v1/analyze` (SBOM annotation + customer-VEX merge), `/v1/stats`, `/v1/ingest`, and the full field reference.
 
 ## Run it yourself
 
