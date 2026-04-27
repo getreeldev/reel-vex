@@ -30,7 +30,7 @@ Every statement-returning endpoint (`/v1/cve/{id}`, `/v1/resolve`) emits the sam
 
 | Field | Type | Always present? | Description |
 |---|---|---|---|
-| `vendor` | string | yes | Vendor identifier (e.g. `redhat`, `suse`). Matches the adapter ID that produced the statement. |
+| `vendor` | string | yes | Vendor identifier (e.g. `redhat`, `suse`, `ubuntu`, `debian`). Matches the adapter ID that produced the statement. |
 | `cve` | string | yes | CVE identifier. |
 | `product_id` | string | yes | Full product identifier as published by the vendor — PURL (with version) or CPE 2.2 URI. |
 | `version` | string | optional | Package version for PURL-keyed statements; omitted for CPE and for PURLs that were published without a version. |
@@ -49,6 +49,8 @@ Every statement-returning endpoint (`/v1/cve/{id}`, `/v1/resolve`) emits the sam
 | `affected` | The vendor has confirmed this product is impacted. |
 | `fixed` | A fix is available; consumers should upgrade. |
 | `under_investigation` | Vendor has not yet determined impact. |
+
+reel-vex publishes whatever status the vendor stated — including `affected` and `under_investigation`. Trivy's `--vex` flag suppresses on `not_affected` and `fixed` and ignores the other two; `vexctl` and custom policy engines may treat them differently. Filter client-side if you want a narrower set.
 
 ### Justification values
 
@@ -73,6 +75,29 @@ Returned only for endpoints that perform product expansion (`/v1/resolve`, `/v1/
 | `via_cpe_prefix` | The query is a CPE 2.2 URI, and its 5-part prefix (`part:vendor:product:version:update`) matches the statement — implements Red Hat's [SECDATA-1220](https://redhat.atlassian.net/browse/SECDATA-1220) contract. | 3 |
 
 Precedence: when the same candidate is produced by multiple rules, the strongest reason wins.
+
+### PURL identity rules
+
+For PURL-keyed statements, qualifiers behave in two distinct modes:
+
+| Qualifier | Mode | Effect |
+|---|---|---|
+| `distro` | identity | Part of the statement's `base_id` — `pkg:deb/debian/openssl?distro=debian-12` is a different identity from `pkg:deb/debian/openssl?distro=debian-11`. **Required** on deb-shaped queries to match Debian and Ubuntu OVAL statements. |
+| `repository_id` | filter | Stripped from `base_id`; used by the alias resolver to expand to a CPE (`via_alias`). Required on Red Hat queries that need EUS / AUS / E4S coverage. |
+| `arch`, `epoch` | stripped | Not part of identity; ignored when matching. |
+
+Example — deb-shaped query against Debian Bookworm:
+
+```bash
+curl -X POST https://vex.getreel.dev/v1/resolve \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cves": ["CVE-2024-0727"],
+    "products": ["pkg:deb/debian/openssl?distro=debian-12"]
+  }'
+```
+
+If `?distro=debian-12` is omitted, deb-shaped statements keyed to a specific Debian release will not match. The same rule applies to Ubuntu (`?distro=ubuntu-22.04`, etc.).
 
 ### Source format filter
 

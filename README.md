@@ -15,7 +15,7 @@
 
 ## Why
 
-Vulnerability scanners produce long lists of CVEs. Many of those CVEs don't actually affect you — the vendor already confirmed the vulnerable code isn't present, a fix is available, or it's still under investigation. This information is published as VEX (Vulnerability Exploitability eXchange) statements. Red Hat, SUSE, and others publish it as CSAF 2.0 JSON. Red Hat (and others) also publish it as OVAL XML — with different coverage from their CSAF feed.
+Vulnerability scanners produce long lists of CVEs. Many of those CVEs don't actually affect you — the vendor already confirmed the vulnerable code isn't present, a fix is available, or it's still under investigation. This information is published as VEX (Vulnerability Exploitability eXchange) statements. Red Hat and SUSE publish it as CSAF 2.0 JSON; Red Hat, Ubuntu, and Debian publish it as OVAL XML. Red Hat publishes both formats with intentionally different coverage between them.
 
 reel-vex pulls from both formats, normalizes the statements into one database, and bridges identifier schemes so a scanner querying with a package PURL matches statements vendors published against a platform CPE. One query, unified answer.
 
@@ -36,8 +36,8 @@ reel-vex pulls from both formats, normalizes the statements into one database, a
 │   └──────┬──────┘                    └──────┬───────┘     │
 │          │                                  │             │
 │   ┌──────┴──────┐                           │             │
-│   │ RH OVAL     │                           │             │
-│   │ adapter     │                           │             │
+│   │ OVAL        │                           │             │
+│   │ adapters    │                           │             │
 │   └──────┬──────┘                           │             │
 │          │                                  │             │
 │          ▼                                  ▼             │
@@ -81,11 +81,11 @@ Parsing uses [`gocsaf/csaf`](https://github.com/gocsaf/csaf) (the strict path) w
 - **CVE statuses** from `vulnerabilities[].product_status`: `not_affected`, `fixed`, `affected`, `under_investigation`.
 - **Justifications** for `not_affected`: `component_not_present`, `vulnerable_code_not_present`, `vulnerable_code_not_in_execute_path`, `inline_mitigations_already_exist`.
 
-### Red Hat OVAL adapter
+### OVAL adapters
 
-Fetches a single OVAL XML file per adapter instance (each OVAL file gets its own config entry). `HEAD` check against `Last-Modified` short-circuits the GET when upstream hasn't regenerated the file. On a pull, the bz2-compressed response is streamed through `compress/bzip2` and parsed via [`getreeldev/oval-to-vex`](https://github.com/getreeldev/oval-to-vex) — a dedicated OVAL-to-VEX translator library maintained alongside reel-vex.
+Three OVAL adapters share the same fetch/parse flow: Red Hat, Ubuntu, and Debian. Each adapter instance fetches a single bz2-compressed OVAL XML file (one config entry per file/release). A `HEAD` check against `Last-Modified` short-circuits the GET when upstream hasn't regenerated the file. On a pull, the response is streamed through `compress/bzip2` and parsed via [`getreeldev/oval-to-vex`](https://github.com/getreeldev/oval-to-vex) — a dedicated OVAL-to-VEX translator library maintained alongside reel-vex, with per-vendor parsers (`FromRedHatOVAL`, `FromUbuntuOVAL`, `FromDebianOVAL`).
 
-This adapter exists to fill the coverage gap that Red Hat's CSAF feed intentionally leaves: EUS / AUS / E4S / SAP / HA / NFV stream-suffix CPEs (see [SECDATA-1181](https://redhat.atlassian.net/browse/SECDATA-1181)). OVAL has them; CSAF doesn't.
+The Red Hat OVAL adapter exists to fill the coverage gap that Red Hat's CSAF feed intentionally leaves: EUS / AUS / E4S / SAP / HA / NFV stream-suffix CPEs (see [SECDATA-1181](https://redhat.atlassian.net/browse/SECDATA-1181)). OVAL has them; CSAF doesn't. Ubuntu and Debian don't publish CSAF, so OVAL is the primary feed for those vendors. Ubuntu deb-shaped statements emit `pkg:deb/ubuntu/<name>?distro=ubuntu-<version>` PURLs; Debian emits `pkg:deb/debian/<name>?distro=debian-<N>`. The `distro` qualifier is part of identity — focal `openssl` and noble `openssl` are distinct products with different fix versions.
 
 ### Alias fetchers
 
@@ -108,6 +108,8 @@ The `serve` command runs ingest automatically on a configurable interval (defaul
 | Red Hat | CSAF VEX | [security.access.redhat.com/data/csaf/v2/vex/](https://security.access.redhat.com/data/csaf/v2/vex/) | ~313K | PURL + CPE |
 | Red Hat | OVAL | [security.access.redhat.com/data/oval/v2/](https://security.access.redhat.com/data/oval/v2/) | 1 per stream (EUS/AUS/E4S/…) | CPE (incl. stream variants) |
 | SUSE | CSAF VEX | [ftp.suse.com/pub/projects/security/csaf-vex/](https://ftp.suse.com/pub/projects/security/csaf-vex/) | ~54K | CPE |
+| Ubuntu | OVAL | [security-metadata.canonical.com/oval/](https://security-metadata.canonical.com/oval/) | 1 per LTS release (focal / jammy / noble) | PURL (`pkg:deb/ubuntu/<name>?distro=ubuntu-<v>`) |
+| Debian | OVAL | [www.debian.org/security/oval/](https://www.debian.org/security/oval/) | 1 per release (bullseye / bookworm / trixie) | PURL (`pkg:deb/debian/<name>?distro=debian-<n>`) |
 
 Alias sources:
 
@@ -132,6 +134,14 @@ adapters:
   - type: redhat-oval
     id: redhat-oval-rhel-9.6-eus
     url: https://security.access.redhat.com/data/oval/v2/RHEL9/rhel-9.6-eus.oval.xml.bz2
+  - type: ubuntu-oval
+    id: ubuntu-oval-noble
+    name: Ubuntu 24.04 LTS
+    url: https://security-metadata.canonical.com/oval/com.ubuntu.noble.usn.oval.xml.bz2
+  - type: debian-oval
+    id: debian-oval-bookworm
+    name: Debian 12 (bookworm)
+    url: https://www.debian.org/security/oval/oval-definitions-bookworm.xml.bz2
 
 aliases:
   - type: redhat-repository-to-cpe
@@ -142,11 +152,13 @@ aliases:
 **Adapter types currently registered:**
 - `csaf` — any CSAF 2.0 provider (generic)
 - `redhat-oval` — Red Hat OVAL (one URL per adapter entry)
+- `ubuntu-oval` — Canonical USN OVAL (one URL per LTS release)
+- `debian-oval` — Debian Security Tracker OVAL (one URL per release)
 
 **Alias fetcher types currently registered:**
 - `redhat-repository-to-cpe` — Red Hat's repository → CPE mapping
 
-Each adapter `id` must be unique across the config (used as the watermark key in `adapter_state`); the `vendor` written onto statements comes from `Adapter.Vendor()`. For CSAF adapters, `Vendor()` returns the same value as `id`. For the Red Hat OVAL adapter, `Vendor()` always returns `redhat` regardless of which OVAL file the adapter targets, so all Red Hat statements (CSAF + OVAL) live under one vendor string and are distinguished by `source_format`.
+Each adapter `id` must be unique across the config (used as the watermark key in `adapter_state`); the `vendor` written onto statements comes from `Adapter.Vendor()`. For CSAF adapters, `Vendor()` returns the same value as `id`. For OVAL adapters, `Vendor()` returns the canonical vendor name (`redhat`, `ubuntu`, `debian`) regardless of which OVAL file the adapter targets, so all statements from one vendor live under one vendor string and are distinguished by `source_format` and (for deb-shaped products) the `?distro=` qualifier on `product_id`.
 
 ## Data model
 
@@ -323,6 +335,8 @@ reel-vex/
       config.go, registry.go   -- AdapterConfig + factory registry
       csafadapter/             -- CSAF adapter (wraps pkg/csaf)
       redhatoval/              -- Red Hat OVAL adapter (wraps oval-to-vex)
+      ubuntuoval/              -- Ubuntu OVAL adapter (wraps oval-to-vex)
+      debianoval/              -- Debian OVAL adapter (wraps oval-to-vex)
     aliases/                   -- alias-fetcher framework
       aliases.go               -- Fetcher interface + registry
       redhat.go                -- Red Hat repository-to-cpe.json fetcher
@@ -340,7 +354,7 @@ reel-vex/
   Dockerfile                   -- golang:1.26-alpine → alpine:3.21
 ```
 
-**Companion library**: [`getreeldev/oval-to-vex`](https://github.com/getreeldev/oval-to-vex) — standalone Go library that parses Red Hat OVAL XML and emits VEX-shaped statements. Zero dependencies beyond stdlib. reel-vex's RH OVAL adapter delegates to it; anyone else building scanners can `go get github.com/getreeldev/oval-to-vex/translator`.
+**Companion library**: [`getreeldev/oval-to-vex`](https://github.com/getreeldev/oval-to-vex) — standalone Go library that parses Red Hat, Ubuntu, and Debian OVAL XML into VEX-shaped statements. Zero dependencies beyond stdlib. reel-vex's three OVAL adapters delegate to it; anyone else building scanners can `go get github.com/getreeldev/oval-to-vex/translator`.
 
 ## Run it yourself
 
