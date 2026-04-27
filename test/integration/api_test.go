@@ -83,6 +83,18 @@ func runTests(m *testing.M) int {
 		os.Exit(1)
 	}
 
+	// Wait for the startup ingest cycle to finish so TestIngest_TriggerWithAuth
+	// doesn't race it. The server fires an immediate ingest at boot against
+	// the placeholder example.invalid adapter; on slow CI runners (DNS NXDOMAIN
+	// retries) it can still be running when the trigger test runs. Without
+	// this wait, that test sometimes gets 409 "ingest already running" instead
+	// of the expected 202.
+	if err := waitForIngestQuiet(serverURL+"/v1/ingest", 30*time.Second); err != nil {
+		fmt.Fprintf(os.Stderr, "startup ingest didn't quiesce: %s\n", err)
+		cmd.Process.Kill()
+		os.Exit(1)
+	}
+
 	return m.Run()
 }
 
@@ -831,6 +843,29 @@ func waitForServer(url string, timeout time.Duration) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("server not ready after %s", timeout)
+}
+
+// waitForIngestQuiet polls /v1/ingest until the running flag drops to false.
+// Used by TestMain to wait for the startup ingest cycle (against the
+// placeholder example.invalid adapter) to finish before any test that might
+// race it.
+func waitForIngestQuiet(url string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err == nil {
+			var status struct {
+				Running bool `json:"running"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&status)
+			resp.Body.Close()
+			if !status.Running {
+				return nil
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("ingest still running after %s", timeout)
 }
 
 func findRepoRoot() string {
