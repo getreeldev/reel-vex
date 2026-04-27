@@ -608,6 +608,85 @@ func TestIngest_TriggerWithAuth(t *testing.T) {
 	}
 }
 
+// --- vexctl interop ---
+
+// TestVexctl_AcceptsResolveOutput verifies that the OpenVEX 0.2.0 doc
+// emitted by /v1/resolve passes through `vexctl merge` cleanly. This is the
+// canonical interchange surface — if vexctl rejects our output, every
+// downstream pipeline that relies on it (Trivy, Grype, custom OPA gates)
+// falls over too. Skips cleanly when vexctl isn't installed.
+func TestVexctl_AcceptsResolveOutput(t *testing.T) {
+	if _, err := exec.LookPath("vexctl"); err != nil {
+		t.Skip("vexctl not installed; skipping interop check")
+	}
+
+	resp := post(t, "/v1/resolve", map[string]any{
+		"cves":     []string{"CVE-2024-1234"},
+		"products": []string{"pkg:rpm/redhat/openssl@3.0.7-27.el9"},
+	})
+	expectStatus(t, resp, 200)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	f, err := os.CreateTemp("", "vexctl-resolve-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	out, err := exec.Command("vexctl", "merge", f.Name()).CombinedOutput()
+	if err != nil {
+		t.Fatalf("vexctl merge rejected /v1/resolve output: %v\noutput: %s", err, out)
+	}
+}
+
+// TestVexctl_AcceptsAnalyzeCustomerVEXOutput is the new-feature variant of
+// the interop check: the customer-VEX-only flow on /v1/analyze emits a
+// merged OpenVEX doc with from_customer_vex match_reason. vexctl must
+// accept it identically — the merge semantic is internal to reel-vex; the
+// wire format is plain OpenVEX 0.2.0.
+func TestVexctl_AcceptsAnalyzeCustomerVEXOutput(t *testing.T) {
+	if _, err := exec.LookPath("vexctl"); err != nil {
+		t.Skip("vexctl not installed; skipping interop check")
+	}
+
+	customerDoc := map[string]any{
+		"@context": "https://openvex.dev/ns/v0.2.0",
+		"statements": []any{
+			map[string]any{
+				"vulnerability": map[string]any{"name": "CVE-2024-1234"},
+				"products":      []any{map[string]any{"@id": "pkg:rpm/redhat/openssl"}},
+				"status":        "affected",
+				"supplier":      "acme-internal",
+				"timestamp":     "2026-04-20T00:00:00Z",
+			},
+		},
+	}
+	resp := post(t, "/v1/analyze", map[string]any{"customer_vex": []any{customerDoc}})
+	expectStatus(t, resp, 200)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	f, err := os.CreateTemp("", "vexctl-analyze-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	out, err := exec.Command("vexctl", "merge", f.Name()).CombinedOutput()
+	if err != nil {
+		t.Fatalf("vexctl merge rejected /v1/analyze output: %v\noutput: %s", err, out)
+	}
+}
+
 // --- Method not allowed ---
 
 func TestMethodNotAllowed(t *testing.T) {
