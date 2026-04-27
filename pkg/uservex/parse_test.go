@@ -1,4 +1,4 @@
-package customervex
+package uservex
 
 import (
 	"encoding/json"
@@ -56,7 +56,7 @@ func TestParse_HappyPath(t *testing.T) {
 		t.Errorf("id_type: got %q, want purl", got.IDType)
 	}
 	if got.SourceFormat != "" {
-		t.Errorf("source_format: got %q, want empty (customer rows have no upstream feed)", got.SourceFormat)
+		t.Errorf("source_format: got %q, want empty (user rows have no upstream feed)", got.SourceFormat)
 	}
 	if got.Updated != "2026-04-20T10:00:00Z" {
 		t.Errorf("updated: got %q (per-statement timestamp should win)", got.Updated)

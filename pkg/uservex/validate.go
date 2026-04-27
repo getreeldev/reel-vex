@@ -1,4 +1,4 @@
-package customervex
+package uservex
 
 import (
 	"fmt"
@@ -26,7 +26,7 @@ var validJustifications = map[string]bool{
 
 // validateStatement enforces the inbound shape rules. Distinct from
 // pkg/openvex.Validate, which is outbound-focused (requires fields like @id
-// and author that the server fills in, not the customer).
+// and author that the server fills in, not the user).
 //
 // Inbound rules:
 //   - vulnerability.name must be non-empty (we have nothing to merge against without a CVE).

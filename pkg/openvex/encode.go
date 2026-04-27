@@ -116,7 +116,7 @@ func toStatement(s db.Statement, baseToInputs map[string][]string, baseToReason 
 	}
 
 	// status_notes carries diagnostic provenance reel-vex wants to surface
-	// without a custom OpenVEX field. Customer-sourced rows (no upstream
+	// without a custom OpenVEX field. User-sourced rows (no upstream
 	// feed) skip the source_format= prefix entirely.
 	var notesParts []string
 	if s.SourceFormat != "" {

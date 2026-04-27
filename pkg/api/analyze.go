@@ -7,38 +7,38 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/getreeldev/reel-vex/pkg/customervex"
 	"github.com/getreeldev/reel-vex/pkg/db"
 	"github.com/getreeldev/reel-vex/pkg/openvex"
+	"github.com/getreeldev/reel-vex/pkg/uservex"
 )
 
 const (
-	maxAnalyzeBodySize = 5 << 20 // 5MB — covers SBOM + optional customer_vex.
+	maxAnalyzeBodySize = 5 << 20 // 5MB — covers SBOM + optional user_vex.
 	maxSBOMComponents  = 50000
 	maxSBOMVulns       = 10000
 )
 
 // analyzeRequest wraps the inputs accepted by /v1/analyze.
 //
-// At least one of SBOM or CustomerVEX is required. SBOM is a CycloneDX 1.4+
-// document inlined as JSON; CustomerVEX is one or more OpenVEX 0.2.0
+// At least one of SBOM or UserVEX is required. SBOM is a CycloneDX 1.4+
+// document inlined as JSON; UserVEX is one or more OpenVEX 0.2.0
 // documents. The native reel-vex flat format is not accepted as input
 // anywhere in the API.
 type analyzeRequest struct {
-	SBOM        json.RawMessage   `json:"sbom,omitempty"`
-	CustomerVEX []json.RawMessage `json:"customer_vex,omitempty"`
+	SBOM    json.RawMessage   `json:"sbom,omitempty"`
+	UserVEX []json.RawMessage `json:"user_vex,omitempty"`
 }
 
 // handleAnalyze routes by input shape:
 //   - sbom only          → annotated CycloneDX (vendor data only).
-//   - customer_vex only  → merged OpenVEX 0.2.0 doc.
-//   - both               → annotated CycloneDX with vendor + customer merged.
+//   - user_vex only  → merged OpenVEX 0.2.0 doc.
+//   - both               → annotated CycloneDX with vendor + user merged.
 //
-// Customer statements override vendor statements on (cve, base_id) collision.
-// On customer-asserted CVEs the SBOM-annotation rollup considers only customer
+// User statements override vendor statements on (cve, base_id) collision.
+// On user-asserted CVEs the SBOM-annotation rollup considers only user
 // rows, even when vendor rows on the same CVE sit at a different base_id —
 // this guards against the higher-priority vendor not_affected outranking a
-// customer affected on a different identifier.
+// user affected on a different identifier.
 func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength > maxAnalyzeBodySize {
 		writeError(w, http.StatusRequestEntityTooLarge, "request body too large (max 5MB)")
@@ -51,27 +51,27 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hasSBOM := len(req.SBOM) > 0 && string(req.SBOM) != "null"
-	hasCustomerVEX := len(req.CustomerVEX) > 0
-	if !hasSBOM && !hasCustomerVEX {
-		writeError(w, http.StatusBadRequest, "at least one of sbom or customer_vex required")
+	hasUserVEX := len(req.UserVEX) > 0
+	if !hasSBOM && !hasUserVEX {
+		writeError(w, http.StatusBadRequest, "at least one of sbom or user_vex required")
 		return
 	}
 
-	// 1. Parse customer VEX (if any). Validation + limit checks live in
-	//    customervex.Parse. Map ErrTooMany* errors to 400; everything else
+	// 1. Parse user VEX (if any). Validation + limit checks live in
+	//    uservex.Parse. Map ErrTooMany* errors to 400; everything else
 	//    is a 422 shape violation.
-	var customerStmts []db.Statement
-	if hasCustomerVEX {
-		parsed, err := customervex.Parse(req.CustomerVEX, time.Now().UTC())
+	var userStmts []db.Statement
+	if hasUserVEX {
+		parsed, err := uservex.Parse(req.UserVEX, time.Now().UTC())
 		if err != nil {
 			status := http.StatusUnprocessableEntity
-			if customervex.IsClientError(err) {
+			if uservex.IsClientError(err) {
 				status = http.StatusBadRequest
 			}
 			writeError(w, status, err.Error())
 			return
 		}
-		customerStmts = parsed
+		userStmts = parsed
 	}
 
 	// 2. Decode SBOM (if any) and extract its identifiers + CVE list.
@@ -108,20 +108,20 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Build the query inputs for the vendor lookup — union of SBOM-derived
-	//    and customer-derived (cves, base_ids). SBOM components run through
+	//    and user-derived (cves, base_ids). SBOM components run through
 	//    the resolver so via_alias / via_cpe_prefix candidates surface.
-	//    Customer base_ids are used directly: customer asserts on a specific
+	//    User base_ids are used directly: user asserts on a specific
 	//    identifier and we don't want resolver expansion to widen the claim.
 	respBaseToReason, respBaseToInputs := s.expandProducts(sbomComponentIDs)
 	queryBases := make(map[string]bool, len(respBaseToReason))
 	for b := range respBaseToReason {
 		queryBases[b] = true
 	}
-	queryCVEs := make(map[string]bool, len(sbomCVEs)+len(customerStmts))
+	queryCVEs := make(map[string]bool, len(sbomCVEs)+len(userStmts))
 	for _, c := range sbomCVEs {
 		queryCVEs[c] = true
 	}
-	for _, c := range customerStmts {
+	for _, c := range userStmts {
 		queryCVEs[c.CVE] = true
 		queryBases[c.BaseID] = true
 	}
@@ -149,15 +149,15 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 5. Merge with customer-override semantics.
-	merged, customerCVEs := customervex.Merge(vendorStmts, customerStmts)
+	// 5. Merge with user-override semantics.
+	merged, userCVEs := uservex.Merge(vendorStmts, userStmts)
 
-	// 6. Extend the encoder maps with customer-row entries. customer.BaseID
-	//    may collide with an SBOM-derived base; in that case the customer's
-	//    match_reason wins (override). The customer's product_id is added
+	// 6. Extend the encoder maps with user-row entries. user.BaseID
+	//    may collide with an SBOM-derived base; in that case the user's
+	//    match_reason wins (override). The user's product_id is added
 	//    to the input echo list so the OpenVEX encoder emits it verbatim.
-	for _, c := range customerStmts {
-		respBaseToReason[c.BaseID] = customervex.MatchReason
+	for _, c := range userStmts {
+		respBaseToReason[c.BaseID] = uservex.MatchReason
 		alreadyEchoed := false
 		for _, in := range respBaseToInputs[c.BaseID] {
 			if in == c.ProductID {
@@ -174,13 +174,13 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if hasSBOM {
 		if len(merged) > 0 {
-			annotateSBOM(sbom, merged, customerCVEs)
+			annotateSBOM(sbom, merged, userCVEs)
 		}
 		json.NewEncoder(w).Encode(sbom)
 		return
 	}
-	// customer-vex-only: emit OpenVEX of the merged set. Empty merged set
-	// can't happen in practice once parse succeeds (customer rows are
+	// user-vex-only: emit OpenVEX of the merged set. Empty merged set
+	// can't happen in practice once parse succeeds (user rows are
 	// always in the merged set), but we 204 anyway to mirror /v1/statements
 	// and stay schema-valid.
 	if len(merged) == 0 {
@@ -245,11 +245,11 @@ func extractVulnerabilities(sbom map[string]any) map[int]string {
 
 // annotateSBOM adds VEX analysis to vulnerabilities in the SBOM.
 //
-// customerCVEs gates the override semantic: for any CVE the customer asserted
-// on, vendor rows are excluded from the per-CVE rollup so the customer's
+// userCVEs gates the override semantic: for any CVE the user asserted
+// on, vendor rows are excluded from the per-CVE rollup so the user's
 // claim wins absolutely — even when a higher-priority vendor not_affected
 // sits at a different base_id for the same CVE.
-func annotateSBOM(sbom map[string]any, stmts []db.Statement, customerCVEs map[string]bool) {
+func annotateSBOM(sbom map[string]any, stmts []db.Statement, userCVEs map[string]bool) {
 	type resolved struct {
 		state         string
 		justification string
@@ -258,10 +258,10 @@ func annotateSBOM(sbom map[string]any, stmts []db.Statement, customerCVEs map[st
 	byCVE := make(map[string]*resolved)
 
 	for _, s := range stmts {
-		// Override gate: on customer-asserted CVEs, drop vendor rows from
-		// the rollup. Customer rows have SourceFormat="" (no upstream feed);
+		// Override gate: on user-asserted CVEs, drop vendor rows from
+		// the rollup. User rows have SourceFormat="" (no upstream feed);
 		// vendor rows always carry one of "csaf"/"oval".
-		if customerCVEs[s.CVE] && s.SourceFormat != "" {
+		if userCVEs[s.CVE] && s.SourceFormat != "" {
 			continue
 		}
 
@@ -278,7 +278,7 @@ func annotateSBOM(sbom map[string]any, stmts []db.Statement, customerCVEs map[st
 		}
 
 		// Build detail string with all participating statements. Vendor rows
-		// carry the vendor name; customer rows use the supplier they
+		// carry the vendor name; user rows use the supplier they
 		// self-disclosed (may be empty).
 		entry := s.Vendor + ": " + s.Status
 		if s.Justification != "" {

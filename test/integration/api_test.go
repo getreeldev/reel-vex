@@ -474,12 +474,12 @@ func TestAnalyze_SBOMOnly_NoMatchReturnsAsIs(t *testing.T) {
 	}
 }
 
-// TestAnalyze_CustomerVEXOnly_Override exercises the customer-VEX-only flow:
-// the customer asserts a status that contradicts the seeded vendor row;
-// the merged OpenVEX response carries the customer's claim with
-// match_reason=from_customer_vex in status_notes.
-func TestAnalyze_CustomerVEXOnly_Override(t *testing.T) {
-	customerDoc := map[string]any{
+// TestAnalyze_UserVEXOnly_Override exercises the user-VEX-only flow:
+// the user asserts a status that contradicts the seeded vendor row;
+// the merged OpenVEX response carries the user's claim with
+// match_reason=from_user_vex in status_notes.
+func TestAnalyze_UserVEXOnly_Override(t *testing.T) {
+	userDoc := map[string]any{
 		"@context": "https://openvex.dev/ns/v0.2.0",
 		"statements": []any{
 			map[string]any{
@@ -491,22 +491,22 @@ func TestAnalyze_CustomerVEXOnly_Override(t *testing.T) {
 			},
 		},
 	}
-	resp := post(t, "/v1/analyze", map[string]any{"customer_vex": []any{customerDoc}})
+	resp := post(t, "/v1/analyze", map[string]any{"user_vex": []any{userDoc}})
 	expectStatus(t, resp, 200)
 
 	stmts := decodeOpenVEXStatements(t, resp)
 	if len(stmts) == 0 {
-		t.Fatal("expected at least the customer statement in the merged set")
+		t.Fatal("expected at least the user statement in the merged set")
 	}
-	var foundCustomer bool
+	var foundUser bool
 	for _, s := range stmts {
 		if s.Supplier == "acme-internal" && s.Status == "affected" {
-			foundCustomer = true
-			if !strings.Contains(s.StatusNotes, "match_reason=from_customer_vex") {
-				t.Errorf("customer row should carry match_reason=from_customer_vex, got status_notes=%q", s.StatusNotes)
+			foundUser = true
+			if !strings.Contains(s.StatusNotes, "match_reason=from_user_vex") {
+				t.Errorf("user row should carry match_reason=from_user_vex, got status_notes=%q", s.StatusNotes)
 			}
 			if strings.Contains(s.StatusNotes, "source_format=") {
-				t.Errorf("customer row should not carry source_format prefix, got status_notes=%q", s.StatusNotes)
+				t.Errorf("user row should not carry source_format prefix, got status_notes=%q", s.StatusNotes)
 			}
 		}
 		// The colliding vendor row (redhat / not_affected on
@@ -519,17 +519,17 @@ func TestAnalyze_CustomerVEXOnly_Override(t *testing.T) {
 			}
 		}
 	}
-	if !foundCustomer {
-		t.Errorf("merged response did not include the customer statement; got %+v", stmts)
+	if !foundUser {
+		t.Errorf("merged response did not include the user statement; got %+v", stmts)
 	}
 }
 
 // TestAnalyze_BothInputs_OverrideInRollup is the headline override scenario.
-// Vendor not_affected at one base_id (CPE) collides with customer affected at
-// a different base_id (PURL) for the same CVE. Without the customerCVEs
+// Vendor not_affected at one base_id (CPE) collides with user affected at
+// a different base_id (PURL) for the same CVE. Without the userCVEs
 // override, statusPriority would let the vendor's not_affected (priority 4)
-// outrank the customer's affected (priority 1). With the override, the
-// customer's claim wins absolutely on the per-CVE annotation rollup.
+// outrank the user's affected (priority 1). With the override, the
+// user's claim wins absolutely on the per-CVE annotation rollup.
 func TestAnalyze_BothInputs_OverrideInRollup(t *testing.T) {
 	sbom := map[string]any{
 		"bomFormat":   "CycloneDX",
@@ -545,7 +545,7 @@ func TestAnalyze_BothInputs_OverrideInRollup(t *testing.T) {
 			map[string]any{"id": "CVE-2024-1234"},
 		},
 	}
-	customerDoc := map[string]any{
+	userDoc := map[string]any{
 		"@context": "https://openvex.dev/ns/v0.2.0",
 		"statements": []any{
 			map[string]any{
@@ -558,8 +558,8 @@ func TestAnalyze_BothInputs_OverrideInRollup(t *testing.T) {
 		},
 	}
 	resp := post(t, "/v1/analyze", map[string]any{
-		"sbom":         sbom,
-		"customer_vex": []any{customerDoc},
+		"sbom":     sbom,
+		"user_vex": []any{userDoc},
 	})
 	expectStatus(t, resp, 200)
 
@@ -573,12 +573,12 @@ func TestAnalyze_BothInputs_OverrideInRollup(t *testing.T) {
 	analysis := vuln["analysis"].(map[string]any)
 
 	if analysis["state"] != "exploitable" {
-		t.Fatalf("override failed: expected exploitable (from customer affected), got %v — vendor not_affected on a different base_id should not have leaked into the rollup",
+		t.Fatalf("override failed: expected exploitable (from user affected), got %v — vendor not_affected on a different base_id should not have leaked into the rollup",
 			analysis["state"])
 	}
 	detail := analysis["detail"].(string)
 	if !strings.Contains(detail, "acme-internal") {
-		t.Errorf("detail should mention customer supplier, got %q", detail)
+		t.Errorf("detail should mention user supplier, got %q", detail)
 	}
 }
 
@@ -587,9 +587,9 @@ func TestAnalyze_RequiresAtLeastOneInput(t *testing.T) {
 	expectStatus(t, resp, 400)
 }
 
-func TestAnalyze_MalformedCustomerVEX(t *testing.T) {
+func TestAnalyze_MalformedUserVEX(t *testing.T) {
 	resp := post(t, "/v1/analyze", map[string]any{
-		"customer_vex": []any{
+		"user_vex": []any{
 			map[string]any{
 				"@context":   "https://wrong.example/",
 				"statements": []any{},
@@ -687,17 +687,17 @@ func TestVexctl_AcceptsStatementsOutput(t *testing.T) {
 	}
 }
 
-// TestVexctl_AcceptsAnalyzeCustomerVEXOutput is the new-feature variant of
-// the interop check: the customer-VEX-only flow on /v1/analyze emits a
-// merged OpenVEX doc with from_customer_vex match_reason. vexctl must
+// TestVexctl_AcceptsAnalyzeUserVEXOutput is the new-feature variant of
+// the interop check: the user-VEX-only flow on /v1/analyze emits a
+// merged OpenVEX doc with from_user_vex match_reason. vexctl must
 // accept it identically — the merge semantic is internal to reel-vex; the
 // wire format is plain OpenVEX 0.2.0.
-func TestVexctl_AcceptsAnalyzeCustomerVEXOutput(t *testing.T) {
+func TestVexctl_AcceptsAnalyzeUserVEXOutput(t *testing.T) {
 	if _, err := exec.LookPath("vexctl"); err != nil {
 		t.Skip("vexctl not installed; skipping interop check")
 	}
 
-	customerDoc := map[string]any{
+	userDoc := map[string]any{
 		"@context": "https://openvex.dev/ns/v0.2.0",
 		"statements": []any{
 			map[string]any{
@@ -709,7 +709,7 @@ func TestVexctl_AcceptsAnalyzeCustomerVEXOutput(t *testing.T) {
 			},
 		},
 	}
-	resp := post(t, "/v1/analyze", map[string]any{"customer_vex": []any{customerDoc}})
+	resp := post(t, "/v1/analyze", map[string]any{"user_vex": []any{userDoc}})
 	expectStatus(t, resp, 200)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()

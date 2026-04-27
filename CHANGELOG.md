@@ -2,6 +2,30 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.4.1] — Unreleased — rename `customer_vex` → `user_vex`
+
+> **Breaking change.** The `customer_vex` request field on `POST /v1/analyze` is renamed to `user_vex`, and the `from_customer_vex` match-reason value (carried in OpenVEX `status_notes`) is renamed to `from_user_vex`. "Customer" implied a paid-product relationship that doesn't apply to the free OSS hub — the document is supplied by the API user, not a customer. No semantic change; pure rename.
+>
+> Migration:
+>
+> | Old | New |
+> |---|---|
+> | Request field `customer_vex` on `POST /v1/analyze` | `user_vex` |
+> | `match_reason=from_customer_vex` in `status_notes` | `match_reason=from_user_vex` |
+> | Go package `pkg/customervex/` | `pkg/uservex/` |
+
+### Changed
+
+- **`POST /v1/analyze` request field** `customer_vex` → `user_vex`. Documents posted under the old key are rejected with the standard "at least one of sbom or user_vex required" 400.
+- **OpenVEX `status_notes`** match-reason value `from_customer_vex` → `from_user_vex` for user-supplied rows.
+- **Go package** `pkg/customervex/` → `pkg/uservex/`. Public symbols (`Parse`, `Validate`, `Merge`, `MatchReason`) keep their names; only the import path changes. `MatchReason` constant value updates from `"from_customer_vex"` to `"from_user_vex"`.
+- **Documentation**: `docs/api.md` and `README.md` updated; user-facing prose drops "customer" terminology throughout.
+
+### Notes
+
+- No production users on the deployed hosted instance to migrate. Companion website (`getreel.dev/vex`) renames its UI copy and curl examples in lockstep.
+- Output shape, merge semantics, override rules, limits, and privacy posture are unchanged from v0.4.0.
+
 ## [0.4.0] — Unreleased — unified `/v1/statements` query endpoint
 
 > **Breaking change.** Three v0.3.0 endpoints are removed and replaced by a single `POST /v1/statements`. The split between `/v1/cve/{id}` (CVE-only lookup) and `/v1/resolve` (CVE × product matrix) was a transport-level convenience, not a semantic distinction; v0.4.0 collapses them into one filter-rich query primitive.
@@ -43,9 +67,9 @@ All notable changes to reel-vex are documented here. Format loosely follows [Kee
 
 - The encoder (`pkg/openvex/Encode`) is unchanged. CVE-only queries (no `products`) get nil expansion maps and the encoder falls back to each statement's stored `product_id` — same shape `/v1/cve/{id}` produced in v0.3.0. CVE+products queries echo the user's input PURLs into `products[]` — same shape `/v1/resolve` produced.
 - `vexctl merge` interop verified end-to-end against `/v1/statements` output (existing integration test renamed; same behaviour).
-- All existing `/v1/analyze` behaviour is preserved (override semantics, customer-VEX merge, sample fixtures).
+- All existing `/v1/analyze` behaviour is preserved (override semantics, user-VEX merge, sample fixtures).
 
-## [0.3.0] — Unreleased — API format unification + customer-VEX merge
+## [0.3.0] — Unreleased — API format unification + user-VEX merge
 
 > **Breaking changes — three migrations.** This release folds long-standing API tidying into one cut so future migrations stay singular.
 >
@@ -55,21 +79,21 @@ All notable changes to reel-vex are documented here. Format loosely follows [Kee
 
 ### Added
 
-- **`POST /v1/analyze` — single endpoint for SBOM annotation and customer-VEX merging.** Accepts an SBOM (CycloneDX 1.4+), one or more customer-supplied OpenVEX 0.2.0 documents, or both:
+- **`POST /v1/analyze` — single endpoint for SBOM annotation and user-VEX merging.** Accepts an SBOM (CycloneDX 1.4+), one or more user-supplied OpenVEX 0.2.0 documents, or both:
   - `sbom` only → annotated CycloneDX (preserves prior `/v1/sbom` behaviour byte-for-byte).
-  - `customer_vex` only → merged OpenVEX 0.2.0 doc (vendor data + customer's claims, with override on collision).
-  - Both → annotated CycloneDX where the per-CVE rollup honours customer override.
+  - `user_vex` only → merged OpenVEX 0.2.0 doc (vendor data + user's claims, with override on collision).
+  - Both → annotated CycloneDX where the per-CVE rollup honours user override.
   Inline JSON only; no multipart, no URL fetch.
-- **Customer-VEX merge with absolute override.** Customer statements override vendor statements when `(cve, base_id)` matches. In the SBOM-annotation flow, customer-asserted CVEs are tracked in a set so vendor rows are excluded from the per-CVE rollup — even when they sit at a different base_id. Without this guard, a higher-priority vendor `not_affected` would silently outrank a customer `affected` on a different identifier.
-- **New `pkg/customervex/`** package: parses OpenVEX 0.2.0 inbound, validates against a leaner inbound-only ruleset (separate from `pkg/openvex.Validate` which is outbound-focused), enforces request-time limits, and merges with vendor data. Customer VEX is processed strictly in memory: parsed, merged, returned, discarded. No source-tree code logs or persists customer payload content.
-- **`from_customer_vex` match reason.** Customer-sourced rows in OpenVEX output carry `status_notes` with `match_reason=from_customer_vex` (no `source_format=` prefix, since customer rows have no upstream feed).
+- **User-VEX merge with absolute override.** User statements override vendor statements when `(cve, base_id)` matches. In the SBOM-annotation flow, user-asserted CVEs are tracked in a set so vendor rows are excluded from the per-CVE rollup — even when they sit at a different base_id. Without this guard, a higher-priority vendor `not_affected` would silently outrank a user `affected` on a different identifier.
+- **New `pkg/uservex/`** package: parses OpenVEX 0.2.0 inbound, validates against a leaner inbound-only ruleset (separate from `pkg/openvex.Validate` which is outbound-focused), enforces request-time limits, and merges with vendor data. User VEX is processed strictly in memory: parsed, merged, returned, discarded. No source-tree code logs or persists user payload content.
+- **`from_user_vex` match reason.** User-sourced rows in OpenVEX output carry `status_notes` with `match_reason=from_user_vex` (no `source_format=` prefix, since user rows have no upstream feed).
 
 ### Changed
 
 - **`pkg/openvex` is the single response writer for VEX-statement-emitting endpoints.** Replaces the prior native scaffolding (`statementJSON`, `statementsResponse`, `writeStatements`, `writeStatementsWithMatch`) which is deleted from source.
 - **`csaf.SplitPURL` consolidates the PURL-base-normalisation logic.** The previously private `resolver.splitBase` (line-for-line equivalent) is removed; `pkg/resolver` now imports `pkg/csaf` and calls `SplitPURL` directly. Single source of truth.
-- **`pkg/openvex/encode.go` skips the `source_format=` prefix in `status_notes`** when the source row's `SourceFormat` is empty (customer-sourced rows). Vendor rows are unchanged.
-- **Limits on `/v1/analyze`**: 5 MB body; 10 customer_vex docs / 1000 customer statements / 100 products per customer statement; 50 000 SBOM components / 10 000 SBOM vulnerabilities. 4xx codes split: 400 for limit overflow / shape requirements; 422 for spec-violation rejections (bad `@context`, status enum, justification placement, missing required fields).
+- **`pkg/openvex/encode.go` skips the `source_format=` prefix in `status_notes`** when the source row's `SourceFormat` is empty (user-sourced rows). Vendor rows are unchanged.
+- **Limits on `/v1/analyze`**: 5 MB body; 10 user_vex docs / 1000 user statements / 100 products per user statement; 50 000 SBOM components / 10 000 SBOM vulnerabilities. 4xx codes split: 400 for limit overflow / shape requirements; 422 for spec-violation rejections (bad `@context`, status enum, justification placement, missing required fields).
 
 ### Removed
 

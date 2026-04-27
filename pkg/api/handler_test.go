@@ -611,15 +611,15 @@ func TestHandleAnalyze_SBOMOnly(t *testing.T) {
 	})
 }
 
-// TestHandleAnalyze_CustomerVEXOnly covers the customer-VEX-only flow:
-// inbound OpenVEX 0.2.0; outbound merged OpenVEX with from_customer_vex
+// TestHandleAnalyze_UserVEXOnly covers the user-VEX-only flow:
+// inbound OpenVEX 0.2.0; outbound merged OpenVEX with from_user_vex
 // match_reason carried in status_notes. With no SBOM, no vendor data is
-// queried for vendor-only base_ids — only customer-asserted base_ids.
-func TestHandleAnalyze_CustomerVEXOnly(t *testing.T) {
+// queried for vendor-only base_ids — only user-asserted base_ids.
+func TestHandleAnalyze_UserVEXOnly(t *testing.T) {
 	database := setupTestDB(t)
 	srv := NewServer(database, nil)
 
-	customerDoc := map[string]any{
+	userDoc := map[string]any{
 		"@context": "https://openvex.dev/ns/v0.2.0",
 		"statements": []any{
 			map[string]any{
@@ -631,7 +631,7 @@ func TestHandleAnalyze_CustomerVEXOnly(t *testing.T) {
 			},
 		},
 	}
-	body, _ := json.Marshal(map[string]any{"customer_vex": []any{customerDoc}})
+	body, _ := json.Marshal(map[string]any{"user_vex": []any{userDoc}})
 	req := httptest.NewRequest("POST", "/v1/analyze", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -651,20 +651,20 @@ func TestHandleAnalyze_CustomerVEXOnly(t *testing.T) {
 	if got.Supplier != "acme" {
 		t.Errorf("supplier should flow through verbatim: got %q", got.Supplier)
 	}
-	if !strings.Contains(got.StatusNotes, "match_reason=from_customer_vex") {
-		t.Errorf("status_notes should carry match_reason=from_customer_vex, got %q", got.StatusNotes)
+	if !strings.Contains(got.StatusNotes, "match_reason=from_user_vex") {
+		t.Errorf("status_notes should carry match_reason=from_user_vex, got %q", got.StatusNotes)
 	}
 	if strings.Contains(got.StatusNotes, "source_format=") {
-		t.Errorf("customer rows should not carry source_format= prefix, got %q", got.StatusNotes)
+		t.Errorf("user rows should not carry source_format= prefix, got %q", got.StatusNotes)
 	}
 }
 
-// TestHandleAnalyze_CustomerOverrideInSBOM covers the headline override case:
-// vendor says CVE-X is not_affected on a CPE base; customer says affected on
-// a PURL base. Without the customerCVEs override gate the vendor's higher
-// priority would beat the customer in the per-CVE rollup. With the gate,
-// only the customer's status is reflected.
-func TestHandleAnalyze_CustomerOverrideInSBOM(t *testing.T) {
+// TestHandleAnalyze_UserOverrideInSBOM covers the headline override case:
+// vendor says CVE-X is not_affected on a CPE base; user says affected on
+// a PURL base. Without the userCVEs override gate the vendor's higher
+// priority would beat the user in the per-CVE rollup. With the gate,
+// only the user's status is reflected.
+func TestHandleAnalyze_UserOverrideInSBOM(t *testing.T) {
 	dbPath := t.TempDir() + "/override.db"
 	database, err := db.Open(dbPath)
 	if err != nil {
@@ -715,7 +715,7 @@ func TestHandleAnalyze_CustomerOverrideInSBOM(t *testing.T) {
 			map[string]any{"id": "CVE-2021-44228"},
 		},
 	}
-	customerDoc := map[string]any{
+	userDoc := map[string]any{
 		"@context": "https://openvex.dev/ns/v0.2.0",
 		"statements": []any{
 			map[string]any{
@@ -729,8 +729,8 @@ func TestHandleAnalyze_CustomerOverrideInSBOM(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(map[string]any{
-		"sbom":         sbom,
-		"customer_vex": []any{customerDoc},
+		"sbom":     sbom,
+		"user_vex": []any{userDoc},
 	})
 	req := httptest.NewRequest("POST", "/v1/analyze", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -748,24 +748,24 @@ func TestHandleAnalyze_CustomerOverrideInSBOM(t *testing.T) {
 	if !ok {
 		t.Fatal("expected analysis field on vulnerability")
 	}
-	// Customer override semantic: customer's "affected" wins despite the
+	// User override semantic: user's "affected" wins despite the
 	// higher-priority vendor "not_affected" sitting at a different base_id.
 	if analysis["state"] != "exploitable" {
-		t.Fatalf("override failed: expected exploitable (from customer affected), got %v — vendor not_affected at a different base_id should not have leaked into the rollup",
+		t.Fatalf("override failed: expected exploitable (from user affected), got %v — vendor not_affected at a different base_id should not have leaked into the rollup",
 			analysis["state"])
 	}
 	detail := analysis["detail"].(string)
 	if !strings.Contains(detail, "acme-internal") {
-		t.Errorf("detail should mention customer supplier, got %q", detail)
+		t.Errorf("detail should mention user supplier, got %q", detail)
 	}
-	// The vendor row should NOT appear in the rollup detail because customer
+	// The vendor row should NOT appear in the rollup detail because user
 	// asserted on this CVE.
 	if strings.Contains(detail, "redhat") {
-		t.Errorf("detail should not mention vendor row when customer overrides on CVE, got %q", detail)
+		t.Errorf("detail should not mention vendor row when user overrides on CVE, got %q", detail)
 	}
 }
 
-func TestHandleAnalyze_RequiresSBOMOrCustomerVEX(t *testing.T) {
+func TestHandleAnalyze_RequiresSBOMOrUserVEX(t *testing.T) {
 	database := setupTestDB(t)
 	srv := NewServer(database, nil)
 
@@ -774,16 +774,16 @@ func TestHandleAnalyze_RequiresSBOMOrCustomerVEX(t *testing.T) {
 	srv.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 when neither sbom nor customer_vex given, got %d", w.Code)
+		t.Fatalf("expected 400 when neither sbom nor user_vex given, got %d", w.Code)
 	}
 }
 
-func TestHandleAnalyze_MalformedCustomerVEX(t *testing.T) {
+func TestHandleAnalyze_MalformedUserVEX(t *testing.T) {
 	database := setupTestDB(t)
 	srv := NewServer(database, nil)
 
 	// Bad @context → 422 (shape violation, not limit overflow).
-	bad := `{"customer_vex":[{"@context":"https://wrong.example/","statements":[]}]}`
+	bad := `{"user_vex":[{"@context":"https://wrong.example/","statements":[]}]}`
 	req := httptest.NewRequest("POST", "/v1/analyze", bytes.NewReader([]byte(bad)))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

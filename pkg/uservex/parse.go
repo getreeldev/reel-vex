@@ -1,14 +1,14 @@
-// Package customervex parses customer-supplied OpenVEX 0.2.0 documents into
+// Package uservex parses user-supplied OpenVEX 0.2.0 documents into
 // reel-vex's internal statement representation and merges them with vendor
-// data using customer-override semantics.
+// data using user-override semantics.
 //
-// Customer VEX is in-memory transit data only: parsed, merged, returned,
-// discarded. Nothing in this package logs or persists customer payloads.
+// User VEX is in-memory transit data only: parsed, merged, returned,
+// discarded. Nothing in this package logs or persists user payloads.
 //
 // Inbound format is OpenVEX 0.2.0 only. The reel-vex-native flat shape is not
 // accepted as input — it is a denormalised response format, not an
 // interchange format.
-package customervex
+package uservex
 
 import (
 	"encoding/json"
@@ -22,7 +22,7 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/openvex"
 )
 
-// Limits applied to inbound customer VEX submissions. Hardcoded; not
+// Limits applied to inbound user VEX submissions. Hardcoded; not
 // configurable via flags or environment. Each violation returns a typed
 // error so the HTTP handler can map to 400 (limit overflow) versus 422
 // (shape violation).
@@ -35,18 +35,18 @@ const (
 // Sentinel errors. 400-class (limit overflows) and 422-class (shape
 // violations) are distinguished via IsClientError.
 var (
-	ErrTooManyDocs       = errors.New("too many customer_vex documents")
-	ErrTooManyStatements = errors.New("too many customer statements")
-	ErrTooManyProducts   = errors.New("too many products in a customer statement")
+	ErrTooManyDocs       = errors.New("too many user_vex documents")
+	ErrTooManyStatements = errors.New("too many user statements")
+	ErrTooManyProducts   = errors.New("too many products in a user statement")
 
-	ErrInvalidContext           = errors.New("customer_vex doc has invalid @context (must be https://openvex.dev/ns/v0.2.0)")
-	ErrInvalidStatus            = errors.New("customer statement has invalid status")
-	ErrInvalidJustification     = errors.New("customer statement has invalid justification")
-	ErrJustificationMissing     = errors.New("customer statement with status=not_affected requires a justification")
-	ErrJustificationMisplaced   = errors.New("customer statement justification only valid with status=not_affected")
-	ErrVulnerabilityNameMissing = errors.New("customer statement is missing vulnerability.name")
-	ErrNoProducts               = errors.New("customer statement has no products")
-	ErrProductNoIdentifier      = errors.New("customer product has no usable identifier (need @id, identifiers.purl, identifiers.cpe22, or identifiers.cpe23)")
+	ErrInvalidContext           = errors.New("user_vex doc has invalid @context (must be https://openvex.dev/ns/v0.2.0)")
+	ErrInvalidStatus            = errors.New("user statement has invalid status")
+	ErrInvalidJustification     = errors.New("user statement has invalid justification")
+	ErrJustificationMissing     = errors.New("user statement with status=not_affected requires a justification")
+	ErrJustificationMisplaced   = errors.New("user statement justification only valid with status=not_affected")
+	ErrVulnerabilityNameMissing = errors.New("user statement is missing vulnerability.name")
+	ErrNoProducts               = errors.New("user statement has no products")
+	ErrProductNoIdentifier      = errors.New("user product has no usable identifier (need @id, identifiers.purl, identifiers.cpe22, or identifiers.cpe23)")
 )
 
 // IsClientError reports whether err is a 400-class violation (limit overflow).
@@ -57,15 +57,15 @@ func IsClientError(err error) bool {
 		errors.Is(err, ErrTooManyProducts)
 }
 
-// Parse decodes one or more customer-supplied OpenVEX 0.2.0 documents into
+// Parse decodes one or more user-supplied OpenVEX 0.2.0 documents into
 // db.Statement rows. requestTime is the fallback timestamp used when neither
 // the per-statement nor the doc-level timestamp is set.
 //
 // Each input doc must carry @context = "https://openvex.dev/ns/v0.2.0".
 //
 // One OpenVEX statement with N distinct product identifiers yields N
-// db.Statement rows (one per identifier). Customer rows carry SourceFormat=""
-// so downstream encoders can distinguish customer-sourced rows from
+// db.Statement rows (one per identifier). User rows carry SourceFormat=""
+// so downstream encoders can distinguish user-sourced rows from
 // vendor-feed rows.
 func Parse(docs []json.RawMessage, requestTime time.Time) ([]db.Statement, error) {
 	if len(docs) > MaxDocsPerRequest {
@@ -122,10 +122,10 @@ func pickTimestamp(override string, fallback time.Time) time.Time {
 //
 // Identifiers are collected from each product's @id and its identifiers
 // {purl, cpe22, cpe23} fields and deduplicated. base_id is computed via
-// csaf.SplitPURL so the customer's identifier matches a vendor row keyed
+// csaf.SplitPURL so the user's identifier matches a vendor row keyed
 // to the same base regardless of @version / qualifier noise.
 //
-// SourceFormat is left empty on customer rows. Vendor flows through
+// SourceFormat is left empty on user rows. Vendor flows through
 // supplier; an empty supplier is preserved verbatim.
 func flattenStatement(stmt openvex.Statement, ts time.Time) ([]db.Statement, error) {
 	ids, err := collectIdentifiers(stmt.Products)

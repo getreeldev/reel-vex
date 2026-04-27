@@ -13,19 +13,19 @@ Canonical reference for every HTTP endpoint and response field. The live service
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/v1/statements` | Unified query: filter VEX statements by CVE, product, vendor, status, justification, source format, or update timestamp. |
-| `POST` | `/v1/analyze` | Annotate a CycloneDX SBOM and/or merge customer-supplied VEX with vendor data. |
+| `POST` | `/v1/analyze` | Annotate a CycloneDX SBOM and/or merge user-supplied VEX with vendor data. |
 | `GET`  | `/v1/stats` | Coverage statistics. |
 | `GET`  | `/v1/ingest` | Current ingest status. |
 | `POST` | `/v1/ingest` | Trigger a manual ingest (admin token). |
 | `GET`  | `/healthz` | Liveness probe. |
 
-`/v1/statements` is the endpoint most consumers use for query-style lookups; `/v1/analyze` is the SBOM-annotation and customer-VEX-merge endpoint.
+`/v1/statements` is the endpoint most consumers use for query-style lookups; `/v1/analyze` is the SBOM-annotation and user-VEX-merge endpoint.
 
 ## Response format — OpenVEX 0.2.0
 
-Every VEX-statement-emitting endpoint (`/v1/statements`, `/v1/analyze` when `customer_vex`-only) returns an [OpenVEX 0.2.0](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md) document. There is no opt-in flag and no alternative response format; OpenVEX is the single canonical interchange format reel-vex serves.
+Every VEX-statement-emitting endpoint (`/v1/statements`, `/v1/analyze` when `user_vex`-only) returns an [OpenVEX 0.2.0](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md) document. There is no opt-in flag and no alternative response format; OpenVEX is the single canonical interchange format reel-vex serves.
 
-Per-feed provenance (`source_format`) and per-statement match reasoning (`match_reason`) are carried in the spec-blessed `status_notes` free-text field. Format: `source_format=<csaf|oval>; match_reason=<direct|via_alias|via_cpe_prefix|from_customer_vex>`. Customer-sourced rows omit the `source_format=` prefix entirely (no upstream feed).
+Per-feed provenance (`source_format`) and per-statement match reasoning (`match_reason`) are carried in the spec-blessed `status_notes` free-text field. Format: `source_format=<csaf|oval>; match_reason=<direct|via_alias|via_cpe_prefix|from_user_vex>`. User-sourced rows omit the `source_format=` prefix entirely (no upstream feed).
 
 Empty results return `204 No Content`. OpenVEX 0.2.0's schema requires `statements: minItems 1`, so we cannot emit a valid doc with zero statements; 204 signals "query valid, no statements" without violating the schema.
 
@@ -48,10 +48,10 @@ Empty results return `204 No Content`. OpenVEX 0.2.0's schema requires `statemen
 | `vulnerability.name` | string | The CVE ID (e.g. `CVE-2021-44228`). |
 | `products[]` | array | One or more products covered by this statement. Each carries an `@id` and/or an `identifiers` object with `purl`/`cpe22`/`cpe23`. When the request includes `products` (`/v1/statements`, `/v1/analyze`), the user's input identifier is echoed verbatim into `products[]` so consumers like Trivy that match on PURL see what they sent. |
 | `status` | string | One of the four VEX statuses (see [Status values](#status-values)). |
-| `status_notes` | string | Diagnostic free text: `source_format=<csaf|oval>; match_reason=<...>`. Empty `source_format=` is omitted on customer-sourced rows. |
+| `status_notes` | string | Diagnostic free text: `source_format=<csaf|oval>; match_reason=<...>`. Empty `source_format=` is omitted on user-sourced rows. |
 | `justification` | string | Required when `status==not_affected`. OpenVEX 0.2.0 enum (see [Justification values](#justification-values)). |
-| `supplier` | string | Vendor identifier (`redhat`, `suse`, `ubuntu`, `debian`). For customer-sourced rows, the value the customer self-disclosed via the inbound doc's `supplier` field. |
-| `timestamp` | RFC3339 string | When the upstream advisory (or customer document) last updated this statement. |
+| `supplier` | string | Vendor identifier (`redhat`, `suse`, `ubuntu`, `debian`). For user-sourced rows, the value the user self-disclosed via the inbound doc's `supplier` field. |
+| `timestamp` | RFC3339 string | When the upstream advisory (or user document) last updated this statement. |
 
 ### Status values
 
@@ -82,7 +82,7 @@ Carried in `status_notes` as `match_reason=<value>`. Tells you which rule caused
 
 | Value | Meaning | Precedence |
 |---|---|---|
-| `from_customer_vex` | This row came from the request's `customer_vex` payload, not from any vendor feed. Customer rows override vendor rows on `(cve, base_id)` collision. | 1 (strongest, override) |
+| `from_user_vex` | This row came from the request's `user_vex` payload, not from any vendor feed. User rows override vendor rows on `(cve, base_id)` collision. | 1 (strongest, override) |
 | `direct` | The query's normalised base identifier equals the statement's stored base. | 2 |
 | `via_alias` | The query carried a `?repository_id=X` PURL qualifier, and reel-vex's alias table maps that repository ID to a CPE that matches the statement. | 3 |
 | `via_cpe_prefix` | The query is a CPE 2.2 URI, and its 5-part prefix (`part:vendor:product:version:update`) matches the statement — implements Red Hat's [SECDATA-1220](https://redhat.atlassian.net/browse/SECDATA-1220) contract. | 4 |
@@ -101,7 +101,7 @@ For PURL-keyed statements, qualifiers behave in two distinct modes:
 
 ## `POST /v1/analyze`
 
-Single endpoint for SBOM annotation and customer-VEX merging. Accepts either or both inputs. Replaces the v0.2.x `/v1/sbom` endpoint.
+Single endpoint for SBOM annotation and user-VEX merging. Accepts either or both inputs. Replaces the v0.2.x `/v1/sbom` endpoint.
 
 ### Request
 
@@ -111,52 +111,52 @@ Content-Type: application/json
 
 {
   "sbom": { /* CycloneDX 1.4+ */ },                 // optional
-  "customer_vex": [                                  // optional; OpenVEX 0.2.0 only (one or more docs)
+  "user_vex": [                                  // optional; OpenVEX 0.2.0 only (one or more docs)
     { "@context": "https://openvex.dev/ns/v0.2.0", "statements": [ /* ... */ ] }
   ]
 }
 ```
 
-At least one of `sbom` or `customer_vex` must be present; otherwise `400`. Inline JSON only — `multipart/form-data` is not accepted.
+At least one of `sbom` or `user_vex` must be present; otherwise `400`. Inline JSON only — `multipart/form-data` is not accepted.
 
-Each `customer_vex` document must carry `@context = "https://openvex.dev/ns/v0.2.0"`; otherwise `422`. The reel-vex-native flat format is not accepted as input anywhere in the API.
+Each `user_vex` document must carry `@context = "https://openvex.dev/ns/v0.2.0"`; otherwise `422`. The reel-vex-native flat format is not accepted as input anywhere in the API.
 
 ### Output
 
 | Input combination | Response |
 |---|---|
 | `sbom` only | Annotated CycloneDX (vulnerability `analysis` blocks added in place). |
-| `customer_vex` only | OpenVEX 0.2.0 doc (merged vendor + customer with override on collision). |
-| Both | Annotated CycloneDX where the per-CVE rollup honours customer override. |
-| Neither | `400` with `at least one of sbom or customer_vex required`. |
+| `user_vex` only | OpenVEX 0.2.0 doc (merged vendor + user with override on collision). |
+| Both | Annotated CycloneDX where the per-CVE rollup honours user override. |
+| Neither | `400` with `at least one of sbom or user_vex required`. |
 
-### Customer-VEX merge semantics
+### User-VEX merge semantics
 
-- **Collision rule**: customer statements override vendor statements when `(cve, base_id)` matches. `base_id` is computed by stripping PURL version + filter qualifiers (keeping `distro`); CPEs are passed through as-is.
-- **Annotation override**: when a customer asserts on a CVE, vendor rows for that CVE are excluded from the SBOM-annotation per-CVE rollup — even when the vendor row sits at a different `base_id`. This guards against a higher-priority vendor `not_affected` outranking a customer `affected` on a different identifier.
-- **Self-collisions**: two customer statements on the same `(cve, base_id)` dedupe by latest `timestamp`; ties break by list order.
-- **Match reason**: customer-sourced rows in OpenVEX output carry `status_notes` with `match_reason=from_customer_vex` (no `source_format=` prefix).
-- **Supplier**: customer's `supplier` field flows through verbatim to the response.
+- **Collision rule**: user statements override vendor statements when `(cve, base_id)` matches. `base_id` is computed by stripping PURL version + filter qualifiers (keeping `distro`); CPEs are passed through as-is.
+- **Annotation override**: when a user asserts on a CVE, vendor rows for that CVE are excluded from the SBOM-annotation per-CVE rollup — even when the vendor row sits at a different `base_id`. This guards against a higher-priority vendor `not_affected` outranking a user `affected` on a different identifier.
+- **Self-collisions**: two user statements on the same `(cve, base_id)` dedupe by latest `timestamp`; ties break by list order.
+- **Match reason**: user-sourced rows in OpenVEX output carry `status_notes` with `match_reason=from_user_vex` (no `source_format=` prefix).
+- **Supplier**: user's `supplier` field flows through verbatim to the response.
 
-### Customer-VEX timestamps
+### User-VEX timestamps
 
-When a customer statement omits both per-statement `timestamp` and the doc-level `timestamp`, reel-vex stamps the statement with the request's processing time. Customers that care about deterministic timestamps should set them explicitly.
+When a user statement omits both per-statement `timestamp` and the doc-level `timestamp`, reel-vex stamps the statement with the request's processing time. Users that care about deterministic timestamps should set them explicitly.
 
 ### Privacy
 
-Customer VEX submissions are processed in memory: parsed, validated, merged, returned, discarded. No part of reel-vex source code logs or persists customer payload content.
+User VEX submissions are processed in memory: parsed, validated, merged, returned, discarded. No part of reel-vex source code logs or persists user payload content.
 
 ### Limits
 
 | Rule | Value | Status |
 |---|---|---|
 | Request body size | 5 MB | `413` |
-| `customer_vex` documents per request | 10 | `400` |
-| Customer statements (total across docs) | 1000 | `400` |
-| Products per customer statement | 100 | `400` |
+| `user_vex` documents per request | 10 | `400` |
+| User statements (total across docs) | 1000 | `400` |
+| Products per user statement | 100 | `400` |
 | SBOM components | 50 000 | `400` |
 | SBOM vulnerabilities | 10 000 | `400` |
-| At least one of `sbom`/`customer_vex` | required | `400` |
+| At least one of `sbom`/`user_vex` | required | `400` |
 | OpenVEX `@context` exact match `https://openvex.dev/ns/v0.2.0` | required | `422` |
 | Status / justification enum compliance | required | `422` |
 | `status==not_affected` requires a `justification` | required | `422` |
@@ -170,13 +170,13 @@ curl -X POST https://vex.getreel.dev/v1/analyze \
   -d '{"sbom": '"$(cat sbom.json)"'}' > annotated.json
 ```
 
-### Example — customer VEX only
+### Example — user VEX only
 
 ```bash
 curl -X POST https://vex.getreel.dev/v1/analyze \
   -H "Content-Type: application/json" \
   -d '{
-    "customer_vex": [{
+    "user_vex": [{
       "@context": "https://openvex.dev/ns/v0.2.0",
       "statements": [{
         "vulnerability": {"name": "CVE-2021-44228"},
@@ -195,8 +195,8 @@ curl -X POST https://vex.getreel.dev/v1/analyze \
 ```bash
 jq -n \
   --argjson sbom "$(cat sbom.json)" \
-  --argjson vex  "$(cat customer-vex.json)" \
-  '{sbom: $sbom, customer_vex: [$vex]}' | \
+  --argjson vex  "$(cat user-vex.json)" \
+  '{sbom: $sbom, user_vex: [$vex]}' | \
 curl -X POST https://vex.getreel.dev/v1/analyze \
   -H "Content-Type: application/json" \
   -d @- > annotated-with-override.json
@@ -310,7 +310,7 @@ curl -s -X POST https://vex.getreel.dev/v1/statements \
 trivy image --vex vex.json myimage:tag
 ```
 
-### Layer customer VEX on top of vendor data
+### Layer user VEX on top of vendor data
 
 If you have your own VEX doc (e.g. `vexctl create` output) describing application-layer assertions, feed both the SBOM and your VEX through `/v1/analyze` in one call:
 
@@ -318,13 +318,13 @@ If you have your own VEX doc (e.g. `vexctl create` output) describing applicatio
 jq -n \
   --argjson sbom "$(cat sbom.json)" \
   --argjson vex  "$(cat my-vex.json)" \
-  '{sbom: $sbom, customer_vex: [$vex]}' | \
+  '{sbom: $sbom, user_vex: [$vex]}' | \
 curl -X POST https://vex.getreel.dev/v1/analyze \
   -H "Content-Type: application/json" \
   -d @- > annotated.json
 ```
 
-The annotated CycloneDX output reflects vendor + customer merged with customer override on collision.
+The annotated CycloneDX output reflects vendor + user merged with user override on collision.
 
 ### Diagnose why a statement matched
 
@@ -337,4 +337,4 @@ curl -X POST https://vex.getreel.dev/v1/statements \
   | jq '.statements[].status_notes'
 ```
 
-`match_reason=via_alias` confirms the repository-id qualifier expanded through reel-vex's alias table to reach a CPE-keyed statement. `match_reason=from_customer_vex` confirms the row came from the request's `customer_vex` payload.
+`match_reason=via_alias` confirms the repository-id qualifier expanded through reel-vex's alias table to reach a CPE-keyed statement. `match_reason=from_user_vex` confirms the row came from the request's `user_vex` payload.
