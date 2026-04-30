@@ -2,57 +2,42 @@ package ubuntuvex
 
 import "strings"
 
-// canonicalToScanner maps the `?distro=` qualifier values that Canonical
-// emits in their OpenVEX feed to the `ubuntu-<version>` form that scanners
-// (Trivy, Grype) emit. Three Canonical conventions exist:
+// codenameToVersion maps Ubuntu release codenames to the
+// scanner-convention `ubuntu-<version>` form.
 //
-//   - ubuntu/<codename>           — mainline supported releases
-//   - esm-apps/<codename>         — Ubuntu Pro ESM Apps tier (post-EOL apps)
-//   - esm-infra/<codename>        — Ubuntu Pro ESM Infra tier (post-EOL OS)
-//   - esm-infra-legacy/<codename> — older EOL releases on the legacy ESM tier
+// Canonical's `?distro=` qualifier comes in many shapes — `<codename>` for
+// mainline, `<track>/<codename>` for support tiers (esm-apps, esm-infra,
+// esm-infra-legacy, fips, fips-preview, fips-updates, realtime, bluefield,
+// and almost certainly more in the future). The track is metadata about
+// which support tier the row is from; the codename is the underlying
+// release. Scanners only emit `ubuntu-<version>`, so reducing every
+// `<track>/<codename>` to its codename is the correct collapse for query
+// matching. Many-to-one is by design — rows from different tracks for the
+// same release dedupe at emit time.
 //
-// Three-to-one is expected: a single Ubuntu release can carry rows under all
-// three ESM tracks plus the mainline. The dedup step in adapter.Sync collapses
-// these so we don't emit duplicate rows per CVE × release.
-//
-// Update this table when Canonical adds a new release codename (rare).
-var canonicalToScanner = map[string]string{
-	// Mainline releases.
-	"ubuntu/precise":  "ubuntu-12.04",
-	"ubuntu/trusty":   "ubuntu-14.04",
-	"ubuntu/xenial":   "ubuntu-16.04",
-	"ubuntu/bionic":   "ubuntu-18.04",
-	"ubuntu/focal":    "ubuntu-20.04",
-	"ubuntu/jammy":    "ubuntu-22.04",
-	"ubuntu/kinetic":  "ubuntu-22.10",
-	"ubuntu/lunar":    "ubuntu-23.04",
-	"ubuntu/mantic":   "ubuntu-23.10",
-	"ubuntu/noble":    "ubuntu-24.04",
-	"ubuntu/oracular": "ubuntu-24.10",
-	"ubuntu/plucky":   "ubuntu-25.04",
-	// ESM Apps.
-	"esm-apps/trusty": "ubuntu-14.04",
-	"esm-apps/xenial": "ubuntu-16.04",
-	"esm-apps/bionic": "ubuntu-18.04",
-	"esm-apps/focal":  "ubuntu-20.04",
-	"esm-apps/jammy":  "ubuntu-22.04",
-	"esm-apps/noble":  "ubuntu-24.04",
-	// ESM Infra.
-	"esm-infra/xenial": "ubuntu-16.04",
-	"esm-infra/bionic": "ubuntu-18.04",
-	"esm-infra/focal":  "ubuntu-20.04",
-	"esm-infra/jammy":  "ubuntu-22.04",
-	"esm-infra/noble":  "ubuntu-24.04",
-	// ESM Infra Legacy.
-	"esm-infra-legacy/precise": "ubuntu-12.04",
-	"esm-infra-legacy/trusty":  "ubuntu-14.04",
-	"esm-infra-legacy/xenial":  "ubuntu-16.04",
+// Update this table when Canonical ships a new release codename (rare).
+var codenameToVersion = map[string]string{
+	"precise":  "ubuntu-12.04",
+	"trusty":   "ubuntu-14.04",
+	"xenial":   "ubuntu-16.04",
+	"bionic":   "ubuntu-18.04",
+	"focal":    "ubuntu-20.04",
+	"jammy":    "ubuntu-22.04",
+	"kinetic":  "ubuntu-22.10",
+	"lunar":    "ubuntu-23.04",
+	"mantic":   "ubuntu-23.10",
+	"noble":    "ubuntu-24.04",
+	"oracular": "ubuntu-24.10",
+	"plucky":   "ubuntu-25.04",
+	"questing": "ubuntu-25.10",
+	"resolute": "ubuntu-26.04",
 }
 
 // Normalize rewrites the `?distro=` qualifier in rawPurl to the
-// scanner-convention `ubuntu-<version>` form when the original value matches
-// a known Canonical track. Non-PURL identifiers, PURLs without a distro
-// qualifier, and unknown distro values pass through unchanged.
+// scanner-convention `ubuntu-<version>` form. Inputs of every shape we've
+// seen from Canonical work the same way: take the last `/`-separated
+// segment as the codename, look it up. Non-PURL identifiers, PURLs without
+// a distro qualifier, and unknown codenames pass through unchanged.
 //
 // Other qualifiers (arch, epoch, etc.) and any fragment are preserved
 // verbatim — only the distro qualifier value is rewritten.
@@ -80,7 +65,15 @@ func Normalize(rawPurl string) string {
 		if p[:eq] != "distro" {
 			continue
 		}
-		mapped, ok := canonicalToScanner[p[eq+1:]]
+		// Take the last `/`-separated segment as the codename. Works for
+		// bare `xenial`, `esm-infra/xenial`, `fips-updates/jammy`, and any
+		// future `<track>/<codename>` variant Canonical introduces.
+		val := p[eq+1:]
+		codename := val
+		if slash := strings.LastIndexByte(val, '/'); slash >= 0 {
+			codename = val[slash+1:]
+		}
+		mapped, ok := codenameToVersion[codename]
 		if !ok {
 			return rawPurl
 		}
