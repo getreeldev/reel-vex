@@ -25,7 +25,7 @@ Canonical reference for every HTTP endpoint and response field. The live service
 
 Every VEX-statement-emitting endpoint (`/v1/statements`, `/v1/analyze` when `user_vex`-only) returns an [OpenVEX 0.2.0](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md) document. There is no opt-in flag and no alternative response format; OpenVEX is the single canonical interchange format reel-vex serves.
 
-Per-feed provenance (`source_format`) and per-statement match reasoning (`match_reason`) are carried in the spec-blessed `status_notes` free-text field. Format: `source_format=<csaf|oval>; match_reason=<direct|via_alias|via_cpe_prefix|from_user_vex>`. User-sourced rows omit the `source_format=` prefix entirely (no upstream feed).
+Per-feed provenance (`source_format`) and per-statement match reasoning (`match_reason`) are carried in the spec-blessed `status_notes` free-text field. Format: `source_format=<csaf|oval|openvex>; match_reason=<direct|via_alias|via_cpe_prefix|from_user_vex>`. User-sourced rows omit the `source_format=` prefix entirely (no upstream feed).
 
 Empty results return `204 No Content`. OpenVEX 0.2.0's schema requires `statements: minItems 1`, so we cannot emit a valid doc with zero statements; 204 signals "query valid, no statements" without violating the schema.
 
@@ -48,7 +48,7 @@ Empty results return `204 No Content`. OpenVEX 0.2.0's schema requires `statemen
 | `vulnerability.name` | string | The CVE ID (e.g. `CVE-2021-44228`). |
 | `products[]` | array | One or more products covered by this statement. Each carries an `@id` and/or an `identifiers` object with `purl`/`cpe22`/`cpe23`. When the request includes `products` (`/v1/statements`, `/v1/analyze`), the user's input identifier is echoed verbatim into `products[]` so consumers like Trivy that match on PURL see what they sent. |
 | `status` | string | One of the four VEX statuses (see [Status values](#status-values)). |
-| `status_notes` | string | Diagnostic free text: `source_format=<csaf|oval>; match_reason=<...>`. Empty `source_format=` is omitted on user-sourced rows. |
+| `status_notes` | string | Diagnostic free text: `source_format=<csaf|oval|openvex>; match_reason=<...>`. Empty `source_format=` is omitted on user-sourced rows. |
 | `justification` | string | Required when `status==not_affected`. OpenVEX 0.2.0 enum (see [Justification values](#justification-values)). |
 | `supplier` | string | Vendor identifier (`redhat`, `suse`, `ubuntu`, `debian`). For user-sourced rows, the value the user self-disclosed via the inbound doc's `supplier` field. |
 | `timestamp` | RFC3339 string | When the upstream advisory (or user document) last updated this statement. |

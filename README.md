@@ -76,7 +76,8 @@ For deeper reading: the ingest pipeline and project layout live in [`docs/archit
 | Red Hat | CSAF VEX | [security.access.redhat.com/data/csaf/v2/vex/](https://security.access.redhat.com/data/csaf/v2/vex/) | ~313K | PURL + CPE |
 | Red Hat | OVAL | [security.access.redhat.com/data/oval/v2/](https://security.access.redhat.com/data/oval/v2/) | 1 per stream (EUS/AUS/E4S/…) | CPE (incl. stream variants) |
 | SUSE | CSAF VEX | [ftp.suse.com/pub/projects/security/csaf-vex/](https://ftp.suse.com/pub/projects/security/csaf-vex/) | ~54K | CPE |
-| Ubuntu | OVAL | [security-metadata.canonical.com/oval/](https://security-metadata.canonical.com/oval/) | 1 per LTS release (focal / jammy / noble) | PURL (`pkg:deb/ubuntu/<name>?distro=ubuntu-<v>`) |
+| Ubuntu | OpenVEX 0.2.0 | [security-metadata.canonical.com/vex/](https://security-metadata.canonical.com/vex/) | ~54K (per-CVE in `vex-all.tar.xz`) | PURL (`pkg:deb/ubuntu/<name>?distro=ubuntu-<v>`) |
+| Ubuntu | OVAL | [security-metadata.canonical.com/oval/](https://security-metadata.canonical.com/oval/) | 1 per LTS release (focal / jammy / noble) — _deprecated; queued for removal in v0.5.0_ | PURL (`pkg:deb/ubuntu/<name>?distro=ubuntu-<v>`) |
 | Debian | OVAL | [www.debian.org/security/oval/](https://www.debian.org/security/oval/) | 1 per release (bullseye / bookworm / trixie) | PURL (`pkg:deb/debian/<name>?distro=debian-<n>`) |
 
 Alias sources:
@@ -120,7 +121,8 @@ aliases:
 **Adapter types currently registered:**
 - `csaf` — any CSAF 2.0 provider (generic)
 - `redhat-oval` — Red Hat OVAL (one URL per adapter entry)
-- `ubuntu-oval` — Canonical USN OVAL (one URL per LTS release)
+- `ubuntu-vex` — Canonical OpenVEX 0.2.0 (single tarball at `vex-all.tar.xz`)
+- `ubuntu-oval` — Canonical USN OVAL (one URL per LTS release; deprecated, queued for removal in v0.5.0)
 - `debian-oval` — Debian Security Tracker OVAL (one URL per release)
 
 **Alias fetcher types currently registered:**

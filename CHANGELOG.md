@@ -2,6 +2,30 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.4.2] — Unreleased — Canonical OpenVEX adapter
+
+Adds a new adapter for Canonical's OpenVEX 0.2.0 feed at `https://security-metadata.canonical.com/vex/vex-all.tar.xz`. The feed is a strict superset of the existing Ubuntu OVAL coverage — it includes pre-USN triage state (`not_affected`, `under_investigation`) for every CVE Canonical has assessed, where the OVAL feed only ships `fixed` rows after a USN lands.
+
+Both `ubuntu-vex` and `ubuntu-oval` adapters run during the soak window. Statements coexist in the database under different `source_format` values (`openvex` vs `oval`); the `statements` table PK includes `source_format`, so the two never collide. `ubuntu-oval` removal is queued for v0.5.0 once OpenVEX parity is verified in production.
+
+### Added
+
+- **`ubuntu-vex` adapter** (`pkg/source/ubuntuvex/`). Streaming xz + tar walk. HEAD/`Last-Modified` incremental skip on the tarball. Ignores USN-keyed entries; logs and skips malformed entries. Emits one row per (statement × unique normalized identifier).
+- **ESM-track distro normalisation** (`pkg/source/ubuntuvex/distro.go`). Constant table mapping Canonical's `?distro=` qualifier values (`ubuntu/<codename>`, `esm-apps/<codename>`, `esm-infra/<codename>`, `esm-infra-legacy/<codename>`) to scanner-convention `ubuntu-<version>`. No external alias file; many-to-one collisions deduped at emit time.
+- **`source_format=openvex`** as a new value in `db.Statement.SourceFormat`, surfaced in OpenVEX `status_notes` automatically.
+- New direct dep: `github.com/ulikunitz/xz` (pure-Go, MIT, no cgo). Required for the tar.xz feed format.
+
+### Changed
+
+- **`pkg/openvex/identifiers.go`** (new): `CollectIdentifiers([]Component) []string` extracted from `pkg/uservex/parse.go` so both inbound user-VEX parsing and the new adapter share the dedup logic. Pure refactor; `pkg/uservex` behaviour is unchanged.
+- **`config.yaml`**: new `ubuntu-vex` entry; existing `ubuntu-oval-*` entries flagged with a deprecation comment.
+
+### Notes
+
+- No breaking changes; this is a patch bump matching the v0.2.3 (Ubuntu OVAL) and v0.2.6 (Debian OVAL) precedent for new adapters.
+- The Canonical tarball regenerates daily-ish; `Last-Modified` skip saves CPU but not bandwidth on cycles where the upstream did regenerate.
+- Per-entry tar mtime prune (a finer-grained incremental optimisation) is deferred to v0.4.3 if profiling shows the full re-emit is too expensive at production cadence.
+
 ## [0.4.1] — Unreleased — rename `customer_vex` → `user_vex`
 
 > **Breaking change.** The `customer_vex` request field on `POST /v1/analyze` is renamed to `user_vex`, and the `from_customer_vex` match-reason value (carried in OpenVEX `status_notes`) is renamed to `from_user_vex`. "Customer" implied a paid-product relationship that doesn't apply to the free OSS hub — the document is supplied by the API user, not a customer. No semantic change; pure rename.

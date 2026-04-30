@@ -13,9 +13,21 @@ adapters:
   - type: redhat-oval
     id: redhat-oval-rhel-9.6-eus
     url: https://security.access.redhat.com/data/oval/v2/RHEL9/rhel-9.6-eus.oval.xml.bz2
-  # Ubuntu OVAL: per-release USN feeds (the main, non-OCI variants). One
-  # adapter per supported LTS release; add new entries here as Canonical
-  # ships new LTS releases (next: 26.04).
+  # Canonical OpenVEX: single tarball at vex-all.tar.xz containing per-CVE
+  # OpenVEX 0.2.0 documents. Strict superset of the USN-derived OVAL feeds
+  # below — covers pre-USN triage state (`not_affected`,
+  # `under_investigation`) that OVAL never emits. ESM-track distro qualifier
+  # values are normalised to scanner-convention `ubuntu-<version>` in the
+  # adapter; no external alias file needed.
+  - type: ubuntu-vex
+    id: ubuntu-vex
+    url: https://security-metadata.canonical.com/vex/vex-all.tar.xz
+  # Ubuntu OVAL: per-release USN feeds (the main, non-OCI variants).
+  # DEPRECATED: superseded by ubuntu-vex; removal queued for v0.5.0.
+  # Both run during the soak window so we can verify the OpenVEX feed has
+  # parity with the OVAL feeds before retiring them. The two emit different
+  # source_format values (`oval` vs `openvex`); the statements PK includes
+  # source_format so they coexist by design.
   #
   # We deliberately do not use Canonical's OCI-flavoured feeds
   # (oci.com.ubuntu.<release>...). Those scope to container-relevant
@@ -23,8 +35,6 @@ adapters:
   # that belongs to the scanner, not to us. vex.getreel.dev is a general
   # VEX hub; a consumer scanning a bare-metal Ubuntu host or a VM
   # filesystem should get the same coverage as one scanning a container.
-  # Using the main feeds keeps Ubuntu coverage consistent with Red Hat
-  # and SUSE (both of which we ingest in full).
   - type: ubuntu-oval
     id: ubuntu-oval-noble
     name: Ubuntu 24.04 LTS

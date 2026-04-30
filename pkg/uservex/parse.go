@@ -128,9 +128,9 @@ func pickTimestamp(override string, fallback time.Time) time.Time {
 // SourceFormat is left empty on user rows. Vendor flows through
 // supplier; an empty supplier is preserved verbatim.
 func flattenStatement(stmt openvex.Statement, ts time.Time) ([]db.Statement, error) {
-	ids, err := collectIdentifiers(stmt.Products)
-	if err != nil {
-		return nil, err
+	ids := openvex.CollectIdentifiers(stmt.Products)
+	if len(ids) == 0 {
+		return nil, ErrProductNoIdentifier
 	}
 	tsStr := ts.UTC().Format(time.RFC3339)
 	var rows []db.Statement
@@ -154,32 +154,4 @@ func flattenStatement(stmt openvex.Statement, ts time.Time) ([]db.Statement, err
 		})
 	}
 	return rows, nil
-}
-
-// collectIdentifiers walks a Product list and returns the deduplicated list
-// of identifier strings, in stable order. Empty / whitespace-only values
-// are dropped.
-func collectIdentifiers(products []openvex.Component) ([]string, error) {
-	seen := make(map[string]bool)
-	var ids []string
-	add := func(s string) {
-		s = strings.TrimSpace(s)
-		if s == "" || seen[s] {
-			return
-		}
-		seen[s] = true
-		ids = append(ids, s)
-	}
-	for _, p := range products {
-		add(p.ID)
-		if p.Identifiers != nil {
-			add(p.Identifiers.PURL)
-			add(p.Identifiers.CPE22)
-			add(p.Identifiers.CPE23)
-		}
-	}
-	if len(ids) == 0 {
-		return nil, ErrProductNoIdentifier
-	}
-	return ids, nil
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/source/debianoval"
 	"github.com/getreeldev/reel-vex/pkg/source/redhatoval"
 	"github.com/getreeldev/reel-vex/pkg/source/ubuntuoval"
+	"github.com/getreeldev/reel-vex/pkg/source/ubuntuvex"
 )
 
 // registerAdapters wires every known adapter and alias fetcher into their
@@ -30,6 +31,7 @@ func registerAdapters() {
 	source.Register(csafadapter.Type, csafadapter.New)
 	source.Register(redhatoval.Type, redhatoval.New)
 	source.Register(ubuntuoval.Type, ubuntuoval.New)
+	source.Register(ubuntuvex.Type, ubuntuvex.New)
 	source.Register(debianoval.Type, debianoval.New)
 	aliases.Register(aliases.RedHatRepoToCPEType, aliases.NewRedHatRepoToCPE)
 }
