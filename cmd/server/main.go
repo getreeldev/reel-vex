@@ -180,6 +180,15 @@ func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adm
 
 	go runner.StartScheduler(ctx)
 
+	// Warm the /v1/stats cache in the background. The first call after restart
+	// would otherwise hit a 30-60s SQL scan on a multi-GB DB before the
+	// ingest scheduler's first cycle refreshes the cache.
+	go func() {
+		if _, err := database.RefreshStats(); err != nil {
+			slog.Warn("startup stats cache warmup failed", "error", err)
+		}
+	}()
+
 	go func() {
 		<-ctx.Done()
 		slog.Info("shutting down")

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
@@ -11,6 +12,14 @@ import (
 // DB wraps a SQLite database for VEX statement storage.
 type DB struct {
 	db *sql.DB
+
+	// statsMu guards cachedStats. statsCompute serialises the slow COUNT
+	// queries — without it, multiple concurrent Stats() / RefreshStats()
+	// calls would each kick off their own scan, multiplying the time.
+	// See Stats / RefreshStats for semantics.
+	statsMu      sync.RWMutex
+	cachedStats  *Stats
+	statsCompute sync.Mutex
 }
 
 // Statement is a VEX assertion stored in the database.
@@ -234,8 +243,66 @@ func (db *DB) QueryStatements(f QueryFilters) ([]Statement, error) {
 	return scanStatements(rows)
 }
 
-// Stats returns coverage statistics.
+// Stats returns the cached coverage statistics. Computes on first call;
+// thereafter served from an in-memory cache that is invalidated only by an
+// explicit RefreshStats call (hooked at the end of each ingest cycle).
+//
+// Why caching: on the production-scale DB (~145M rows after v0.4.2's
+// Canonical OpenVEX adapter lands) the underlying COUNT(*) and
+// COUNT(DISTINCT cve) queries take 30-60+ seconds — too slow for the
+// browser-polled `/v1/stats` endpoint. Stats are coarse summary numbers
+// (vendor/cve/statement counts), so serving slightly-stale-since-last-ingest
+// is fine: the website doesn't need second-fresh totals.
 func (db *DB) Stats() (Stats, error) {
+	// Fast path: cache hit, no locks beyond the RWMutex read.
+	db.statsMu.RLock()
+	cached := db.cachedStats
+	db.statsMu.RUnlock()
+	if cached != nil {
+		return *cached, nil
+	}
+	// Slow path: serialise concurrent computers; first one wins, the rest
+	// see the populated cache after the unique compute returns.
+	db.statsCompute.Lock()
+	defer db.statsCompute.Unlock()
+	db.statsMu.RLock()
+	cached = db.cachedStats
+	db.statsMu.RUnlock()
+	if cached != nil {
+		return *cached, nil
+	}
+	return db.computeAndCache()
+}
+
+// RefreshStats recomputes coverage statistics and updates the cache.
+// Called from the ingest orchestrator at the end of each cycle and from a
+// background goroutine at server startup. Tests that mutate the DB and
+// expect updated stats must call this between mutation and read.
+//
+// Holds the statsCompute mutex so it can't run concurrently with a cache
+// miss in Stats() — only one COUNT scan is ever in flight.
+func (db *DB) RefreshStats() (Stats, error) {
+	db.statsCompute.Lock()
+	defer db.statsCompute.Unlock()
+	return db.computeAndCache()
+}
+
+// computeAndCache runs the slow SQL and updates the cache atomically.
+// Caller must hold statsCompute.
+func (db *DB) computeAndCache() (Stats, error) {
+	s, err := db.computeStats()
+	if err != nil {
+		return s, err
+	}
+	db.statsMu.Lock()
+	cp := s
+	db.cachedStats = &cp
+	db.statsMu.Unlock()
+	return s, nil
+}
+
+// computeStats runs the slow COUNT queries against the live DB.
+func (db *DB) computeStats() (Stats, error) {
 	var s Stats
 	err := db.db.QueryRow("SELECT COUNT(DISTINCT id) FROM vendors").Scan(&s.Vendors)
 	if err != nil {

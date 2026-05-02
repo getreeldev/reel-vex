@@ -20,11 +20,17 @@ Both `ubuntu-vex` and `ubuntu-oval` adapters run during the soak window. Stateme
 - **`pkg/openvex/identifiers.go`** (new): `CollectIdentifiers([]Component) []string` extracted from `pkg/uservex/parse.go` so both inbound user-VEX parsing and the new adapter share the dedup logic. Pure refactor; `pkg/uservex` behaviour is unchanged.
 - **`config.yaml`**: new `ubuntu-vex` entry; existing `ubuntu-oval-*` entries flagged with a deprecation comment.
 
+### Changed
+
+- **Ingest architecture for `ubuntu-vex`**: the tarball is buffered fully into memory before the xz/tar walk begins, then processed locally. The original streaming-through-HTTP-body design coupled the connection lifetime to the walk duration — staging surfaced this when a 47-minute walk tripped the 15-minute HTTP timeout. The tarball is ~59 MB compressed; in-memory buffering removes the HTTP/walk coupling entirely.
+- **`/v1/stats` now serves a cached struct** updated at the end of each ingest cycle. Before this change, every call ran four `COUNT(*)` / `COUNT(DISTINCT)` queries over the full statements table — fine on the v0.4.1-era 13M-row DB (~1s) but unacceptable on the v0.4.2-era ~145M-row DB (30-60s). The cache is exact (not approximate), refreshed in `pkg/db/db.go:RefreshStats()` from the orchestrator at the end of `ingest.Run`, and warmed at server startup via a background goroutine. Tests that mutate the DB and re-read stats must call `RefreshStats` between mutation and read.
+
 ### Notes
 
 - No breaking changes; this is a patch bump matching the v0.2.3 (Ubuntu OVAL) and v0.2.6 (Debian OVAL) precedent for new adapters.
 - The Canonical tarball regenerates daily-ish; `Last-Modified` skip saves CPU but not bandwidth on cycles where the upstream did regenerate.
 - Per-entry tar mtime prune (a finer-grained incremental optimisation) is deferred to v0.4.3 if profiling shows the full re-emit is too expensive at production cadence.
+- **`ubuntu-oval` is intentionally retained** alongside `ubuntu-vex`. Empirical staging parity check (8-CVE sample on prod-snapshot data) found OVAL contributes ~10% of unique `(cve, base_id)` tuples that OpenVEX uses different naming for (versioned binary packages like `golang-1.20-go`, source vs binary package families, etc.). Both feeds together give consumers the union of identifier shapes; storage cost is trivial. The Phase F removal originally planned for v0.5.0 is cancelled.
 
 ## [0.4.1] — Unreleased — rename `customer_vex` → `user_vex`
 
