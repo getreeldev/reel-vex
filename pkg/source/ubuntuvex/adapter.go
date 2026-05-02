@@ -21,6 +21,7 @@ package ubuntuvex
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -137,12 +138,25 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 	if err != nil {
 		return fmt.Errorf("GET %s: %w", a.url, err)
 	}
-	defer getResp.Body.Close()
 	if getResp.StatusCode != http.StatusOK {
+		getResp.Body.Close()
 		return fmt.Errorf("GET %s: HTTP %d", a.url, getResp.StatusCode)
 	}
 
-	xzReader, err := xz.NewReader(getResp.Body)
+	// Buffer the tarball fully into memory before walking. The xz+tar walk
+	// can take 30-60+ minutes on a real Canonical feed (≥54K JSON entries
+	// to decode + insert), but the body read needs to complete inside the
+	// HTTP client's Timeout — streaming the body through xz/tar/JSON keeps
+	// the connection open for the full walk and trips the deadline. The
+	// tarball is small enough (~59 MB compressed) to buffer; processing
+	// then happens entirely on local memory with no HTTP coupling.
+	body, err := io.ReadAll(getResp.Body)
+	getResp.Body.Close()
+	if err != nil {
+		return fmt.Errorf("read body: %w", err)
+	}
+
+	xzReader, err := xz.NewReader(bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("xz reader: %w", err)
 	}
