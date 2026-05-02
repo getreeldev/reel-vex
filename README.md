@@ -8,16 +8,16 @@
 <p align="center">
   <strong>Free, open source VEX resolution service.</strong>
   <br>
-  Aggregates vendor VEX statements from CSAF 2.0 and OVAL feeds, translates across identifier schemes (PURL ↔ CPE), and serves the result via HTTP API.
+  Aggregates vendor VEX statements from CSAF 2.0, OVAL, and OpenVEX feeds, translates across identifier schemes (PURL ↔ CPE), and serves the result via HTTP API.
   <br><br>
   <a href="https://getreel.dev/vex">Web UI</a> · API <code>vex.getreel.dev</code> · <a href="./docs/api.md">API reference</a>
 </p>
 
 ## Why
 
-Vulnerability scanners produce long lists of CVEs. Many of those CVEs don't actually affect you — the vendor already confirmed the vulnerable code isn't present, a fix is available, or it's still under investigation. This information is published as VEX (Vulnerability Exploitability eXchange) statements. Red Hat and SUSE publish it as CSAF 2.0 JSON; Red Hat, Ubuntu, and Debian publish it as OVAL XML. Red Hat publishes both formats with intentionally different coverage between them.
+Vulnerability scanners produce long lists of CVEs. Many of those CVEs don't actually affect you — the vendor already confirmed the vulnerable code isn't present, a fix is available, or it's still under investigation. This information is published as VEX (Vulnerability Exploitability eXchange) statements. Red Hat and SUSE publish CSAF 2.0 JSON; Red Hat, Ubuntu, and Debian publish OVAL XML; Canonical also publishes OpenVEX 0.2.0 covering Ubuntu releases beyond what their OVAL feed surfaces. The same vendor often publishes multiple formats with intentionally different coverage between them.
 
-reel-vex pulls from both formats, normalizes the statements into one database, and bridges identifier schemes so a scanner querying with a package PURL matches statements vendors published against a platform CPE. One query, unified answer.
+reel-vex pulls from all three formats, normalizes the statements into one database, and bridges identifier schemes so a scanner querying with a package PURL matches statements vendors published against a platform CPE. One query, unified answer.
 
 ## How it works
 
@@ -26,18 +26,24 @@ reel-vex pulls from both formats, normalizes the statements into one database, a
          │
          ▼
 ┌──────────────────────────────────────────────────────────┐
-│                  Ingest Pipeline                          │
+│                   Ingest Pipeline                         │
 │                                                           │
 │   Adapters                           Alias fetchers       │
 │   ────────                           ──────────────       │
 │   ┌─────────────┐                    ┌──────────────┐     │
-│   │ CSAF adapter│                    │ repo → CPE   │     │
+│   │ CSAF        │                    │ repo → CPE   │     │
 │   │ (RH, SUSE)  │                    │ (Red Hat)    │     │
 │   └──────┬──────┘                    └──────┬───────┘     │
 │          │                                  │             │
 │   ┌──────┴──────┐                           │             │
 │   │ OVAL        │                           │             │
-│   │ adapters    │                           │             │
+│   │ (RH, Ubuntu,│                           │             │
+│   │  Debian)    │                           │             │
+│   └──────┬──────┘                           │             │
+│          │                                  │             │
+│   ┌──────┴──────┐                           │             │
+│   │ OpenVEX     │                           │             │
+│   │ (Ubuntu)    │                           │             │
 │   └──────┬──────┘                           │             │
 │          │                                  │             │
 │          ▼                                  ▼             │
@@ -77,8 +83,10 @@ For deeper reading: the ingest pipeline and project layout live in [`docs/archit
 | Red Hat | OVAL | [security.access.redhat.com/data/oval/v2/](https://security.access.redhat.com/data/oval/v2/) | 1 per stream (EUS/AUS/E4S/…) | CPE (incl. stream variants) |
 | SUSE | CSAF VEX | [ftp.suse.com/pub/projects/security/csaf-vex/](https://ftp.suse.com/pub/projects/security/csaf-vex/) | ~54K | CPE |
 | Ubuntu | OpenVEX 0.2.0 | [security-metadata.canonical.com/vex/](https://security-metadata.canonical.com/vex/) | ~54K (per-CVE in `vex-all.tar.xz`) | PURL (`pkg:deb/ubuntu/<name>?distro=ubuntu-<v>`) |
-| Ubuntu | OVAL | [security-metadata.canonical.com/oval/](https://security-metadata.canonical.com/oval/) | 1 per LTS release (focal / jammy / noble) — _deprecated; queued for removal in v0.5.0_ | PURL (`pkg:deb/ubuntu/<name>?distro=ubuntu-<v>`) |
+| Ubuntu | OVAL | [security-metadata.canonical.com/oval/](https://security-metadata.canonical.com/oval/) | 1 per LTS release (focal / jammy / noble) | PURL (`pkg:deb/ubuntu/<name>?distro=ubuntu-<v>`) |
 | Debian | OVAL | [www.debian.org/security/oval/](https://www.debian.org/security/oval/) | 1 per release (bullseye / bookworm / trixie) | PURL (`pkg:deb/debian/<name>?distro=debian-<n>`) |
+
+**Ubuntu has dual sources by design.** Canonical's OpenVEX feed is broad and includes pre-USN triage; their OVAL feed covers ~10% of identifier shapes the OpenVEX feed expresses under different naming conventions (versioned binary packages like `golang-1.20-go`, source vs binary package families). The two are not strict supersets — keeping both gives consumers the union.
 
 Alias sources:
 
@@ -103,6 +111,10 @@ adapters:
   - type: redhat-oval
     id: redhat-oval-rhel-9.6-eus
     url: https://security.access.redhat.com/data/oval/v2/RHEL9/rhel-9.6-eus.oval.xml.bz2
+  - type: ubuntu-vex
+    id: ubuntu-vex
+    name: Ubuntu (OpenVEX)
+    url: https://security-metadata.canonical.com/vex/vex-all.tar.xz
   - type: ubuntu-oval
     id: ubuntu-oval-noble
     name: Ubuntu 24.04 LTS
@@ -122,7 +134,7 @@ aliases:
 - `csaf` — any CSAF 2.0 provider (generic)
 - `redhat-oval` — Red Hat OVAL (one URL per adapter entry)
 - `ubuntu-vex` — Canonical OpenVEX 0.2.0 (single tarball at `vex-all.tar.xz`)
-- `ubuntu-oval` — Canonical USN OVAL (one URL per LTS release; deprecated, queued for removal in v0.5.0)
+- `ubuntu-oval` — Canonical USN OVAL (one URL per LTS release)
 - `debian-oval` — Debian Security Tracker OVAL (one URL per release)
 
 **Alias fetcher types currently registered:**
