@@ -2,6 +2,28 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.5.0] — `/v1/statements` accepts SBOM input
+
+Lets the user feed a CycloneDX SBOM to `/v1/statements` and get back an OpenVEX 0.2.0 document derived from the SBOM's CVE and component lists. Removes the manual CVE/PURL extraction step from the natural Trivy flow: the article-grade scan-with-VEX run now stays in `trivy image --vex` mode (OpenVEX is BOM-context-free) without the user having to write `jq` glue. Filters (`vendors`, `statuses`, `since`, etc.) keep their meaning; output shape is unchanged.
+
+The two SBOM-accepting endpoints now serve distinct missions:
+
+- `/v1/analyze` — annotate a CycloneDX SBOM in place, return CycloneDX (with BOM-Link refs after v0.4.4 — for `trivy sbom --vex`).
+- `/v1/statements` — return OpenVEX 0.2.0, with the input set specified explicitly *or* via SBOM (new) — for `trivy image --vex` and any tool that prefers portable identifiers.
+
+### Added
+
+- **`statementsRequest.SBOM`** (`pkg/api/handler.go`): new optional `sbom` field on `POST /v1/statements`. When present, CVEs are derived from `.vulnerabilities[].id` and products from `.components[].purl` / `.components[].cpe`. SBOM-derived sets are unioned with any explicit `cves` / `products` the caller also passed.
+- **`-sbom-max-mb` server flag** (`cmd/server/main.go`, default 5): caps body size on SBOM-accepting endpoints (`/v1/analyze`, `/v1/statements`). Operators can tune up or down without rebuilding.
+- **`api.Server.SetSBOMMaxBytes(int64)`**: production wires the flag through this setter so the `NewServer` call site stays stable across the 30+ test files using the constructor.
+- **Integration tests** (`test/integration/api_test.go`): `TestStatements_AcceptsSBOMInput`, `TestStatements_SBOMUnionWithExplicitCVEs`, `TestStatements_MalformedSBOM`.
+
+### Changed
+
+- **`/v1/statements` body cap**: 1MB → 5MB (default), now matches `/v1/analyze`. Configurable via `-sbom-max-mb`.
+- **`statementsRequest.CVEs`** is now optional when `sbom` is provided. Existing CVE-only clients are unaffected. Empty-input error message updated to `"one of cves or sbom (with vulnerabilities) is required"`.
+- **`pkg/api/analyze.go`**: removed the hard-coded `maxAnalyzeBodySize = 5 << 20` constant; the handler now reads `s.sbomMaxBytes` so both SBOM-accepting endpoints share a single configurable limit.
+
 ## [0.4.4] — `/v1/analyze` emits BOM-Link refs
 
 Fixes downstream Trivy `--vex` consumption of the annotated CycloneDX returned by `/v1/analyze`. Trivy binds VEX statements to scan findings via BOM-Link refs in `affects[].ref` (per CycloneDX 1.5 VEX); the previous behaviour passed input PURLs through unchanged, which Trivy rejects with `WARN [vex] Unable to parse BOM-Link` and silently drops. With v0.4.4, the natural one-POST flow (`SBOM → /v1/analyze → trivy --vex`) suppresses findings end-to-end without manual VEX assembly.

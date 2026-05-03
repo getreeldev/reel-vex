@@ -297,7 +297,8 @@ func TestStatements_InvalidJSON(t *testing.T) {
 }
 
 func TestStatements_OversizedBody(t *testing.T) {
-	big := strings.Repeat("x", 2*1024*1024)
+	// Default sbom-max-mb is 5MB; send 6MB to exceed the cap.
+	big := strings.Repeat("x", 6*1024*1024)
 	req, _ := http.NewRequest("POST", serverURL+"/v1/statements", bytes.NewReader([]byte(big)))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -308,6 +309,76 @@ func TestStatements_OversizedBody(t *testing.T) {
 	if resp.StatusCode != 413 && resp.StatusCode != 400 {
 		t.Fatalf("expected 413 or 400, got %d", resp.StatusCode)
 	}
+}
+
+func TestStatements_AcceptsSBOMInput(t *testing.T) {
+	// SBOM as the source of CVEs and products. The seeded RH statement for
+	// CVE-2024-1234 + openssl should match. Regression test for v0.5.0.
+	sbom := map[string]any{
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.5",
+		"components": []any{
+			map[string]any{
+				"type": "library",
+				"purl": "pkg:rpm/redhat/openssl@3.0.7-27.el9",
+			},
+		},
+		"vulnerabilities": []any{
+			map[string]any{"id": "CVE-2024-1234"},
+		},
+	}
+	resp := post(t, "/v1/statements", map[string]any{"sbom": sbom})
+	expectStatus(t, resp, 200)
+
+	stmts := decodeOpenVEXStatements(t, resp)
+	if len(stmts) == 0 {
+		t.Fatal("expected statements derived from SBOM input; got none")
+	}
+	if stmts[0].Status != "not_affected" {
+		t.Errorf("expected not_affected, got %q", stmts[0].Status)
+	}
+}
+
+func TestStatements_SBOMUnionWithExplicitCVEs(t *testing.T) {
+	// SBOM provides CVE-2024-1234; explicit cves[] adds CVE-2024-5678. Union
+	// of both should appear in the response (subject to the products filter
+	// — both seeded statements have matching products via the SBOM-derived
+	// component set).
+	sbom := map[string]any{
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.5",
+		"components": []any{
+			map[string]any{"type": "library", "purl": "pkg:rpm/redhat/openssl@3.0.7-27.el9"},
+			map[string]any{"type": "library", "purl": "pkg:rpm/redhat/nginx@1.22.1-4.el9"},
+		},
+		"vulnerabilities": []any{
+			map[string]any{"id": "CVE-2024-1234"},
+		},
+	}
+	resp := post(t, "/v1/statements", map[string]any{
+		"sbom": sbom,
+		"cves": []string{"CVE-2024-5678"},
+	})
+	expectStatus(t, resp, 200)
+
+	stmts := decodeOpenVEXStatements(t, resp)
+	cves := make(map[string]bool)
+	for _, s := range stmts {
+		cves[s.Vulnerability.Name] = true
+	}
+	if !cves["CVE-2024-1234"] {
+		t.Errorf("expected CVE-2024-1234 (from SBOM) in result, got %v", cves)
+	}
+	if !cves["CVE-2024-5678"] {
+		t.Errorf("expected CVE-2024-5678 (from explicit cves) in result, got %v", cves)
+	}
+}
+
+func TestStatements_MalformedSBOM(t *testing.T) {
+	resp := post(t, "/v1/statements", map[string]any{
+		"sbom": "not-a-cyclonedx-object",
+	})
+	expectStatus(t, resp, 400)
 }
 
 // TestStatements_OldRoutesAre404 is the breaking-change regression guard.
