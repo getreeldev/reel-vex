@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/getreeldev/reel-vex/pkg/db"
@@ -176,6 +177,10 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		if len(merged) > 0 {
 			annotateSBOM(sbom, merged, userCVEs)
 		}
+		// Rewrite affects[].ref to BOM-Link form regardless of whether vendor
+		// data matched, so the response stays consumable by Trivy --vex even
+		// when no statements were emitted.
+		rewriteAffectsAsBOMLinks(sbom)
 		json.NewEncoder(w).Encode(sbom)
 		return
 	}
@@ -318,6 +323,78 @@ func annotateSBOM(sbom map[string]any, stmts []db.Statement, userCVEs map[string
 		}
 		vuln["analysis"] = analysis
 		vulns[i] = vuln
+	}
+}
+
+// rewriteAffectsAsBOMLinks rewrites each vulnerability's affects[].ref from
+// raw PURL to a CycloneDX BOM-Link so consumers (Trivy --vex) can bind the
+// VEX statement back to a scan finding via bom-ref. Format per CycloneDX 1.5:
+//
+//	urn:cdx:<serial-number>/<version>#<bom-ref>
+//
+// Best-effort: if the SBOM is missing serialNumber, or a component lacks a
+// bom-ref, or an affects entry's ref doesn't match any component, the
+// original .ref is preserved. The downstream tool then falls back to its
+// own behaviour for that row (Trivy logs a parse warning); no other VEX
+// statement in the document is affected.
+func rewriteAffectsAsBOMLinks(sbom map[string]any) {
+	serial, _ := sbom["serialNumber"].(string)
+	if serial == "" {
+		return
+	}
+	// CycloneDX BOM-Link spec uses the bare serial number without the URN
+	// scheme prefix. Trivy SBOMs emit `urn:uuid:<uuid>` so strip that.
+	serial = strings.TrimPrefix(serial, "urn:uuid:")
+
+	version := 1
+	if v, ok := sbom["version"].(float64); ok && v > 0 {
+		version = int(v)
+	}
+
+	purlToBomRef := make(map[string]string)
+	if comps, ok := sbom["components"].([]any); ok {
+		for _, raw := range comps {
+			comp, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			bomRef, _ := comp["bom-ref"].(string)
+			purl, _ := comp["purl"].(string)
+			if bomRef != "" && purl != "" {
+				purlToBomRef[purl] = bomRef
+			}
+		}
+	}
+
+	vulns, ok := sbom["vulnerabilities"].([]any)
+	if !ok {
+		return
+	}
+	for _, raw := range vulns {
+		vuln, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		affects, ok := vuln["affects"].([]any)
+		if !ok {
+			continue
+		}
+		for j, a := range affects {
+			// CycloneDX allows affects[] entries to be objects {ref, versions[...]}
+			// (Trivy emission) or plain strings (some hand-rolled SBOMs).
+			switch ref := a.(type) {
+			case map[string]any:
+				purl, _ := ref["ref"].(string)
+				if bomRef, ok := purlToBomRef[purl]; ok {
+					ref["ref"] = fmt.Sprintf("urn:cdx:%s/%d#%s", serial, version, bomRef)
+					affects[j] = ref
+				}
+			case string:
+				if bomRef, ok := purlToBomRef[ref]; ok {
+					affects[j] = fmt.Sprintf("urn:cdx:%s/%d#%s", serial, version, bomRef)
+				}
+			}
+		}
 	}
 }
 
