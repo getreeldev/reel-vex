@@ -57,9 +57,20 @@ func (r *Resolver) Expand(id string) []Candidate {
 		ordered = append(ordered, candidate)
 	}
 
-	// direct: the base form of the input.
+	// direct: the base form of the input. SplitPURL preserves the
+	// `?distro=` qualifier as identity (correct for pkg:deb/* and for
+	// RH variant feeds like Hummingbird that publish with distro).
 	base, _ := csaf.SplitPURL(id)
 	add(base, "direct")
+
+	// direct (distro-stripped): mainstream Red Hat CSAF publishes bare
+	// PURLs without ?distro=, but scanners (Trivy, syft) emit the same
+	// package with ?distro=redhat-X.Y attached. Without a stripped
+	// candidate, scanner queries miss the most common stored shape.
+	// Additive only — never removes a match.
+	if i := strings.Index(base, "?distro="); i >= 0 {
+		add(base[:i], "direct")
+	}
 
 	// via_alias: repository_id qualifier on a PURL → CPEs in the alias table.
 	if qual := extractRepositoryID(id); qual != "" {

@@ -41,15 +41,39 @@ func TestExpand_PURLPassthrough(t *testing.T) {
 
 func TestExpand_PreservesDistroQualifier(t *testing.T) {
 	r := New(resolverTestDB(t))
-	// A deb PURL carries the distro qualifier as identity. splitBase must
-	// keep it on the base; otherwise a query for noble openssl falls
-	// through to jammy openssl statements and vice versa.
+	// A deb PURL carries the distro qualifier as identity. The distro-bearing
+	// candidate must be present so a query for noble openssl matches noble
+	// stored data, not jammy. The distro-stripped candidate is also produced
+	// (additive, harmless for Ubuntu data which is never stored bare) but
+	// what this test cares about is the identity-preserving form.
 	cands := r.Expand("pkg:deb/ubuntu/openssl@3.0.13-0ubuntu3.1?arch=amd64&distro=ubuntu-24.04")
-	if len(cands) != 1 {
-		t.Fatalf("got %d candidates, want 1: %+v", len(cands), cands)
+	ids := make(map[string]string, len(cands))
+	for _, c := range cands {
+		ids[c.ID] = c.MatchReason
 	}
-	if cands[0].ID != "pkg:deb/ubuntu/openssl?distro=ubuntu-24.04" {
-		t.Errorf("base: got %q, want pkg:deb/ubuntu/openssl?distro=ubuntu-24.04", cands[0].ID)
+	if ids["pkg:deb/ubuntu/openssl?distro=ubuntu-24.04"] != "direct" {
+		t.Errorf("missing direct candidate with ?distro=ubuntu-24.04 in %v", ids)
+	}
+}
+
+func TestExpand_RPMScannerDistroProducesBareAndDistroCandidates(t *testing.T) {
+	// Trivy emits RPM PURLs with ?arch=...&distro=redhat-X.Y&epoch=N. Red Hat's
+	// mainstream CSAF publishes bare PURLs (no distro). RH variants like
+	// Hummingbird store with distro. The resolver must produce both candidates
+	// so a scanner query can match either stored shape. Regression test for
+	// v0.4.3 — without the stripped candidate, the bare RH form was unreachable.
+	r := New(resolverTestDB(t))
+	cands := r.Expand("pkg:rpm/redhat/openssl@3.0.7-25.el9_3?arch=x86_64&distro=redhat-9.3&epoch=1")
+
+	ids := make(map[string]string, len(cands))
+	for _, c := range cands {
+		ids[c.ID] = c.MatchReason
+	}
+	if ids["pkg:rpm/redhat/openssl?distro=redhat-9.3"] != "direct" {
+		t.Errorf("missing direct candidate with ?distro=redhat-9.3 in %v", ids)
+	}
+	if ids["pkg:rpm/redhat/openssl"] != "direct" {
+		t.Errorf("missing distro-stripped direct candidate in %v", ids)
 	}
 }
 
