@@ -643,6 +643,63 @@ func TestStatements_ResolvesTrivyShapeRPMToBareStored(t *testing.T) {
 	}
 }
 
+func TestAnalyze_EmitsBOMLinkRefsInAnnotatedSBOM(t *testing.T) {
+	// Trivy --vex matches CycloneDX VEX statements to scan findings via
+	// BOM-Link in affects[].ref. /v1/analyze must rewrite raw PURL refs to
+	// BOM-Link form so the response is consumable by the scanner without
+	// "WARN [vex] Unable to parse BOM-Link" complaints. Regression test for
+	// v0.4.4.
+	sbom := map[string]any{
+		"bomFormat":    "CycloneDX",
+		"specVersion":  "1.5",
+		"serialNumber": "urn:uuid:test-1234-bomlink",
+		"version":      1,
+		"components": []any{
+			map[string]any{
+				"type":    "library",
+				"name":    "openssl",
+				"bom-ref": "comp-openssl",
+				"purl":    "pkg:rpm/redhat/openssl@3.0.7-25.el9_3?arch=x86_64&distro=redhat-9.3&epoch=1",
+			},
+		},
+		"vulnerabilities": []any{
+			map[string]any{
+				"id": "CVE-2024-1234",
+				"affects": []any{
+					map[string]any{
+						"ref": "pkg:rpm/redhat/openssl@3.0.7-25.el9_3?arch=x86_64&distro=redhat-9.3&epoch=1",
+					},
+				},
+			},
+		},
+	}
+	resp := post(t, "/v1/analyze", map[string]any{"sbom": sbom})
+	expectStatus(t, resp, 200)
+
+	var result map[string]any
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	json.Unmarshal(body, &result)
+
+	affects := result["vulnerabilities"].([]any)[0].(map[string]any)["affects"].([]any)
+	ref := affects[0].(map[string]any)["ref"].(string)
+	want := "urn:cdx:test-1234-bomlink/1#comp-openssl"
+	if ref != want {
+		t.Fatalf("ref: got %q, want %q", ref, want)
+	}
+	// And the analysis block from the seeded RH not_affected statement should
+	// also be present — the BOM-Link rewrite is in addition to annotation,
+	// not instead of it.
+	vuln := result["vulnerabilities"].([]any)[0].(map[string]any)
+	analysis, ok := vuln["analysis"].(map[string]any)
+	if !ok {
+		t.Fatal("expected analysis field alongside BOM-Link rewrite")
+	}
+	if analysis["state"] != "not_affected" {
+		t.Errorf("expected analysis.state=not_affected, got %v", analysis["state"])
+	}
+}
+
 func TestAnalyze_RequiresAtLeastOneInput(t *testing.T) {
 	resp := post(t, "/v1/analyze", map[string]any{})
 	expectStatus(t, resp, 400)

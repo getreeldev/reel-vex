@@ -2,6 +2,19 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.4.4] — `/v1/analyze` emits BOM-Link refs
+
+Fixes downstream Trivy `--vex` consumption of the annotated CycloneDX returned by `/v1/analyze`. Trivy binds VEX statements to scan findings via BOM-Link refs in `affects[].ref` (per CycloneDX 1.5 VEX); the previous behaviour passed input PURLs through unchanged, which Trivy rejects with `WARN [vex] Unable to parse BOM-Link` and silently drops. With v0.4.4, the natural one-POST flow (`SBOM → /v1/analyze → trivy --vex`) suppresses findings end-to-end without manual VEX assembly.
+
+### Fixed
+
+- **`pkg/api/analyze.go`**: new `rewriteAffectsAsBOMLinks(sbom)` rewrites each `vulnerability.affects[].ref` from raw PURL to `urn:cdx:<serial>/<version>#<bom-ref>` form, using the input SBOM's `serialNumber`, `version`, and per-component `bom-ref` values. Best-effort: if any of those are missing, the original `.ref` is left in place. Runs unconditionally on the SBOM-output path so refs are spec-correct even when no vendor statements matched.
+
+### Added
+
+- **`TestRewriteAffectsAsBOMLinks_*`** (`pkg/api/analyze_bomlink_test.go`): five unit tests covering the rewrite, the string-shaped affects entry, missing serialNumber, unmatched ref, and component without bom-ref.
+- **`TestAnalyze_EmitsBOMLinkRefsInAnnotatedSBOM`** (`test/integration/api_test.go`): end-to-end assertion that a Trivy-shape SBOM POSTed to `/v1/analyze` returns BOM-Link refs and an `analysis` block on the same vulnerability.
+
 ## [0.4.3] — Resolver bridge for scanner-emitted RPM `?distro=` qualifiers
 
 Fixes `/v1/analyze` returning unannotated SBOMs for Trivy- and syft-generated CycloneDX inputs covering Red Hat content. Trivy emits RPM PURLs with a `?distro=redhat-X.Y` qualifier; mainstream Red Hat CSAF publishes bare PURLs without distro. The resolver previously produced only the SplitPURL-canonical candidate (which retains `?distro=`), so scanner queries missed the most common stored shape.
