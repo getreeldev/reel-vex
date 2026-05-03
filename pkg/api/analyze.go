@@ -14,9 +14,8 @@ import (
 )
 
 const (
-	maxAnalyzeBodySize = 5 << 20 // 5MB — covers SBOM + optional user_vex.
-	maxSBOMComponents  = 50000
-	maxSBOMVulns       = 10000
+	maxSBOMComponents = 50000
+	maxSBOMVulns      = 10000
 )
 
 // analyzeRequest wraps the inputs accepted by /v1/analyze.
@@ -41,12 +40,12 @@ type analyzeRequest struct {
 // this guards against the higher-priority vendor not_affected outranking a
 // user affected on a different identifier.
 func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
-	if r.ContentLength > maxAnalyzeBodySize {
-		writeError(w, http.StatusRequestEntityTooLarge, "request body too large (max 5MB)")
+	if r.ContentLength > s.sbomMaxBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request body too large (max %dMB)", s.sbomMaxBytes>>20))
 		return
 	}
 	var req analyzeRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAnalyzeBodySize)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.sbomMaxBytes)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}

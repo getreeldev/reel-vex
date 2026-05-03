@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -39,16 +40,21 @@ type Server struct {
 	// produces one structured "api_request" slog line.
 	handler http.Handler
 	ingest  *IngestRunner
+	// sbomMaxBytes caps body size on SBOM-accepting endpoints
+	// (/v1/analyze, /v1/statements). Default 5MB; override with
+	// SetSBOMMaxBytes (wired from the -sbom-max-mb server flag).
+	sbomMaxBytes int64
 }
 
 // NewServer creates a new API server.
 // ingest may be nil if running without ingest support.
 func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 	s := &Server{
-		db:       database,
-		resolver: resolver.New(database),
-		mux:      http.NewServeMux(),
-		ingest:   ingest,
+		db:           database,
+		resolver:     resolver.New(database),
+		mux:          http.NewServeMux(),
+		ingest:       ingest,
+		sbomMaxBytes: 5 << 20, // 5MB default
 	}
 	s.mux.HandleFunc("POST /v1/statements", s.handleStatements)
 	s.mux.HandleFunc("GET /v1/stats", s.handleStats)
@@ -58,6 +64,15 @@ func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
 	s.handler = logRequest(s.mux)
 	return s
+}
+
+// SetSBOMMaxBytes overrides the default 5MB body cap for SBOM-accepting
+// endpoints (/v1/analyze, /v1/statements). Production wires this from the
+// -sbom-max-mb server flag. n <= 0 is ignored, preserving the default.
+func (s *Server) SetSBOMMaxBytes(n int64) {
+	if n > 0 {
+		s.sbomMaxBytes = n
+	}
 }
 
 // ServeHTTP implements http.Handler. CORS preflight is short-circuited
@@ -76,43 +91,93 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.handler.ServeHTTP(w, r)
 }
 
-// statementsRequest is the v0.4.0 unified VEX statement query body.
+// statementsRequest is the unified VEX statement query body.
 //
-// CVEs is required (≥1). Every other field is an optional filter; an empty
-// slice (or empty Since) means "no filter on this dimension." Filter
-// semantics: AND across populated dimensions, IN within each.
+// One of CVEs or SBOM is required. Every other field is an optional filter;
+// an empty slice (or empty Since) means "no filter on this dimension."
+// Filter semantics: AND across populated dimensions, IN within each.
 //
 // Products, when present, runs through the resolver — alias expansion +
 // CPE-prefix matching — and the OpenVEX encoder echoes the user's input
 // PURLs into products[] so Trivy can match them. Without Products the
 // encoder falls back to each statement's stored product_id, which may be
 // a CPE for OVAL-derived rows.
+//
+// SBOM, when present, is a CycloneDX 1.4+ document inlined as JSON. The
+// CVE list is derived from .vulnerabilities[].id, the product list from
+// .components[].purl / .components[].cpe. SBOM-derived sets are merged
+// (union) with any explicit CVEs/Products the caller also passed.
 type statementsRequest struct {
-	CVEs           []string `json:"cves"`
-	Products       []string `json:"products,omitempty"`
-	Vendors        []string `json:"vendors,omitempty"`
-	SourceFormats  []string `json:"source_formats,omitempty"`
-	Statuses       []string `json:"statuses,omitempty"`
-	Justifications []string `json:"justifications,omitempty"`
-	Since          string   `json:"since,omitempty"`
+	CVEs           []string        `json:"cves,omitempty"`
+	Products       []string        `json:"products,omitempty"`
+	SBOM           json.RawMessage `json:"sbom,omitempty"`
+	Vendors        []string        `json:"vendors,omitempty"`
+	SourceFormats  []string        `json:"source_formats,omitempty"`
+	Statuses       []string        `json:"statuses,omitempty"`
+	Justifications []string        `json:"justifications,omitempty"`
+	Since          string          `json:"since,omitempty"`
 }
 
 const maxStatementsItems = 10000
 
 func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
-	if r.ContentLength > 1<<20 { // 1MB
-		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+	if r.ContentLength > s.sbomMaxBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request body too large (max %dMB)", s.sbomMaxBytes>>20))
 		return
 	}
 
 	var req statementsRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.sbomMaxBytes)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
+	// SBOM input — derive CVEs and products from CycloneDX, union with any
+	// explicit fields the caller also passed.
+	if len(req.SBOM) > 0 && string(req.SBOM) != "null" {
+		var sbom map[string]any
+		if err := json.Unmarshal(req.SBOM, &sbom); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid sbom JSON")
+			return
+		}
+		components := extractComponents(sbom)
+		vulns := extractVulnerabilities(sbom)
+		if len(components) > maxSBOMComponents {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("too many components (max %d)", maxSBOMComponents))
+			return
+		}
+		if len(vulns) > maxSBOMVulns {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("too many vulnerabilities (max %d)", maxSBOMVulns))
+			return
+		}
+		cveSet := make(map[string]bool, len(req.CVEs)+len(vulns))
+		for _, c := range req.CVEs {
+			cveSet[c] = true
+		}
+		for _, c := range vulns {
+			cveSet[c] = true
+		}
+		purlSet := make(map[string]bool, len(req.Products)+len(components)*2)
+		for _, p := range req.Products {
+			purlSet[p] = true
+		}
+		for _, ids := range components {
+			for _, id := range ids {
+				purlSet[id] = true
+			}
+		}
+		req.CVEs = req.CVEs[:0]
+		for c := range cveSet {
+			req.CVEs = append(req.CVEs, c)
+		}
+		req.Products = req.Products[:0]
+		for p := range purlSet {
+			req.Products = append(req.Products, p)
+		}
+	}
+
 	if len(req.CVEs) == 0 {
-		writeError(w, http.StatusBadRequest, "cves is required (at least one CVE)")
+		writeError(w, http.StatusBadRequest, "one of cves or sbom (with vulnerabilities) is required")
 		return
 	}
 	if len(req.CVEs) > maxStatementsItems || len(req.Products) > maxStatementsItems {
