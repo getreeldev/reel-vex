@@ -2,6 +2,24 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.4.3] — Resolver bridge for scanner-emitted RPM `?distro=` qualifiers
+
+Fixes `/v1/analyze` returning unannotated SBOMs for Trivy- and syft-generated CycloneDX inputs covering Red Hat content. Trivy emits RPM PURLs with a `?distro=redhat-X.Y` qualifier; mainstream Red Hat CSAF publishes bare PURLs without distro. The resolver previously produced only the SplitPURL-canonical candidate (which retains `?distro=`), so scanner queries missed the most common stored shape.
+
+### Fixed
+
+- **`pkg/resolver/resolver.go`**: `Expand()` now produces a distro-stripped candidate alongside the existing direct candidate when the input PURL carries `?distro=`. Purely additive on the read path: never removes a match, doesn't change write-side identity, no DB migration. Variant feeds that publish *with* distro (Red Hat Hummingbird, Ubuntu, Debian) continue to match via the unchanged distro-bearing candidate.
+
+### Added
+
+- **`TestExpand_RPMScannerDistroProducesBareAndDistroCandidates`** (`pkg/resolver/resolver_test.go`). Asserts both candidates appear for a Trivy-shape RPM input.
+- **`TestAnalyze_AnnotatesTrivyShapeRPMSBOM`** (`test/integration/api_test.go`). End-to-end coverage: a CycloneDX SBOM with the realistic Trivy emission shape comes back with populated `analysis` blocks. The pre-existing `TestAnalyze_SBOMOnly_Annotates` used a clean PURL without scanner qualifiers and missed the regression vector.
+- **`TestStatements_ResolvesTrivyShapeRPMToBareStored`** (`test/integration/api_test.go`). Same coverage at the `/v1/statements` query API.
+
+### Changed
+
+- **`TestExpand_PreservesDistroQualifier`** (`pkg/resolver/resolver_test.go`): tightened to assert the identity-preserving candidate is *present*, rather than that it's the only candidate. Original intent (distro is preserved) is unchanged.
+
 ## [0.4.2] — Unreleased — Canonical OpenVEX adapter
 
 Adds a new adapter for Canonical's OpenVEX 0.2.0 feed at `https://security-metadata.canonical.com/vex/vex-all.tar.xz`. The feed is a strict superset of the existing Ubuntu OVAL coverage — it includes pre-USN triage state (`not_affected`, `under_investigation`) for every CVE Canonical has assessed, where the OVAL feed only ships `fixed` rows after a USN lands.

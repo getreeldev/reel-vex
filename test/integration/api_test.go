@@ -582,6 +582,67 @@ func TestAnalyze_BothInputs_OverrideInRollup(t *testing.T) {
 	}
 }
 
+func TestAnalyze_AnnotatesTrivyShapeRPMSBOM(t *testing.T) {
+	// Trivy emits RPM PURLs with ?arch=...&distro=redhat-X.Y&epoch=N qualifiers.
+	// The seeded RH statement (CVE-2024-1234, openssl) uses the bare PURL form
+	// that mainstream RH CSAF publishes. The resolver must bridge these shapes
+	// or realistic Trivy SBOMs come back unannotated. Regression test for
+	// v0.4.3 — TestAnalyze_SBOMOnly_Annotates uses a clean PURL and missed this.
+	sbom := map[string]any{
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.5",
+		"components": []any{
+			map[string]any{
+				"type": "library",
+				"name": "openssl",
+				"purl": "pkg:rpm/redhat/openssl@3.0.7-25.el9_3?arch=x86_64&distro=redhat-9.3&epoch=1",
+			},
+		},
+		"vulnerabilities": []any{
+			map[string]any{"id": "CVE-2024-1234"},
+		},
+	}
+	resp := post(t, "/v1/analyze", map[string]any{"sbom": sbom})
+	expectStatus(t, resp, 200)
+
+	var result map[string]any
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	json.Unmarshal(body, &result)
+
+	vulns := result["vulnerabilities"].([]any)
+	vuln := vulns[0].(map[string]any)
+	analysis, ok := vuln["analysis"].(map[string]any)
+	if !ok {
+		t.Fatal("expected analysis field on Trivy-shape RPM PURL; got passthrough")
+	}
+	if analysis["state"] != "not_affected" {
+		t.Fatalf("expected not_affected, got %v", analysis["state"])
+	}
+	if analysis["justification"] != "code_not_present" {
+		t.Fatalf("expected code_not_present, got %v", analysis["justification"])
+	}
+}
+
+func TestStatements_ResolvesTrivyShapeRPMToBareStored(t *testing.T) {
+	// Same coverage as TestAnalyze_AnnotatesTrivyShapeRPMSBOM but at the
+	// /v1/statements query API. A scanner-shape RPM PURL with ?distro= must
+	// resolve against the bare stored RH form. Without the resolver's
+	// distro-stripped candidate, this returns 0 statements / 204.
+	resp := post(t, "/v1/statements", map[string]any{
+		"cves":     []string{"CVE-2024-1234"},
+		"products": []string{"pkg:rpm/redhat/openssl@3.0.7-25.el9_3?arch=x86_64&distro=redhat-9.3&epoch=1"},
+	})
+	expectStatus(t, resp, 200)
+	stmts := decodeOpenVEXStatements(t, resp)
+	if len(stmts) == 0 {
+		t.Fatal("expected statements for Trivy-shape RPM PURL; resolver didn't bridge to bare stored shape")
+	}
+	if stmts[0].Status != "not_affected" {
+		t.Errorf("expected not_affected, got %q", stmts[0].Status)
+	}
+}
+
 func TestAnalyze_RequiresAtLeastOneInput(t *testing.T) {
 	resp := post(t, "/v1/analyze", map[string]any{})
 	expectStatus(t, resp, 400)
