@@ -12,14 +12,17 @@ Canonical reference for every HTTP endpoint and response field. The live service
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/v1/statements` | Unified query: filter VEX statements by CVE, product, vendor, status, justification, source format, or update timestamp. |
-| `POST` | `/v1/analyze` | Annotate a CycloneDX SBOM and/or merge user-supplied VEX with vendor data. |
-| `GET`  | `/v1/stats` | Coverage statistics. |
+| `POST` | `/v1/statements` | Unified query: explicit `cves`/`products` lists, or a CycloneDX SBOM (or both); filter by vendor, status, justification, source format, or update timestamp. Returns OpenVEX 0.2.0 — for `trivy image --vex` and any tool that prefers portable identifiers. |
+| `POST` | `/v1/analyze` | Annotate a CycloneDX SBOM in place and/or merge user-supplied VEX with vendor data. Returns CycloneDX (with BOM-Link refs) — for `trivy sbom --vex`. |
+| `GET`  | `/v1/stats` | Coverage statistics. Cache-backed; refreshed at the end of each ingest cycle. |
 | `GET`  | `/v1/ingest` | Current ingest status. |
 | `POST` | `/v1/ingest` | Trigger a manual ingest (admin token). |
 | `GET`  | `/healthz` | Liveness probe. |
 
-`/v1/statements` is the endpoint most consumers use for query-style lookups; `/v1/analyze` is the SBOM-annotation and user-VEX-merge endpoint.
+The two SBOM-accepting endpoints serve distinct missions:
+
+- `/v1/statements` — return OpenVEX 0.2.0; input may be explicit identifier lists, an SBOM, or both. Use for `trivy image --vex` and any consumer that takes portable VEX docs.
+- `/v1/analyze` — return CycloneDX in place (annotated SBOM, BOM-Link refs in `affects[].ref` for spec-correct Trivy `--vex` consumption). Use for `trivy sbom --vex`.
 
 ## Response format — OpenVEX 0.2.0
 
@@ -95,7 +98,8 @@ For PURL-keyed statements, qualifiers behave in two distinct modes:
 
 | Qualifier | Mode | Effect |
 |---|---|---|
-| `distro` | identity | Part of the statement's `base_id` — `pkg:deb/debian/openssl?distro=debian-12` is a different identity from `pkg:deb/debian/openssl?distro=debian-11`. **Required** on deb-shaped queries to match Debian and Ubuntu OVAL statements. |
+| `distro` (deb) | identity | Part of the statement's `base_id` — `pkg:deb/debian/openssl?distro=debian-12` is a different identity from `pkg:deb/debian/openssl?distro=debian-11`. **Required** on deb-shaped queries to match Debian and Ubuntu OVAL/OpenVEX statements. |
+| `distro` (rpm) | strip-and-also | Trivy and syft emit RPM PURLs with `?distro=redhat-X.Y`, but Red Hat CSAF publishes bare PURLs without distro. The resolver therefore expands a distro-bearing RPM input into both the input-as-given **and** a distro-stripped candidate — purely additive, so a Trivy-shape RPM input matches bare-stored Red Hat statements without losing identity-aware matching against feeds that publish *with* distro. |
 | `repository_id` | filter | Stripped from `base_id`; used by the alias resolver to expand to a CPE (`via_alias`). Required on Red Hat queries that need EUS / AUS / E4S coverage. |
 | `arch`, `epoch` | stripped | Not part of identity; ignored when matching. |
 
@@ -125,10 +129,12 @@ Each `user_vex` document must carry `@context = "https://openvex.dev/ns/v0.2.0"`
 
 | Input combination | Response |
 |---|---|
-| `sbom` only | Annotated CycloneDX (vulnerability `analysis` blocks added in place). |
+| `sbom` only | Annotated CycloneDX (vulnerability `analysis` blocks added in place; `vulnerability.affects[].ref` rewritten as BOM-Link). |
 | `user_vex` only | OpenVEX 0.2.0 doc (merged vendor + user with override on collision). |
-| Both | Annotated CycloneDX where the per-CVE rollup honours user override. |
+| Both | Annotated CycloneDX where the per-CVE rollup honours user override; `affects[].ref` rewritten as BOM-Link. |
 | Neither | `400` with `at least one of sbom or user_vex required`. |
+
+**BOM-Link refs.** On the annotated-CycloneDX path, every `vulnerability.affects[].ref` is rewritten from raw PURL to the CycloneDX 1.5 BOM-Link form `urn:cdx:<serialNumber>/<version>#<bom-ref>`, using the input SBOM's `serialNumber`, `version`, and per-component `bom-ref`. This is what `trivy sbom --vex` binds against; without it, Trivy logs `WARN [vex] Unable to parse BOM-Link` and silently drops statements. Best-effort: if the input SBOM is missing `serialNumber`, the component has no `bom-ref`, or the affected ref doesn't map to any component in the SBOM, the original `.ref` is left in place.
 
 ### User-VEX merge semantics
 
@@ -204,7 +210,7 @@ curl -X POST https://vex.getreel.dev/v1/analyze \
 
 ## `POST /v1/statements`
 
-Unified query primitive over the VEX statements database. `cves` is required; everything else is an optional filter that narrows the result set further. Returns an OpenVEX 0.2.0 document; 204 on empty match.
+Unified query primitive over the VEX statements database. The query input set may be specified explicitly (via `cves` and/or `products` lists), derived from a CycloneDX SBOM, or both. Everything else is an optional filter that narrows the result further. Returns an OpenVEX 0.2.0 document; 204 on empty match.
 
 Replaces the v0.3.0 trio (`GET /v1/cve/{id}`, `GET /v1/cve/{id}/summary`, `POST /v1/resolve`). All three paths now return `404`; migrate to `POST /v1/statements`.
 
@@ -213,8 +219,9 @@ Replaces the v0.3.0 trio (`GET /v1/cve/{id}`, `GET /v1/cve/{id}/summary`, `POST 
 ```json
 POST /v1/statements
 {
-  "cves":           ["CVE-2021-44228"],                                       // required, ≥1
+  "cves":           ["CVE-2021-44228"],                                       // required unless sbom is provided
   "products":       ["pkg:rpm/redhat/log4j@2.14.0?repository_id=rhel-8-..."], // optional
+  "sbom":           { /* CycloneDX 1.4+ */ },                                  // optional
   "vendors":        ["redhat", "suse"],                                        // optional
   "source_formats": ["csaf"],                                                  // optional
   "statuses":       ["not_affected", "fixed"],                                 // optional
@@ -227,9 +234,20 @@ POST /v1/statements
 
 - **AND** across populated dimensions, **IN** within each non-empty list. So `vendors: [a, b]` AND `statuses: [c, d]` reads as `(vendor IN (a, b)) AND (status IN (c, d))`.
 - An empty list (or omitted field) means "no filter on that dimension."
-- `cves` is required (≥ 1 entry). Missing or empty → 400. This bounds the query — vex-hub returns vendor opinions about CVEs, not all-CVEs-on-a-product.
+- **At least one of `cves` or `sbom` (with vulnerabilities) is required.** Empty input → 400 with `one of cves or sbom (with vulnerabilities) is required`. This bounds the query — vex-hub returns vendor opinions about CVEs, not all-CVEs-on-a-product.
 - `cves` and `products` are each capped at 10 000 entries.
 - `since` filters by the statement's `updated` timestamp (`updated >= since`). RFC3339 string ordering matches chronological ordering, so e.g. `2026-04-01T00:00:00Z` returns rows updated on or after April 1, 2026.
+
+### SBOM input
+
+When `sbom` is present, reel-vex extracts:
+
+- **CVEs** from `.vulnerabilities[].id`,
+- **Products** from `.components[].purl` and `.components[].cpe`.
+
+Both sets are unioned with any explicit `cves` / `products` the request also carries — so a caller can broaden the query with extras without losing what the SBOM declared. The SBOM body counts against the same body-size cap as `/v1/analyze` (default 5 MB, configurable on the operator side via `-sbom-max-mb`).
+
+This removes the manual `jq` extraction step from the `trivy image --vex` flow: pipe the Trivy JSON straight in instead of pre-shelling out for CVE/PURL lists. See the [recipes](#recipes) section below.
 
 ### Resolver behaviour with `products`
 
@@ -291,24 +309,40 @@ Trivy's `--vex` implementation matches on **PURL only** — it ignores `identifi
 
 ## Recipes
 
-### Query one CVE for one image
+### Suppress vendor-acknowledged CVEs in a Trivy scan (SBOM passthrough)
+
+The shortest path from a Trivy scan to a VEX-suppressed re-scan: hand reel-vex the CycloneDX SBOM Trivy already produces and let the server extract CVEs + PURLs.
 
 ```bash
-# 1. Extract the PURLs + CVEs Trivy sees in your image.
-trivy image --format json myimage:tag > scan.json
-PURLS=$(jq -r '.Results[].Vulnerabilities[]?.PkgRef' scan.json | sort -u)
-CVES=$(jq -r '.Results[].Vulnerabilities[].VulnerabilityID' scan.json | sort -u)
+# 1. Trivy emits CycloneDX with .vulnerabilities[] populated.
+trivy image --format cyclonedx --scanners vuln myimage:tag > sbom.json
 
-# 2. Ask reel-vex which ones the vendor says don't apply.
+# 2. POST it as-is; reel-vex pulls CVEs from .vulnerabilities[].id and
+#    products from .components[].purl, then returns OpenVEX 0.2.0.
 curl -s -X POST https://vex.getreel.dev/v1/statements \
   -H "Content-Type: application/json" \
-  -d "$(jq -n --argjson cves "$(echo "$CVES" | jq -R . | jq -s .)" \
-               --argjson purls "$(echo "$PURLS" | jq -R . | jq -s .)" \
-              '{cves: $cves, products: $purls}')" > vex.json
+  -d "$(jq -n --argjson sbom "$(cat sbom.json)" '{sbom: $sbom}')" > vex.json
 
 # 3. Re-scan with the VEX doc applied; Trivy suppresses not_affected + fixed.
 trivy image --vex vex.json myimage:tag
 ```
+
+For `trivy sbom --vex`, swap `/v1/statements` for `/v1/analyze` and feed the returned annotated CycloneDX (with BOM-Link refs) to `--vex` instead.
+
+### Query explicit CVE / PURL lists
+
+When you already have CVE and PURL lists (e.g. extracted by some other tool, or you only care about a specific subset of an image's findings), skip the SBOM and pass them directly:
+
+```bash
+curl -s -X POST https://vex.getreel.dev/v1/statements \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cves":     ["CVE-2021-44228"],
+    "products": ["pkg:rpm/redhat/log4j@2.14.0?repository_id=rhel-8-for-x86_64-appstream-rpms"]
+  }'
+```
+
+`cves` and `products` may also be combined with `sbom` — the union of all three is queried.
 
 ### Layer user VEX on top of vendor data
 
