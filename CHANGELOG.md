@@ -55,7 +55,7 @@ Fixes `/v1/analyze` returning unannotated SBOMs for Trivy- and syft-generated Cy
 
 - **`TestExpand_PreservesDistroQualifier`** (`pkg/resolver/resolver_test.go`): tightened to assert the identity-preserving candidate is *present*, rather than that it's the only candidate. Original intent (distro is preserved) is unchanged.
 
-## [0.4.2] — Unreleased — Canonical OpenVEX adapter
+## [0.4.2] — Canonical OpenVEX adapter
 
 Adds a new adapter for Canonical's OpenVEX 0.2.0 feed at `https://security-metadata.canonical.com/vex/vex-all.tar.xz`. The feed is a strict superset of the existing Ubuntu OVAL coverage — it includes pre-USN triage state (`not_affected`, `under_investigation`) for every CVE Canonical has assessed, where the OVAL feed only ships `fixed` rows after a USN lands.
 
@@ -85,7 +85,7 @@ Both `ubuntu-vex` and `ubuntu-oval` adapters run during the soak window. Stateme
 - Per-entry tar mtime prune (a finer-grained incremental optimisation) is deferred to v0.4.3 if profiling shows the full re-emit is too expensive at production cadence.
 - **`ubuntu-oval` is intentionally retained** alongside `ubuntu-vex`. Empirical staging parity check (8-CVE sample on prod-snapshot data) found OVAL contributes ~10% of unique `(cve, base_id)` tuples that OpenVEX uses different naming for (versioned binary packages like `golang-1.20-go`, source vs binary package families, etc.). Both feeds together give consumers the union of identifier shapes; storage cost is trivial. The Phase F removal originally planned for v0.5.0 is cancelled.
 
-## [0.4.1] — Unreleased — rename `customer_vex` → `user_vex`
+## [0.4.1] — rename `customer_vex` → `user_vex`
 
 > **Breaking change.** The `customer_vex` request field on `POST /v1/analyze` is renamed to `user_vex`, and the `from_customer_vex` match-reason value (carried in OpenVEX `status_notes`) is renamed to `from_user_vex`. "Customer" implied a paid-product relationship that doesn't apply to the free OSS hub — the document is supplied by the API user, not a customer. No semantic change; pure rename.
 >
@@ -109,7 +109,7 @@ Both `ubuntu-vex` and `ubuntu-oval` adapters run during the soak window. Stateme
 - No production users on the deployed hosted instance to migrate. Companion website (`getreel.dev/vex`) renames its UI copy and curl examples in lockstep.
 - Output shape, merge semantics, override rules, limits, and privacy posture are unchanged from v0.4.0.
 
-## [0.4.0] — Unreleased — unified `/v1/statements` query endpoint
+## [0.4.0] — unified `/v1/statements` query endpoint
 
 > **Breaking change.** Three v0.3.0 endpoints are removed and replaced by a single `POST /v1/statements`. The split between `/v1/cve/{id}` (CVE-only lookup) and `/v1/resolve` (CVE × product matrix) was a transport-level convenience, not a semantic distinction; v0.4.0 collapses them into one filter-rich query primitive.
 >
@@ -152,7 +152,7 @@ Both `ubuntu-vex` and `ubuntu-oval` adapters run during the soak window. Stateme
 - `vexctl merge` interop verified end-to-end against `/v1/statements` output (existing integration test renamed; same behaviour).
 - All existing `/v1/analyze` behaviour is preserved (override semantics, user-VEX merge, sample fixtures).
 
-## [0.3.0] — Unreleased — API format unification + user-VEX merge
+## [0.3.0] — API format unification + user-VEX merge
 
 > **Breaking changes — three migrations.** This release folds long-standing API tidying into one cut so future migrations stay singular.
 >
@@ -190,7 +190,7 @@ Both `ubuntu-vex` and `ubuntu-oval` adapters run during the soak window. Stateme
 - Empty `/v1/resolve` results have always returned `204` for OpenVEX output. This is now the default since OpenVEX is the only output.
 - The `@id` of any emitted document is a deterministic SHA-256 over the canonical body (timestamps zeroed); identical queries produce byte-identical `@id`s. Useful for caching.
 
-## [0.2.6] — Unreleased — Debian OVAL adapter
+## [0.2.6] — Debian OVAL adapter
 
 ### Added
 
@@ -206,14 +206,14 @@ Both `ubuntu-vex` and `ubuntu-oval` adapters run during the soak window. Stateme
   - Consistent with our Red Hat OVAL posture. Trivy 0.70.0 was empirically verified to accept `affected`-containing VEX documents without errors. Debian's current feed happens not to include unpatched-vuln records in practice (every `class="vulnerability"` definition ships with a fix bound today), so the affected branch is mostly latent coverage for future records.
 - **Volume**: Bookworm alone has ~46k statements (Ubuntu noble is ~24k for comparison); per-release volume is high because Debian's tracker is comprehensive — every CVE that ever affected the release, going back decades.
 
-## [0.2.5] — Unreleased — preserve `distro` qualifier on PURL base IDs
+## [0.2.5] — preserve `distro` qualifier on PURL base IDs
 
 ### Fixed
 
 - **`/v1/resolve` now matches Ubuntu (and any deb) statements.** Both `csaf.SplitPURL` and the resolver's private `splitBase` were stripping *all* qualifiers from input PURLs, so a query for `pkg:deb/ubuntu/openssl@...?distro=ubuntu-24.04` was normalised to `pkg:deb/ubuntu/openssl` and never matched the stored Ubuntu `base_id` which carries the `distro` qualifier. Both functions now preserve `distro`, which is identity for deb packages — noble `openssl` and jammy `openssl` are different packages with different fixed versions. `arch`, `epoch`, `repository_id` remain scanner-side filters and are still stripped.
 - Symptom was visible on the hosted deployment after v0.2.4 landed Ubuntu ingest: `/v1/cve/<id>` returned Ubuntu statements correctly, but `/v1/resolve` with a versioned PURL returned empty. No effect on RH or SUSE queries (no `distro` qualifier in use).
 
-## [0.2.4] — Unreleased — switch Ubuntu adapters to main USN feeds
+## [0.2.4] — switch Ubuntu adapters to main USN feeds
 
 ### Changed
 
@@ -224,7 +224,7 @@ Both `ubuntu-vex` and `ubuntu-oval` adapters run during the soak window. Stateme
 
 vex.getreel.dev is a general VEX hub, not a container scanner. Scoping vulnerability data to "container-relevant" packages is a decision the scanner should make, based on what it is scanning — a container image, a VM filesystem, a bare-metal host, an initramfs. Our Red Hat and SUSE adapters already ingest the full vendor feeds; scoping Ubuntu to a subset broke symmetry for no principled reason. A consumer scanning a bare-metal Ubuntu host would otherwise receive less coverage from us than they would for the equivalent RHEL host.
 
-## [0.2.3] — Unreleased — Ubuntu OVAL adapter
+## [0.2.3] — Ubuntu OVAL adapter
 
 ### Added
 
@@ -238,7 +238,7 @@ vex.getreel.dev is a general VEX hub, not a container scanner. Scoping vulnerabi
 - **Supported release codenames** are `focal`, `jammy`, `noble`. Definitions for unsupported codenames are skipped by the translator; add new entries to the codename-version map in `oval-to-vex` when Canonical ships a new LTS.
 - **USNs with no CVE references are skipped.** Rare in practice (USNs almost always have ≥1 CVE); emitting USN-keyed statements as a fallback is future work.
 
-## [0.2.2] — Unreleased — OpenVEX opt-in output + native format as first-class
+## [0.2.2] — OpenVEX opt-in output + native format as first-class
 
 ### Added
 
@@ -253,13 +253,13 @@ vex.getreel.dev is a general VEX hub, not a container scanner. Scoping vulnerabi
 - **Trivy `--vex` matches on PURL only.** The encoder therefore emits user-supplied PURLs (not vendor CPEs) in `products[]`. Queries with only a CPE still produce a spec-valid document consumable by `vexctl` and Grype, but Trivy won't suppress anything.
 - **No cryptographic signing yet.** `author` is a plain string; consumers relying on signed provenance should wait for the planned signed-attestations work.
 
-## [0.2.1] — Unreleased
+## [0.2.1]
 
 ### Added
 
 - **Structured `api_request` slog line per HTTP request.** Fields: `method`, `path`, `status`, `latency_ms`, `bytes`, plus `cve` on `/v1/cve/{id}[/summary]` routes. CORS preflight (`OPTIONS`) short-circuits before the log middleware, so no preflight noise. Consumers (Vector, Promtail, Fluent Bit, plain jq) can parse these with any slog-aware tooling and forward them anywhere; no vendor-specific SDK is embedded. Pure OSS observability improvement — operators running reel-vex anywhere get a machine-readable request log for free.
 
-## [0.2.0] — Unreleased — multi-source Red Hat coverage
+## [0.2.0] — multi-source Red Hat coverage
 
 Plan-completion milestone. reel-vex now ingests Red Hat OVAL alongside CSAF, filling the EUS / AUS / E4S / SAP / HA / NFV stream coverage gap that Red Hat documented in [SECDATA-1181](https://redhat.atlassian.net/browse/SECDATA-1181) as intentional-but-asymmetric between their two feeds.
 
@@ -292,7 +292,7 @@ Plan-completion milestone. reel-vex now ingests Red Hat OVAL alongside CSAF, fil
 
 - New dependency: [`github.com/getreeldev/oval-to-vex v0.1.0`](https://github.com/getreeldev/oval-to-vex) — Red Hat OVAL XML parser + VEX-statement translator, zero dependencies beyond stdlib.
 
-## [0.1.7] — Unreleased
+## [0.1.7]
 
 ### Added
 
@@ -309,7 +309,7 @@ Plan-completion milestone. reel-vex now ingests Red Hat OVAL alongside CSAF, fil
 - `ingest.Run` signature: now takes `(ctx, []source.Adapter, []aliases.Fetcher, *db.DB, Options)`. Pipeline orchestration runs adapters then fetchers.
 - `api.Server` holds a `*resolver.Resolver`. `/v1/resolve` and `/v1/sbom` delegate product expansion to it. Previously these paths called a package-level helper; the instance-method form carries the DB dependency needed for alias lookups.
 
-## [0.1.6] — Unreleased
+## [0.1.6]
 
 ### Added
 
@@ -330,7 +330,7 @@ Plan-completion milestone. reel-vex now ingests Red Hat OVAL alongside CSAF, fil
 - **`-limit` now counts statements, not documents.** Consistent unit across every adapter type (CSAF emits per-CVE, OVAL emits per-tarball, etc.; statements are the only shared primitive). Production runs `-limit 0` so this is a dev-convenience change only.
 - **`ingest.Run` signature**: now takes `(ctx, []source.Adapter, *db.DB, Options)`. The orchestrator no longer knows about CSAF-specific details; it just drives adapters and persists what they emit.
 
-## [0.1.5] — Unreleased
+## [0.1.5]
 
 ### Added
 
