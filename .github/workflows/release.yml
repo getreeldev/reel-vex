@@ -42,7 +42,7 @@ jobs:
       # so the just-built vex-hub:scan in the runner's daemon is found without
       # any special `local: true` input.
       - name: Scan image with reel
-        uses: getreeldev/releases@v1
+        uses: getreeldev/reel-action@v1
         with:
           image: vex-hub:scan
           scan-types: sbom,cbom,sarif,malware
