@@ -129,12 +129,21 @@ Each `user_vex` document must carry `@context = "https://openvex.dev/ns/v0.2.0"`
 
 | Input combination | Response |
 |---|---|
-| `sbom` only | Annotated CycloneDX (vulnerability `analysis` blocks added in place; `vulnerability.affects[].ref` rewritten as BOM-Link). |
+| `sbom` with non-empty `vulnerabilities[]` | Annotated CycloneDX (vulnerability `analysis` blocks added in place; `vulnerability.affects[].ref` rewritten as BOM-Link). |
+| `sbom` with empty/absent `vulnerabilities[]` | CycloneDX with `vulnerabilities[]` **synthesised** from a broad-mode lookup over the components, then annotated (see below). |
 | `user_vex` only | OpenVEX 0.2.0 doc (merged vendor + user with override on collision). |
 | Both | Annotated CycloneDX where the per-CVE rollup honours user override; `affects[].ref` rewritten as BOM-Link. |
 | Neither | `400` with `at least one of sbom or user_vex required`. |
 
 **BOM-Link refs.** On the annotated-CycloneDX path, every `vulnerability.affects[].ref` is rewritten from raw PURL to the CycloneDX 1.5 BOM-Link form `urn:cdx:<serialNumber>/<version>#<bom-ref>`, using the input SBOM's `serialNumber`, `version`, and per-component `bom-ref`. This is what `trivy sbom --vex` binds against; without it, Trivy logs `WARN [vex] Unable to parse BOM-Link` and silently drops statements. Best-effort: if the input SBOM is missing `serialNumber`, the component has no `bom-ref`, or the affected ref doesn't map to any component in the SBOM, the original `.ref` is left in place.
+
+### SBOM with no vulnerabilities — broad-mode synthesis
+
+When the input SBOM's `vulnerabilities[]` is empty or absent, `/v1/analyze` runs a **broad-mode** vendor lookup over the SBOM's components (every CVE touching them, no CVE filter — the same query `/v1/statements` broad mode uses) and **synthesises** one `vulnerabilities[]` entry per matched CVE before annotating. Each synthesised entry carries `affects[]` pointing at the affected components (rewritten to BOM-Link form like any other), and an `analysis` block from the vendor data. This lets a consumer POST a components-only SBOM and get back a fully VEX-populated CycloneDX document in one call — no intermediate OpenVEX → CycloneDX translation.
+
+Rule: **empty-in → populate from broad mode; non-empty-in → annotate only.** A SBOM that already carries `vulnerabilities[]` is annotated exactly as before; broad-mode CVEs are never added on top of a populated list.
+
+The synthesised set is capped by `-statements-max` (default 50 000). If the cap is hit, the response stays `200 OK` with `X-Reel-Truncated: true` and some CVEs are omitted — re-scope the request (e.g. fewer components) for complete coverage.
 
 ### User-VEX merge semantics
 
@@ -212,6 +221,11 @@ curl -X POST https://vex.getreel.dev/v1/analyze \
 
 Unified query primitive over the VEX statements database. The query input set may be specified explicitly (via `cves` and/or `products` lists), derived from a CycloneDX SBOM, or both. Everything else is an optional filter that narrows the result further. Returns an OpenVEX 0.2.0 document; 204 on empty match.
 
+Two query shapes:
+
+- **CVE-scoped** — `cves` present (explicit or SBOM-derived). Returns statements for those CVEs, optionally narrowed by `products` and the other filters. Classic behaviour.
+- **Broad mode** — `cves` absent but `products`/components present. Returns **every** vendor statement touching the matched products, with no CVE filter. This is the fetch-once-attach-to-every-scan path: `trivy --vex` does its own CVE matching against the returned doc, so the same broad doc can be cached and applied to every scan of the image regardless of which CVEs a given scan surfaces. Capped (see below).
+
 Replaces the v0.3.0 trio (`GET /v1/cve/{id}`, `GET /v1/cve/{id}/summary`, `POST /v1/resolve`). All three paths now return `404`; migrate to `POST /v1/statements`.
 
 ### Request
@@ -219,14 +233,16 @@ Replaces the v0.3.0 trio (`GET /v1/cve/{id}`, `GET /v1/cve/{id}/summary`, `POST 
 ```json
 POST /v1/statements
 {
-  "cves":           ["CVE-2021-44228"],                                       // required unless sbom is provided
+  "cves":           ["CVE-2021-44228"],                                       // optional if products/sbom present (broad mode)
   "products":       ["pkg:rpm/redhat/log4j@2.14.0?repository_id=rhel-8-..."], // optional
   "sbom":           { /* CycloneDX 1.4+ */ },                                  // optional
   "vendors":        ["redhat", "suse"],                                        // optional
   "source_formats": ["csaf"],                                                  // optional
   "statuses":       ["not_affected", "fixed"],                                 // optional
   "justifications": ["vulnerable_code_not_present"],                           // optional
-  "since":          "2026-01-01T00:00:00Z"                                     // optional, RFC3339
+  "since":          "2026-01-01T00:00:00Z",                                    // optional, RFC3339
+  "limit":          50000,                                                     // optional, clamped to server -statements-max
+  "offset":         0                                                          // optional, for paging a truncated result
 }
 ```
 
@@ -234,7 +250,7 @@ POST /v1/statements
 
 - **AND** across populated dimensions, **IN** within each non-empty list. So `vendors: [a, b]` AND `statuses: [c, d]` reads as `(vendor IN (a, b)) AND (status IN (c, d))`.
 - An empty list (or omitted field) means "no filter on that dimension."
-- **At least one of `cves` or `sbom` (with vulnerabilities) is required.** Empty input → 400 with `one of cves or sbom (with vulnerabilities) is required`. This bounds the query — vex-hub returns vendor opinions about CVEs, not all-CVEs-on-a-product.
+- **At least one of `cves`, `products`, or `sbom` is required.** With no CVEs but products/components present, the query runs in broad mode (all CVEs for the matched products). Only a request with neither CVEs nor products → 400 with `one of cves, products, or sbom (with components or vulnerabilities) is required`. (Earlier versions required a CVE on the theory that vex-hub returns "vendor opinions about CVEs, not all-CVEs-on-a-product"; broad mode supersedes that — the product-scoped doc is the natural unit for `trivy --vex`, which matches CVEs itself.)
 - `cves` and `products` are each capped at 10 000 entries.
 - `since` filters by the statement's `updated` timestamp (`updated >= since`). RFC3339 string ordering matches chronological ordering, so e.g. `2026-04-01T00:00:00Z` returns rows updated on or after April 1, 2026.
 
@@ -254,6 +270,16 @@ This removes the manual `jq` extraction step from the `trivy image --vex` flow: 
 When `products` is provided, each identifier runs through the resolver (`direct` / `via_alias` / `via_cpe_prefix` expansion) before matching, and the OpenVEX encoder echoes the user's input PURL into each statement's `products[]` so Trivy can match it.
 
 When `products` is absent, no expansion happens and the encoder emits each statement's stored `product_id` (which may be a CPE for OVAL-derived rows). Trivy will ignore CPE-only entries; `vexctl` and other consumers accept them.
+
+### Cap, truncation, and ordering
+
+- Results are capped at the server's `-statements-max` (default **50 000**; `0` = unlimited). A request `limit` lowers — never raises — that ceiling.
+- **If the cap is hit, the response stays `200 OK`** with header **`X-Reel-Truncated: true`** and **`X-Reel-Next-Offset: <n>`**; pass that value back as `offset` to fetch the next page. Truncation is signalled only via headers — the OpenVEX body stays schema-valid (no custom fields), and the status stays 200 (an unsolicited 206 without `Content-Range` would violate RFC 7233 and can trip strict consumers/proxies). A truncated doc is genuinely incomplete: any statement it drops is a CVE `trivy --vex` won't suppress, so always check for `X-Reel-Truncated` when relying on broad mode for suppression.
+- Statements are returned in a deterministic order (`base_id`, `cve`, `product_id`, `source_format`). The doc is byte-identical across refetches when the underlying data hasn't changed — so a cached/attached broad-mode doc is content-addressable and diff-friendly.
+
+### Compression
+
+Responses are gzip-compressed when the request sends `Accept-Encoding: gzip`. OpenVEX is highly repetitive and compresses ~10×, which keeps a large broad-mode doc small enough to cache and ship cheaply.
 
 ### Response
 
@@ -286,6 +312,10 @@ When `products` is absent, no expansion happens and the encoder emits each state
 - **CVE-only lookup** (replaces `GET /v1/cve/{id}`):
   ```json
   {"cves": ["CVE-2021-44228"]}
+  ```
+- **Broad mode — all statements for an image's products** (fetch once, attach to every scan):
+  ```json
+  {"products": ["pkg:deb/ubuntu/openssl?distro=ubuntu-22.04", "pkg:deb/ubuntu/glibc?distro=ubuntu-22.04"]}
   ```
 - **CVE × product matrix** (replaces `POST /v1/resolve`):
   ```json

@@ -59,6 +59,7 @@ func run() error {
 	ingestInterval := flag.Duration("ingest-interval", 24*time.Hour, "interval between scheduled ingests")
 	adminToken := flag.String("admin-token", "", "bearer token for admin endpoints (empty = no auth)")
 	sbomMaxMB := flag.Int("sbom-max-mb", 5, "max body size in MB for SBOM-accepting endpoints (/v1/analyze, /v1/statements)")
+	statementsMax := flag.Int("statements-max", 50000, "max statements returned by /v1/statements (0 = unlimited); broad mode is truncated with a 206 + X-Reel-Truncated header when hit")
 	flag.Parse()
 
 	registerAdapters()
@@ -66,7 +67,7 @@ func run() error {
 	cmd := flag.Arg(0)
 	switch cmd {
 	case "serve":
-		return runServe(*configPath, *dbPath, *addr, *ingestInterval, *adminToken, *sbomMaxMB)
+		return runServe(*configPath, *dbPath, *addr, *ingestInterval, *adminToken, *sbomMaxMB, *statementsMax)
 	case "ingest":
 		return runIngest(*configPath, *dbPath, *limit)
 	case "stats":
@@ -151,7 +152,7 @@ func runStats(dbPath string) error {
 	return nil
 }
 
-func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adminToken string, sbomMaxMB int) error {
+func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adminToken string, sbomMaxMB, statementsMax int) error {
 	adapters, fetchers, err := loadPipeline(configPath)
 	if err != nil {
 		return err
@@ -173,6 +174,7 @@ func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adm
 
 	apiSrv := api.NewServer(database, runner)
 	apiSrv.SetSBOMMaxBytes(int64(sbomMaxMB) << 20)
+	apiSrv.SetStatementsMax(statementsMax)
 
 	srv := &http.Server{
 		Addr:         addr,
@@ -190,6 +192,9 @@ func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adm
 	go func() {
 		if _, err := database.RefreshStats(); err != nil {
 			slog.Warn("startup stats cache warmup failed", "error", err)
+		}
+		if err := database.Optimize(); err != nil {
+			slog.Warn("startup db optimize failed", "error", err)
 		}
 	}()
 

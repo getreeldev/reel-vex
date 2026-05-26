@@ -47,16 +47,27 @@ type Stats struct {
 
 // Open opens or creates a SQLite database at the given path.
 func Open(path string) (*DB, error) {
-	d, err := sql.Open("sqlite", path)
+	// PRAGMAs are set in the DSN (via modernc's _pragma= form) rather than a
+	// one-off Exec so they apply to *every* connection database/sql opens in
+	// its pool. synchronous in particular is per-connection and does not
+	// persist, so an Exec on a single pooled connection would leave the rest
+	// on the default. The read-tuning pragmas (cache, mmap, temp_store) matter
+	// because /v1/statements broad mode can return tens of thousands of rows
+	// from a multi-GB DB; busy_timeout lets reads wait out the ingest writer
+	// instead of erroring "database is locked".
+	dsn := path
+	if !strings.Contains(dsn, "?") {
+		dsn += "?" + strings.Join([]string{
+			"_pragma=journal_mode(WAL)",
+			"_pragma=synchronous(NORMAL)",
+			"_pragma=busy_timeout(5000)",
+			"_pragma=cache_size(-262144)",   // 256 MB page cache (negative = KiB)
+			"_pragma=mmap_size(2147483648)", // 2 GB memory-mapped I/O
+			"_pragma=temp_store(MEMORY)",    // ORDER BY sorts / temp btrees in RAM
+		}, "&")
+	}
+	d, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, err
-	}
-	if _, err := d.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		d.Close()
-		return nil, err
-	}
-	if _, err := d.Exec("PRAGMA synchronous=NORMAL"); err != nil {
-		d.Close()
 		return nil, err
 	}
 	db := &DB{db: d}
@@ -160,8 +171,12 @@ func (db *DB) BulkInsert(stmts []Statement) error {
 
 // QueryFilters specifies the WHERE-clause inputs for QueryStatements.
 //
-// CVEs is required (≥1); empty CVE list returns no rows. Every other field is
-// optional. An empty slice (or empty Since) means "no filter on this
+// At least one of CVEs or ProductBaseIDs must be non-empty; if both are empty
+// the query returns no rows (it would otherwise be an unbounded full-table
+// scan). This admits two shapes: CVE-scoped (the classic path) and broad mode
+// (product-scoped, no CVE filter — used when a caller wants every vendor
+// opinion touching an image's components for `trivy --vex`). Every other field
+// is optional. An empty slice (or empty Since) means "no filter on this
 // dimension" — that dimension contributes no clause to the query.
 //
 // Within a non-empty slice, IN semantics. Across populated dimensions, AND
@@ -184,6 +199,11 @@ func (db *DB) BulkInsert(stmts []Statement) error {
 // Since is an RFC3339 timestamp; rows whose `updated` is lexicographically
 // greater than or equal to it are returned. RFC3339 string ordering
 // matches chronological ordering, so no parsing is required.
+//
+// Limit caps the number of rows returned (0 = no cap); Offset skips that many
+// rows for pagination. Results are ordered deterministically (base_id, cve,
+// product_id, source_format) so a paged/limited slice is stable across calls
+// and an emitted VEX document is byte-stable when the data hasn't changed.
 type QueryFilters struct {
 	CVEs           []string
 	ProductBaseIDs []string
@@ -192,13 +212,15 @@ type QueryFilters struct {
 	Statuses       []string
 	Justifications []string
 	Since          string
+	Limit          int
+	Offset         int
 }
 
 // QueryStatements is the unified VEX statement query primitive — replaces
-// the v0.3.0 QueryResolve + QueryByCVE pair. CVEs is required; everything
-// else narrows the result set further.
+// the v0.3.0 QueryResolve + QueryByCVE pair. At least one of CVEs or
+// ProductBaseIDs must be set; everything else narrows the result set further.
 func (db *DB) QueryStatements(f QueryFilters) ([]Statement, error) {
-	if len(f.CVEs) == 0 {
+	if len(f.CVEs) == 0 && len(f.ProductBaseIDs) == 0 {
 		return nil, nil
 	}
 
@@ -229,11 +251,29 @@ func (db *DB) QueryStatements(f QueryFilters) ([]Statement, error) {
 		args = append(args, f.Since)
 	}
 
+	// Deterministic order: makes LIMIT/OFFSET paging stable and the emitted
+	// VEX document byte-identical across refetches when data is unchanged.
+	// Broad mode filters on base_id via idx_statements_base_id; the sort is a
+	// separate step (acceptable for the fetch-once-and-cache path).
 	query := fmt.Sprintf(`
 		SELECT vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format
 		FROM statements
 		WHERE %s
+		ORDER BY base_id, cve, product_id, source_format
 	`, strings.Join(clauses, " AND "))
+	// SQLite only accepts OFFSET alongside a LIMIT, so when an offset is set
+	// without a real limit we pass LIMIT -1 (unbounded) to keep the OFFSET valid.
+	switch {
+	case f.Limit > 0:
+		query += " LIMIT ?"
+		args = append(args, f.Limit)
+	case f.Offset > 0:
+		query += " LIMIT -1"
+	}
+	if f.Offset > 0 {
+		query += " OFFSET ?"
+		args = append(args, f.Offset)
+	}
 
 	rows, err := db.db.Query(query, args...)
 	if err != nil {
@@ -285,6 +325,16 @@ func (db *DB) RefreshStats() (Stats, error) {
 	db.statsCompute.Lock()
 	defer db.statsCompute.Unlock()
 	return db.computeAndCache()
+}
+
+// Optimize runs `PRAGMA optimize` so the query planner has fresh statistics
+// for index selection — notably for broad mode, where base_id is combined
+// with optional vendor/status/justification filters. It analyses only what
+// has changed and is a no-op otherwise, so it's cheap to call after each
+// ingest cycle and at startup.
+func (db *DB) Optimize() error {
+	_, err := db.db.Exec("PRAGMA optimize")
+	return err
 }
 
 // computeAndCache runs the slow SQL and updates the cache atomically.

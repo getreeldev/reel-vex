@@ -4,6 +4,7 @@ package integration
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -271,16 +272,107 @@ func TestStatements_PURLAndCPE(t *testing.T) {
 	}
 }
 
-func TestStatements_RequiresCVEs(t *testing.T) {
-	// products without cves → 400
-	resp := post(t, "/v1/statements", map[string]any{
-		"products": []string{"pkg:rpm/redhat/openssl@3.0.7-27.el9"},
-	})
+func TestStatements_RequiresCVEsOrProducts(t *testing.T) {
+	// neither cves nor products → 400
+	resp := post(t, "/v1/statements", map[string]any{})
 	expectStatus(t, resp, 400)
 
-	// empty body → 400
-	resp = post(t, "/v1/statements", map[string]any{})
-	expectStatus(t, resp, 400)
+	// products without cves is now valid (broad mode) — see
+	// TestStatements_BroadMode for the full assertion.
+	resp = post(t, "/v1/statements", map[string]any{
+		"products": []string{"pkg:rpm/redhat/openssl@3.0.7-27.el9"},
+	})
+	expectStatus(t, resp, 200)
+}
+
+// TestStatements_BroadMode: products-only query returns every statement
+// touching the matched products, across multiple CVEs, with no CVE filter.
+func TestStatements_BroadMode(t *testing.T) {
+	resp := post(t, "/v1/statements", map[string]any{
+		"products": []string{
+			"pkg:rpm/redhat/openssl@3.0.7-27.el9",
+			"pkg:rpm/redhat/nginx@1.22.1-4.el9",
+		},
+	})
+	expectStatus(t, resp, 200)
+	stmts := decodeOpenVEXStatements(t, resp)
+	if len(stmts) != 2 {
+		t.Fatalf("expected 2 statements across 2 CVEs, got %d", len(stmts))
+	}
+	cves := map[string]bool{}
+	for _, s := range stmts {
+		cves[s.Vulnerability.Name] = true
+	}
+	if !cves["CVE-2024-1234"] || !cves["CVE-2024-5678"] {
+		t.Fatalf("expected CVE-2024-1234 and CVE-2024-5678, got %v", cves)
+	}
+}
+
+// TestStatements_Truncation: hitting the cap (forced low via request limit)
+// returns 206 + X-Reel-Truncated, and the next-offset header pages the rest.
+func TestStatements_Truncation(t *testing.T) {
+	// CVE-2024-1234 has 2 statements; limit=1 forces truncation.
+	resp := post(t, "/v1/statements", map[string]any{
+		"cves":  []string{"CVE-2024-1234"},
+		"limit": 1,
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 (truncation signalled via header, not 206), got %d: %s", resp.StatusCode, body)
+	}
+	if resp.Header.Get("X-Reel-Truncated") != "true" {
+		t.Errorf("expected X-Reel-Truncated: true, got %q", resp.Header.Get("X-Reel-Truncated"))
+	}
+	if resp.Header.Get("X-Reel-Next-Offset") != "1" {
+		t.Errorf("expected X-Reel-Next-Offset: 1, got %q", resp.Header.Get("X-Reel-Next-Offset"))
+	}
+
+	// Second page: offset 1, limit 1 returns the last row, no truncation.
+	resp2 := post(t, "/v1/statements", map[string]any{
+		"cves":   []string{"CVE-2024-1234"},
+		"limit":  1,
+		"offset": 1,
+	})
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on last page, got %d", resp2.StatusCode)
+	}
+	if resp2.Header.Get("X-Reel-Truncated") != "" {
+		t.Errorf("last page should not be truncated, got X-Reel-Truncated=%q", resp2.Header.Get("X-Reel-Truncated"))
+	}
+}
+
+// TestStatements_Gzip: an explicit Accept-Encoding: gzip yields a compressed,
+// decodable body. (Set manually so Go's transport doesn't transparently
+// decompress, which it does when it adds the header itself.)
+func TestStatements_Gzip(t *testing.T) {
+	data, _ := json.Marshal(map[string]any{"cves": []string{"CVE-2024-1234"}})
+	req, _ := http.NewRequest("POST", serverURL+"/v1/statements", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.Header.Get("Content-Encoding") != "gzip" {
+		t.Fatalf("expected Content-Encoding: gzip, got %q", resp.Header.Get("Content-Encoding"))
+	}
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	defer gz.Close()
+	var doc struct {
+		Statements []openVEXStatement `json:"statements"`
+	}
+	if err := json.NewDecoder(gz).Decode(&doc); err != nil {
+		t.Fatalf("decode gzipped openvex: %v", err)
+	}
+	if len(doc.Statements) != 2 {
+		t.Fatalf("expected 2 statements, got %d", len(doc.Statements))
+	}
 }
 
 func TestStatements_InvalidJSON(t *testing.T) {
@@ -542,6 +634,115 @@ func TestAnalyze_SBOMOnly_NoMatchReturnsAsIs(t *testing.T) {
 	vuln := vulns[0].(map[string]any)
 	if _, ok := vuln["analysis"]; ok {
 		t.Fatal("expected no analysis for unmatched CVE")
+	}
+}
+
+// --- /v1/analyze broad-mode synthesis (empty-vulns path, v0.5.1) ---
+
+func analyzeSBOM(t *testing.T, sbom map[string]any) map[string]any {
+	t.Helper()
+	resp := post(t, "/v1/analyze", map[string]any{"sbom": sbom})
+	expectStatus(t, resp, 200)
+	var result map[string]any
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("decode analyze response: %s\nbody: %s", err, body)
+	}
+	return result
+}
+
+// Components-only SBOM (no vulnerabilities[]) → /v1/analyze queries broad mode
+// and synthesises a vulnerabilities[] entry per matched CVE, annotated.
+func TestAnalyze_EmptyVulnsBroadModeSynthesises(t *testing.T) {
+	result := analyzeSBOM(t, map[string]any{
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.5",
+		"components": []any{
+			map[string]any{"type": "library", "name": "openssl", "purl": "pkg:rpm/redhat/openssl@3.0.7-27.el9", "bom-ref": "c1"},
+		},
+	})
+	vulns, ok := result["vulnerabilities"].([]any)
+	if !ok || len(vulns) == 0 {
+		t.Fatalf("expected synthesised vulnerabilities[], got %v", result["vulnerabilities"])
+	}
+	var found bool
+	for _, raw := range vulns {
+		v := raw.(map[string]any)
+		if v["id"] == "CVE-2024-1234" {
+			found = true
+			analysis, ok := v["analysis"].(map[string]any)
+			if !ok || analysis["state"] != "not_affected" {
+				t.Fatalf("expected not_affected analysis on synthesised CVE, got %v", v["analysis"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected synthesised CVE-2024-1234 from broad-mode lookup")
+	}
+}
+
+// Components-only SBOM with no vendor match → no synthesised vulns.
+func TestAnalyze_EmptyVulnsNoBroadMatchReturnsSBOMUnchanged(t *testing.T) {
+	result := analyzeSBOM(t, map[string]any{
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.5",
+		"components": []any{
+			map[string]any{"type": "library", "name": "unknown", "purl": "pkg:npm/unknown@1.0"},
+		},
+	})
+	if v, ok := result["vulnerabilities"]; ok {
+		if arr, _ := v.([]any); len(arr) != 0 {
+			t.Fatalf("expected no synthesised vulnerabilities, got %v", v)
+		}
+	}
+}
+
+// Non-empty vulnerabilities[] → annotate only; broad-mode CVEs on the same
+// components must NOT be added (httpd's CVE-2024-3333 here).
+func TestAnalyze_NonEmptyVulnsBroadModeDoesNotAdd(t *testing.T) {
+	result := analyzeSBOM(t, map[string]any{
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.5",
+		"components": []any{
+			map[string]any{"type": "library", "name": "openssl", "purl": "pkg:rpm/redhat/openssl@3.0.7-27.el9"},
+			map[string]any{"type": "library", "name": "httpd", "purl": "pkg:rpm/redhat/httpd@2.4.57-5.el9"},
+		},
+		"vulnerabilities": []any{
+			map[string]any{"id": "CVE-2024-1234"},
+		},
+	})
+	vulns := result["vulnerabilities"].([]any)
+	if len(vulns) != 1 {
+		t.Fatalf("expected exactly 1 vuln (annotate-only), got %d — broad-mode CVEs must not be added", len(vulns))
+	}
+	if vulns[0].(map[string]any)["id"] != "CVE-2024-1234" {
+		t.Fatalf("unexpected vuln %v", vulns[0])
+	}
+}
+
+// Synthesised affects[].ref is rewritten to BOM-Link form.
+func TestAnalyze_BomLinkRefsOnSynthesisedEntries(t *testing.T) {
+	result := analyzeSBOM(t, map[string]any{
+		"bomFormat":    "CycloneDX",
+		"specVersion":  "1.5",
+		"serialNumber": "urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		"version":      float64(1),
+		"components": []any{
+			map[string]any{"type": "library", "name": "openssl", "purl": "pkg:rpm/redhat/openssl@3.0.7-27.el9", "bom-ref": "pkg:openssl"},
+		},
+	})
+	vulns := result["vulnerabilities"].([]any)
+	var ref string
+	for _, raw := range vulns {
+		v := raw.(map[string]any)
+		if v["id"] == "CVE-2024-1234" {
+			ref = v["affects"].([]any)[0].(map[string]any)["ref"].(string)
+		}
+	}
+	want := "urn:cdx:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/1#pkg:openssl"
+	if ref != want {
+		t.Fatalf("synthesised affects ref: got %q, want %q", ref, want)
 	}
 }
 

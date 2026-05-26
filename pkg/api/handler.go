@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 
 	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
@@ -44,17 +46,24 @@ type Server struct {
 	// (/v1/analyze, /v1/statements). Default 5MB; override with
 	// SetSBOMMaxBytes (wired from the -sbom-max-mb server flag).
 	sbomMaxBytes int64
+	// statementsMax caps the number of statements /v1/statements returns.
+	// It mainly bounds broad mode (product-scoped, no CVE filter), which can
+	// match tens of thousands of rows. When the cap is hit the response is
+	// truncated and flagged (206 + X-Reel-Truncated). Default 50000; 0 means
+	// unlimited. Wired from the -statements-max server flag.
+	statementsMax int
 }
 
 // NewServer creates a new API server.
 // ingest may be nil if running without ingest support.
 func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 	s := &Server{
-		db:           database,
-		resolver:     resolver.New(database),
-		mux:          http.NewServeMux(),
-		ingest:       ingest,
-		sbomMaxBytes: 5 << 20, // 5MB default
+		db:            database,
+		resolver:      resolver.New(database),
+		mux:           http.NewServeMux(),
+		ingest:        ingest,
+		sbomMaxBytes:  5 << 20, // 5MB default
+		statementsMax: 50000,   // broad-mode safety ceiling; -statements-max overrides
 	}
 	s.mux.HandleFunc("POST /v1/statements", s.handleStatements)
 	s.mux.HandleFunc("GET /v1/stats", s.handleStats)
@@ -62,7 +71,10 @@ func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 	s.mux.HandleFunc("GET /v1/ingest", s.handleIngestStatus)
 	s.mux.HandleFunc("POST /v1/ingest", s.handleIngestTrigger)
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
-	s.handler = logRequest(s.mux)
+	// gzip is innermost (closest to the mux) so the request-log records the
+	// uncompressed payload size — a metric that stays consistent regardless of
+	// the client's Accept-Encoding.
+	s.handler = gzipResponse(logRequest(s.mux))
 	return s
 }
 
@@ -72,6 +84,15 @@ func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 func (s *Server) SetSBOMMaxBytes(n int64) {
 	if n > 0 {
 		s.sbomMaxBytes = n
+	}
+}
+
+// SetStatementsMax overrides the default 50000 cap on the number of statements
+// /v1/statements returns. Production wires this from the -statements-max server
+// flag. n == 0 means unlimited; negative is ignored, preserving the default.
+func (s *Server) SetStatementsMax(n int) {
+	if n >= 0 {
+		s.statementsMax = n
 	}
 }
 
@@ -116,6 +137,11 @@ type statementsRequest struct {
 	Statuses       []string        `json:"statuses,omitempty"`
 	Justifications []string        `json:"justifications,omitempty"`
 	Since          string          `json:"since,omitempty"`
+	// Limit / Offset paginate the result. Limit is clamped to the server's
+	// configured ceiling (-statements-max); Offset skips that many rows. Both
+	// mainly matter in broad mode, where the result set can be large.
+	Limit  int `json:"limit,omitempty"`
+	Offset int `json:"offset,omitempty"`
 }
 
 const maxStatementsItems = 10000
@@ -176,8 +202,15 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if len(req.CVEs) == 0 {
-		writeError(w, http.StatusBadRequest, "one of cves or sbom (with vulnerabilities) is required")
+	// Broad mode: no CVEs but products/components present → return every vendor
+	// statement touching the matched products, with no CVE filter. This is the
+	// fetch-once-attach-to-every-scan path: trivy --vex does its own CVE
+	// matching against the returned doc, so pre-filtering by CVE is unnecessary
+	// and would break caching. CVE-scoped behaviour is unchanged when CVEs are
+	// present. Only both-empty is an error.
+	broadMode := len(req.CVEs) == 0 && len(req.Products) > 0
+	if len(req.CVEs) == 0 && len(req.Products) == 0 {
+		writeError(w, http.StatusBadRequest, "one of cves, products, or sbom (with components or vulnerabilities) is required")
 		return
 	}
 	if len(req.CVEs) > maxStatementsItems || len(req.Products) > maxStatementsItems {
@@ -200,19 +233,49 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	stmts, err := s.db.QueryStatements(db.QueryFilters{
-		CVEs:           req.CVEs,
+	offset := req.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	filters := db.QueryFilters{
 		ProductBaseIDs: bases,
 		Vendors:        req.Vendors,
 		SourceFormats:  req.SourceFormats,
 		Statuses:       req.Statuses,
 		Justifications: req.Justifications,
 		Since:          req.Since,
-	})
+		Offset:         offset,
+	}
+	// CVE filter only when not in broad mode.
+	if !broadMode {
+		filters.CVEs = req.CVEs
+	}
+
+	// Effective row limit: the configured ceiling, optionally lowered by an
+	// explicit request limit. We fetch one extra row so we can tell whether the
+	// result was truncated without a second COUNT query.
+	limit := s.statementsMax
+	if req.Limit > 0 && (limit == 0 || req.Limit < limit) {
+		limit = req.Limit
+	}
+	if limit > 0 {
+		filters.Limit = limit
+		if limit < math.MaxInt {
+			filters.Limit = limit + 1 // probe row; guard against limit+1 overflow
+		}
+	}
+
+	stmts, err := s.db.QueryStatements(filters)
 	if err != nil {
 		slog.Error("statements query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
+	}
+
+	truncated := false
+	if limit > 0 && len(stmts) > limit {
+		stmts = stmts[:limit]
+		truncated = true
 	}
 
 	// OpenVEX 0.2.0 schema requires statements: minItems 1. 204 on empty
@@ -223,6 +286,16 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 	}
 	doc := openvex.Encode(stmts, baseToInputs, baseToReason)
 	w.Header().Set("Content-Type", "application/json")
+	// Truncation is signalled out-of-band via headers (not in the OpenVEX body,
+	// which must stay schema-valid). Status stays 200: an unsolicited 206 with
+	// no Content-Range violates RFC 7233 and can trip strict consumers/proxies
+	// (incl. trivy --vex). A dropped statement is a CVE the consumer won't
+	// suppress, so X-Reel-Truncated flags incompleteness and X-Reel-Next-Offset
+	// lets the caller page the remainder.
+	if truncated {
+		w.Header().Set("X-Reel-Truncated", "true")
+		w.Header().Set("X-Reel-Next-Offset", strconv.Itoa(offset+limit))
+	}
 	if err := json.NewEncoder(w).Encode(doc); err != nil {
 		slog.Error("openvex encode failed", "error", err)
 	}
