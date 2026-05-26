@@ -2,6 +2,31 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.6.0] — Unreleased — SUSE Rancher VEX hub (product-scoped statements)
+
+Adds a `rancher-vex` adapter for SUSE's Rancher VEX hub (`github.com/rancher/vexhub`) — a single consolidated OpenVEX 0.2.0 document of `not_affected` suppressions for SUSE cloud-native product images (Rancher, RKE2, K3s, Harvester, Longhorn). These statements are **product-scoped**, a model new to reel-vex: the product (`products[].@id` — an OCI image or Go module) is the context a verdict was made in, and the affected package rides in an OpenVEX *subcomponent*. To represent this faithfully without over-claiming, statements gain a `scope` dimension.
+
+A scoped verdict applies only when the caller names its scope, so a `not_affected` scoped to one image can never suppress the same package on an unrelated one. With no scope context, only unscoped (package-level) rows — every existing feed — are returned, so all prior behaviour is unchanged.
+
+### Added
+
+- **`rancher-vex` adapter** (`pkg/source/ranchervex/`): streams the consolidated `rancher.openvex.json` and emits one statement per (product-scope × subcomponent). Skips non-CVE-named statements (~3%, mostly `SUSE-SU` advisories with no CVE alias — reel-vex keys by CVE) and any product with no subcomponent. Vendor string `rancher` (distinct from `suse`); `SourceFormat()` `openvex`. Registered in `cmd/server/main.go`; config entry in `config.yaml`.
+- **`scope` column on `statements`** (schema **v4**, `pkg/db/migrations.go`): the OpenVEX product `@id` a statement is scoped to, added to the primary key `(vendor, cve, product_id, source_format, scope)` so the same package + CVE can carry different verdicts under different products without colliding. Additive rebuild — existing rows backfill `scope=''` and behave exactly as before. No index on `scope` (a residual filter after the `cve`/`base_id` narrowing; an index would roughly double the largest table).
+- **Query scope gate** (`pkg/db/db.go`, `QueryFilters.Scopes`): with no scopes, only `scope=''` rows return; with scopes, a row matches if it is unscoped *or* its scope is named — so scoped statements surface only for the product the caller is scanning.
+- **`scopes` request field on `POST /v1/statements`** (`pkg/api/handler.go`): opts product-scoped statements into the result. An SBOM's `metadata.component` supplies the scope automatically; `/v1/analyze` derives the scope from `metadata.component` the same way (`pkg/api/analyze.go`).
+- **`pkg/csaf.NormalizeScope`**: canonicalises a product `@id` for use as a scope key (keeps `repository_url`, strips version/digest); shared by ingest and the query layer so both canonicalise identically. A normalization mismatch only costs a missed suppression, never a false one.
+- **OpenVEX `subcomponents`** (`pkg/openvex.Component.Subcomponents`): the parser now models the OpenVEX 0.2.0 subcomponent struct; `status_notes` discloses `scope=<product @id>` on product-scoped rows (`pkg/openvex/encode.go`).
+- **Tests**: unit (parser, `NormalizeScope`, db scope gate incl. the over-suppression guard, adapter mapping/skips/errors), integration (HTTP scope gate on both endpoints), a trimmed **real-feed fixture** (`testdata/rancher-sample.openvex.json`), and an **opt-in live smoke** (`TestSmoke_LiveFeed`, gated behind `REEL_VEX_SMOKE=1`, skipped by default).
+
+### Changed
+
+- **`statements` primary key** gains `scope`: `(vendor, cve, product_id, source_format)` → `(vendor, cve, product_id, source_format, scope)`. Forward-only v4 migration; rollback = restore from a pre-upgrade backup.
+
+### Notes
+
+- **Deferred**: the ~3% non-CVE-named (`SUSE-SU`) tail carries no CVE alias and is skipped at ingest; reel-vex keys and serves by CVE. Advisory→CVE resolution (via the SUSE CSAF data we already ingest) is a possible later pass if a consumer needs it.
+- The v4 migration rebuilds the `statements` table. On a fresh-ingest box (the rebuild-and-swap deploy model) the table is empty and the copy is instant; an in-place upgrade pays a one-time full-table rewrite.
+
 ## [0.5.1] — broad-mode queries, `/v1/analyze` synthesis, faster ingest
 
 `/v1/statements` gains **broad mode**: a request with products/SBOM-components but no CVEs returns *every* vendor statement touching those products (no CVE filter) — the fetch-once-attach-to-every-scan unit for `trivy --vex`, which does its own CVE matching against the doc. `/v1/analyze` gains the matching CycloneDX behaviour: a **components-only SBOM** comes back with `vulnerabilities[]` synthesised from a broad-mode lookup and annotated, so a downstream consumer gets a fully-populated CycloneDX document without a client-side OpenVEX → CycloneDX translation. Mission split is unchanged: `/v1/analyze` → CycloneDX, `/v1/statements` → OpenVEX.
