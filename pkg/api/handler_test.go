@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -136,11 +137,11 @@ func TestHandleStatements_WithProducts(t *testing.T) {
 	})
 }
 
-func TestHandleStatements_RequiresCVEs(t *testing.T) {
+func TestHandleStatements_Validation(t *testing.T) {
 	database := setupTestDB(t)
 	srv := NewServer(database, nil)
 
-	t.Run("empty body", func(t *testing.T) {
+	t.Run("empty body is 400", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader([]byte("{}")))
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)
@@ -149,17 +150,24 @@ func TestHandleStatements_RequiresCVEs(t *testing.T) {
 		}
 	})
 
-	t.Run("products without cves", func(t *testing.T) {
+	// Broad mode: products without cves is now valid — returns every statement
+	// touching the matched products, regardless of CVE.
+	t.Run("products without cves is broad mode", func(t *testing.T) {
 		body, _ := json.Marshal(statementsRequest{Products: []string{"pkg:rpm/test/openssl"}})
 		req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 (cves required), got %d", w.Code)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 (broad mode), got %d: %s", w.Code, w.Body.String())
+		}
+		doc := decodeOpenVEX(t, w)
+		// openssl base has one seeded PURL statement (CVE-2024-1234).
+		if len(doc.Statements) != 1 {
+			t.Fatalf("expected 1 statement, got %d", len(doc.Statements))
 		}
 	})
 
-	t.Run("invalid json", func(t *testing.T) {
+	t.Run("invalid json is 400", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader([]byte("not json")))
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)
@@ -167,6 +175,125 @@ func TestHandleStatements_RequiresCVEs(t *testing.T) {
 			t.Fatalf("expected 400, got %d", w.Code)
 		}
 	})
+}
+
+// TestHandleStatements_BroadMode verifies that a products-only query returns
+// statements across multiple CVEs with no CVE filter applied.
+func TestHandleStatements_BroadMode(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	body, _ := json.Marshal(statementsRequest{
+		Products: []string{"pkg:rpm/test/openssl", "pkg:rpm/test/nginx"},
+	})
+	req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	doc := decodeOpenVEX(t, w)
+	// openssl (CVE-2024-1234) + nginx (CVE-2024-5678): two different CVEs, no
+	// CVE filter — both come back.
+	if len(doc.Statements) != 2 {
+		t.Fatalf("expected 2 statements across 2 CVEs, got %d", len(doc.Statements))
+	}
+	cves := map[string]bool{}
+	for _, s := range doc.Statements {
+		cves[s.Vulnerability.Name] = true
+	}
+	if !cves["CVE-2024-1234"] || !cves["CVE-2024-5678"] {
+		t.Fatalf("expected both CVEs represented, got %v", cves)
+	}
+}
+
+// TestHandleStatements_Truncation verifies the cap surfaces as 206 +
+// X-Reel-Truncated rather than silently dropping statements.
+func TestHandleStatements_Truncation(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+	srv.SetStatementsMax(1) // CVE-2024-1234 has 2 statements; force truncation
+
+	body, _ := json.Marshal(statementsRequest{CVEs: []string{"CVE-2024-1234"}})
+	req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusPartialContent {
+		t.Fatalf("expected 206 on truncation, got %d", w.Code)
+	}
+	if w.Header().Get("X-Reel-Truncated") != "true" {
+		t.Errorf("expected X-Reel-Truncated: true, got %q", w.Header().Get("X-Reel-Truncated"))
+	}
+	if got := w.Header().Get("X-Reel-Next-Offset"); got != "1" {
+		t.Errorf("expected X-Reel-Next-Offset: 1, got %q", got)
+	}
+	doc := decodeOpenVEX(t, w)
+	if len(doc.Statements) != 1 {
+		t.Fatalf("expected 1 statement (capped), got %d", len(doc.Statements))
+	}
+}
+
+// TestHandleStatements_OrderStable verifies the deterministic ordering that
+// makes a cached broad-mode doc byte-stable across refetches.
+func TestHandleStatements_OrderStable(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	get := func() []string {
+		body, _ := json.Marshal(statementsRequest{Products: []string{"pkg:rpm/test/openssl", "pkg:rpm/test/nginx"}})
+		req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		doc := decodeOpenVEX(t, w)
+		var order []string
+		for _, s := range doc.Statements {
+			order = append(order, s.Vulnerability.Name)
+		}
+		return order
+	}
+	first, second := get(), get()
+	if len(first) != len(second) {
+		t.Fatalf("result length changed between calls: %d vs %d", len(first), len(second))
+	}
+	for i := range first {
+		if first[i] != second[i] {
+			t.Fatalf("order not stable at %d: %q vs %q", i, first[i], second[i])
+		}
+	}
+}
+
+// TestHandleStatements_Gzip verifies Accept-Encoding: gzip yields a compressed,
+// still-decodable OpenVEX body.
+func TestHandleStatements_Gzip(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	body, _ := json.Marshal(statementsRequest{CVEs: []string{"CVE-2024-1234"}})
+	req := httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body))
+	req.Header.Set("Accept-Encoding", "gzip")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if w.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("expected Content-Encoding: gzip, got %q", w.Header().Get("Content-Encoding"))
+	}
+	gz, err := gzip.NewReader(w.Body)
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	defer gz.Close()
+	var doc openvex.Document
+	if err := json.NewDecoder(gz).Decode(&doc); err != nil {
+		t.Fatalf("decode gzipped openvex: %v", err)
+	}
+	if len(doc.Statements) != 2 {
+		t.Fatalf("expected 2 statements, got %d", len(doc.Statements))
+	}
 }
 
 // TestHandleStatements_OldRoutesAre404 is the explicit breaking-change
@@ -806,6 +933,119 @@ func TestHandleAnalyze_OldSBOMRouteIs404(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for removed /v1/sbom route, got %d", w.Code)
 	}
+}
+
+// TestHandleAnalyze_BroadModeSynthesis covers the empty-vulns /v1/analyze path:
+// a components-only SBOM gets vulnerabilities[] synthesised from a broad-mode
+// vendor lookup, then annotated — while a non-empty SBOM is annotate-only.
+func TestHandleAnalyze_BroadModeSynthesis(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	post := func(t *testing.T, sbom map[string]any) (*httptest.ResponseRecorder, map[string]any) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"sbom": sbom})
+		req := httptest.NewRequest("POST", "/v1/analyze", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		var res map[string]any
+		if w.Body.Len() > 0 {
+			json.NewDecoder(bytes.NewReader(w.Body.Bytes())).Decode(&res)
+		}
+		return w, res
+	}
+
+	t.Run("empty vulns synthesises from broad mode", func(t *testing.T) {
+		w, res := post(t, map[string]any{
+			"bomFormat":   "CycloneDX",
+			"specVersion": "1.5",
+			"components": []any{
+				map[string]any{"type": "library", "name": "openssl", "purl": "pkg:rpm/test/openssl@3.0", "bom-ref": "comp-openssl"},
+			},
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		vulns, ok := res["vulnerabilities"].([]any)
+		if !ok || len(vulns) != 1 {
+			t.Fatalf("expected 1 synthesised vulnerability, got %v", res["vulnerabilities"])
+		}
+		v := vulns[0].(map[string]any)
+		if v["id"] != "CVE-2024-1234" {
+			t.Fatalf("expected CVE-2024-1234, got %v", v["id"])
+		}
+		analysis, ok := v["analysis"].(map[string]any)
+		if !ok || analysis["state"] != "not_affected" {
+			t.Fatalf("expected analysis state not_affected, got %v", v["analysis"])
+		}
+		if affects, _ := v["affects"].([]any); len(affects) != 1 {
+			t.Fatalf("expected 1 affects entry, got %v", v["affects"])
+		}
+	})
+
+	t.Run("no broad match leaves SBOM without synthesised vulns", func(t *testing.T) {
+		w, res := post(t, map[string]any{
+			"bomFormat":   "CycloneDX",
+			"specVersion": "1.5",
+			"components": []any{
+				map[string]any{"type": "library", "name": "foo", "purl": "pkg:npm/foo@1.0"},
+			},
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+		if v, ok := res["vulnerabilities"]; ok {
+			if arr, _ := v.([]any); len(arr) != 0 {
+				t.Fatalf("expected no synthesised vulnerabilities, got %v", v)
+			}
+		}
+	})
+
+	t.Run("non-empty vulns annotate only (no broad add)", func(t *testing.T) {
+		w, res := post(t, map[string]any{
+			"bomFormat":   "CycloneDX",
+			"specVersion": "1.5",
+			"components": []any{
+				map[string]any{"type": "library", "name": "openssl", "purl": "pkg:rpm/test/openssl@3.0"},
+				map[string]any{"type": "library", "name": "nginx", "purl": "pkg:rpm/test/nginx@1.25"},
+			},
+			"vulnerabilities": []any{
+				map[string]any{"id": "CVE-2024-1234"},
+			},
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+		vulns := res["vulnerabilities"].([]any)
+		if len(vulns) != 1 {
+			t.Fatalf("expected exactly 1 vuln (annotate-only), got %d — broad-mode CVEs must NOT be added", len(vulns))
+		}
+		if vulns[0].(map[string]any)["id"] != "CVE-2024-1234" {
+			t.Fatalf("unexpected vuln id %v", vulns[0])
+		}
+	})
+
+	t.Run("bom-link refs on synthesised entries", func(t *testing.T) {
+		w, res := post(t, map[string]any{
+			"bomFormat":    "CycloneDX",
+			"specVersion":  "1.5",
+			"serialNumber": "urn:uuid:11111111-2222-3333-4444-555555555555",
+			"version":      float64(1),
+			"components": []any{
+				map[string]any{"type": "library", "name": "openssl", "purl": "pkg:rpm/test/openssl@3.0", "bom-ref": "comp-openssl"},
+			},
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+		v := res["vulnerabilities"].([]any)[0].(map[string]any)
+		ref := v["affects"].([]any)[0].(map[string]any)["ref"].(string)
+		want := "urn:cdx:11111111-2222-3333-4444-555555555555/1#comp-openssl"
+		if ref != want {
+			t.Fatalf("affects ref: got %q, want %q", ref, want)
+		}
+	})
 }
 
 func TestHandleIngestStatus(t *testing.T) {

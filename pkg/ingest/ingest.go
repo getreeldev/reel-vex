@@ -43,6 +43,11 @@ func Run(ctx context.Context, adapters []source.Adapter, fetchers []aliases.Fetc
 	if _, err := database.RefreshStats(); err != nil {
 		slog.Warn("stats cache refresh failed", "error", err)
 	}
+	// Refresh planner statistics so broad mode picks the covering index when
+	// base_id is combined with vendor/status/justification filters.
+	if err := database.Optimize(); err != nil {
+		slog.Warn("db optimize failed", "error", err)
+	}
 	return nil
 }
 

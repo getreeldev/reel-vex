@@ -29,5 +29,6 @@ require (
 
 require (
 	github.com/getreeldev/oval-to-vex v0.2.2
+	github.com/klauspost/compress v1.18.6
 	github.com/ulikunitz/xz v0.5.15
 )

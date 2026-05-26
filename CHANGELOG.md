@@ -2,6 +2,32 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.5.1] — broad-mode queries, `/v1/analyze` synthesis, faster ingest
+
+`/v1/statements` gains **broad mode**: a request with products/SBOM-components but no CVEs returns *every* vendor statement touching those products (no CVE filter) — the fetch-once-attach-to-every-scan unit for `trivy --vex`, which does its own CVE matching against the doc. `/v1/analyze` gains the matching CycloneDX behaviour: a **components-only SBOM** comes back with `vulnerabilities[]` synthesised from a broad-mode lookup and annotated, so a downstream consumer gets a fully-populated CycloneDX document without a client-side OpenVEX → CycloneDX translation. Mission split is unchanged: `/v1/analyze` → CycloneDX, `/v1/statements` → OpenVEX.
+
+Separately, the first ingest of a fresh database is dramatically faster: Red Hat CSAF now seeds from the weekly bulk archive instead of crawling ~317K documents one HTTP GET at a time (~15 h → minutes), which makes the rebuild-and-swap deploy model practical.
+
+### Added
+
+- **`/v1/statements` broad mode** (`pkg/api/handler.go`): when `cves` is absent but `products`/SBOM components are present, returns all statements for the matched products with no CVE filter. `400` only when neither CVEs nor products are present.
+- **`-statements-max` flag** (`cmd/server/main.go`, default 50000; 0 = unlimited): caps statements returned by `/v1/statements`. When the cap is hit the response is `206 Partial Content` with `X-Reel-Truncated: true` and `X-Reel-Next-Offset`; request `limit`/`offset` paginate. Wired via `api.Server.SetStatementsMax(int)`. Truncation is never silent (a dropped statement is a CVE `trivy --vex` won't suppress).
+- **`/v1/analyze` broad-mode synthesis**: when the input SBOM has empty `vulnerabilities[]`, `/v1/analyze` queries the vendor DB for every CVE touching the SBOM's components and synthesises a `vulnerabilities[]` entry per matched CVE before annotating. Lets a downstream consumer POST a components-only SBOM and get back a CycloneDX document fully populated with vendor VEX, without an intermediate OpenVEX → CycloneDX translation step. Non-empty-vulns input behaviour is unchanged — only existing entries are annotated. Rule: empty-in → populate from broad mode; non-empty-in → annotate only.
+- **gzip responses** (`pkg/api/gzip.go`): JSON endpoints compress when the request sends `Accept-Encoding: gzip` (skipped for 204/304). OpenVEX/CycloneDX compress ~10×.
+- **Red Hat CSAF bulk-archive cold-start** (`pkg/source/csafadapter/archive.go`): on a cold start (no watermark) the adapter downloads Red Hat's weekly `csaf_vex_<date>.tar.zst` (~300 MB) via `archive_latest.txt`, walks it locally, then fetches only the post-archive delta from `changes.csv`. Feeds without such an archive (e.g. SUSE) auto-fall-back to the per-document crawl. Adds dependency `github.com/klauspost/compress` (zstd).
+- **DB read tuning** (`pkg/db/db.go`): PRAGMAs moved into the DSN (`busy_timeout`, 256 MB `cache_size`, 2 GB `mmap_size`, `temp_store=MEMORY`) so they apply to every pooled connection — `synchronous=NORMAL` previously landed on only one. `DB.Optimize()` runs `PRAGMA optimize` after each ingest and at startup.
+- **`QueryFilters.Limit` / `.Offset`** (`pkg/db/db.go`): pagination on the unified query primitive; results are ordered deterministically (`base_id, cve, product_id, source_format`) so paged/cached output is byte-stable.
+- **Tests**: unit + integration coverage for broad mode, truncation/206, gzip, the bulk-archive cold-start (with SUSE-style fallback), and `/v1/analyze` synthesis (incl. BOM-Link rewrite of synthesised entries).
+
+### Changed
+
+- **`/v1/statements` empty-input error**: now `"one of cves, products, or sbom (with components or vulnerabilities) is required"` (products alone are now a valid, broad-mode input).
+- **`/v1/analyze` query**: the empty-vulns path now performs a broad-mode lookup (previously skipped — the `len(queryCVEs) > 0 && len(queryBases) > 0` gate passed the SBOM through unchanged).
+
+### Notes
+
+- A wide covering index for broad mode (`idx_statements_broad`) was prototyped and **dropped**: on the production-scale DB it roughly doubles the table (~+100 GB). Broad mode runs on the existing `idx_statements_base_id`; a narrower index can be added later if query latency warrants it. No schema change ships in this version.
+
 ## [0.5.0] — `/v1/statements` accepts SBOM input
 
 Lets the user feed a CycloneDX SBOM to `/v1/statements` and get back an OpenVEX 0.2.0 document derived from the SBOM's CVE and component lists. Removes the manual CVE/PURL extraction step from the natural Trivy flow: the article-grade scan-with-VEX run now stays in `trivy image --vex` mode (OpenVEX is BOM-context-free) without the user having to write `jq` glue. Filters (`vendors`, `statuses`, `since`, etc.) keep their meaning; output shape is unchanged.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -126,21 +127,38 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		queryBases[c.BaseID] = true
 	}
 
-	// 4. Query vendor data (skipped if either dimension is empty).
+	// 4. Query vendor data. Two shapes, mirroring the scanner combos reel needs:
+	//   - empty-vulns SBOM (components only): BROAD MODE — query every CVE
+	//     touching the components, no CVE filter, then synthesise
+	//     vulnerabilities[] from the result (step 6b). Capped by -statements-max.
+	//   - non-empty-vulns SBOM (or user CVEs): query input CVEs × bases as
+	//     before and only annotate existing entries; never add broad-mode CVEs
+	//     on top. Rule: empty-in → populate; non-empty-in → annotate only.
+	synthesize := hasSBOM && len(sbomCVEs) == 0
 	var vendorStmts []db.Statement
-	if len(queryCVEs) > 0 && len(queryBases) > 0 {
-		cveSlice := make([]string, 0, len(queryCVEs))
-		for c := range queryCVEs {
-			cveSlice = append(cveSlice, c)
-		}
-		baseSlice := make([]string, 0, len(queryBases))
-		for b := range queryBases {
-			baseSlice = append(baseSlice, b)
+	var truncated bool
+	switch {
+	case synthesize && len(queryBases) > 0:
+		filters := db.QueryFilters{ProductBaseIDs: mapKeysSorted(queryBases)}
+		if s.statementsMax > 0 {
+			filters.Limit = s.statementsMax + 1 // +1 to detect truncation
 		}
 		var err error
+		vendorStmts, err = s.db.QueryStatements(filters)
+		if err != nil {
+			slog.Error("analyze broad-mode query failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		if s.statementsMax > 0 && len(vendorStmts) > s.statementsMax {
+			vendorStmts = vendorStmts[:s.statementsMax]
+			truncated = true
+		}
+	case len(queryCVEs) > 0 && len(queryBases) > 0:
+		var err error
 		vendorStmts, err = s.db.QueryStatements(db.QueryFilters{
-			CVEs:           cveSlice,
-			ProductBaseIDs: baseSlice,
+			CVEs:           mapKeysSorted(queryCVEs),
+			ProductBaseIDs: mapKeysSorted(queryBases),
 		})
 		if err != nil {
 			slog.Error("analyze query failed", "error", err)
@@ -170,6 +188,35 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 6b. Empty-vulns path: synthesise vulnerabilities[] from the merged set so
+	//     annotateSBOM (below) populates analysis on them. Each affects[].ref is
+	//     the FULL component identifier that resolved to the statement's base_id
+	//     — not the resolver's base form (respBaseToInputs holds bases, which
+	//     would not match a component's versioned purl in the BOM-Link rewrite).
+	//     The non-empty path leaves the SBOM's own vulnerabilities[] untouched.
+	if synthesize {
+		baseToComponents := make(map[string][]string)
+		seen := make(map[string]map[string]bool)
+		addComp := func(base, full string) {
+			if seen[base] == nil {
+				seen[base] = make(map[string]bool)
+			}
+			if !seen[base][full] {
+				seen[base][full] = true
+				baseToComponents[base] = append(baseToComponents[base], full)
+			}
+		}
+		for _, cid := range sbomComponentIDs {
+			for _, cand := range s.resolver.Expand(cid) {
+				addComp(cand.ID, cid)
+			}
+		}
+		for _, c := range userStmts {
+			addComp(c.BaseID, c.ProductID)
+		}
+		synthesizeVulnerabilities(sbom, merged, baseToComponents)
+	}
+
 	// 7. Output.
 	w.Header().Set("Content-Type", "application/json")
 	if hasSBOM {
@@ -180,6 +227,12 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		// data matched, so the response stays consumable by Trivy --vex even
 		// when no statements were emitted.
 		rewriteAffectsAsBOMLinks(sbom)
+		if truncated {
+			// Broad-mode synthesis hit the -statements-max cap; some CVEs were
+			// dropped. Signal it out-of-band — never silently truncate.
+			w.Header().Set("X-Reel-Truncated", "true")
+			w.WriteHeader(http.StatusPartialContent)
+		}
 		json.NewEncoder(w).Encode(sbom)
 		return
 	}
@@ -444,4 +497,62 @@ func statusPriority(state string) int {
 	default:
 		return 0
 	}
+}
+
+// synthesizeVulnerabilities populates sbom["vulnerabilities"] with one entry per
+// CVE in stmts — used on the empty-vulns /v1/analyze path so the downstream
+// annotate + BOM-Link steps run exactly as they do for a Trivy-populated SBOM.
+// Each affects[].ref is the full component identifier (PURL/CPE) that resolved
+// to the statement's base_id, so rewriteAffectsAsBOMLinks can bind it to the
+// component's bom-ref. Entries and refs are sorted for deterministic output.
+// Statements whose base maps to no component are skipped (nothing to attribute).
+func synthesizeVulnerabilities(sbom map[string]any, stmts []db.Statement, baseToComponents map[string][]string) {
+	refsByCVE := make(map[string]map[string]bool)
+	for _, s := range stmts {
+		comps := baseToComponents[s.BaseID]
+		if len(comps) == 0 {
+			continue
+		}
+		refs := refsByCVE[s.CVE]
+		if refs == nil {
+			refs = make(map[string]bool)
+			refsByCVE[s.CVE] = refs
+		}
+		for _, c := range comps {
+			refs[c] = true
+		}
+	}
+	if len(refsByCVE) == 0 {
+		return
+	}
+
+	cves := make([]string, 0, len(refsByCVE))
+	for c := range refsByCVE {
+		cves = append(cves, c)
+	}
+	sort.Strings(cves)
+
+	vulns := make([]any, 0, len(cves))
+	for _, cve := range cves {
+		affects := make([]any, 0, len(refsByCVE[cve]))
+		for _, ref := range mapKeysSorted(refsByCVE[cve]) {
+			affects = append(affects, map[string]any{"ref": ref})
+		}
+		vulns = append(vulns, map[string]any{
+			"id":      cve,
+			"affects": affects,
+		})
+	}
+	sbom["vulnerabilities"] = vulns
+}
+
+// mapKeysSorted returns a set's keys in sorted order — deterministic query args
+// and output.
+func mapKeysSorted(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

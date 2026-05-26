@@ -82,7 +82,26 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 			return err
 		}
 	}
-	entries, err := csaf.FetchFeedEntries(a.feedURL, since)
+
+	// Cold start: try the bulk archive (one ~300 MB tar.zst) instead of
+	// crawling ~317K documents one HTTP GET at a time (hours). On success the
+	// archive seeds everything up to its weekly cut date, and we then fetch
+	// only the post-archive delta via changes.csv. Feeds without an archive
+	// (e.g. SUSE) fall through to the full crawl unchanged.
+	effectiveSince := since
+	if since.IsZero() {
+		archiveDate, ok, err := a.syncFromArchive(ctx, emit)
+		if err != nil {
+			slog.Warn("csaf bulk archive failed; falling back to full changes.csv crawl", "adapter", a.id, "error", err)
+		} else if ok {
+			effectiveSince = archiveDate
+			if effectiveSince.IsZero() {
+				effectiveSince = time.Now().UTC() // archive seeded all; avoid a full re-crawl
+			}
+		}
+	}
+
+	entries, err := csaf.FetchFeedEntries(a.feedURL, effectiveSince)
 	if err != nil {
 		return fmt.Errorf("fetch changes.csv: %w", err)
 	}
