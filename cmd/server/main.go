@@ -59,7 +59,7 @@ func run() error {
 	ingestInterval := flag.Duration("ingest-interval", 24*time.Hour, "interval between scheduled ingests")
 	adminToken := flag.String("admin-token", "", "bearer token for admin endpoints (empty = no auth)")
 	sbomMaxMB := flag.Int("sbom-max-mb", 5, "max body size in MB for SBOM-accepting endpoints (/v1/analyze, /v1/statements)")
-	statementsMax := flag.Int("statements-max", 50000, "max statements returned by /v1/statements (0 = unlimited); broad mode is truncated with a 206 + X-Reel-Truncated header when hit")
+	statementsMax := flag.Int("statements-max", 50000, "max statements returned by /v1/statements (0 = unlimited); broad mode is truncated with HTTP 200 + X-Reel-Truncated header when hit")
 	flag.Parse()
 
 	registerAdapters()

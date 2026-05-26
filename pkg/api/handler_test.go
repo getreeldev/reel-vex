@@ -208,7 +208,7 @@ func TestHandleStatements_BroadMode(t *testing.T) {
 	}
 }
 
-// TestHandleStatements_Truncation verifies the cap surfaces as 206 +
+// TestHandleStatements_Truncation verifies the cap surfaces as HTTP 200 +
 // X-Reel-Truncated rather than silently dropping statements.
 func TestHandleStatements_Truncation(t *testing.T) {
 	database := setupTestDB(t)

@@ -49,8 +49,8 @@ type Server struct {
 	// statementsMax caps the number of statements /v1/statements returns.
 	// It mainly bounds broad mode (product-scoped, no CVE filter), which can
 	// match tens of thousands of rows. When the cap is hit the response is
-	// truncated and flagged (206 + X-Reel-Truncated). Default 50000; 0 means
-	// unlimited. Wired from the -statements-max server flag.
+	// truncated and flagged (HTTP 200 + X-Reel-Truncated). Default 50000; 0
+	// means unlimited. Wired from the -statements-max server flag.
 	statementsMax int
 }
 
