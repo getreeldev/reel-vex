@@ -8,7 +8,10 @@ The pipeline is driven by `config.yaml`: a list of adapters (VEX feeds) and alia
 
 ### CSAF adapter
 
-Each CSAF provider publishes a `provider-metadata.json` at a well-known URL. The adapter fetches it, finds the VEX distribution URL, reads `changes.csv`, and enumerates documents since the last-synced watermark.
+Each CSAF provider publishes a `provider-metadata.json` at a well-known URL. The adapter fetches it, finds the VEX distribution URL, and then takes one of two paths:
+
+- **Cold start (no watermark)** — if the provider publishes a bulk archive (Red Hat's weekly `csaf_vex_<date>.tar.zst`, located via a sibling `archive_latest.txt`), the adapter downloads that single ~300 MB archive and walks it locally instead of fetching ~317K documents one HTTP GET at a time (minutes vs. hours). It then fetches only the post-archive delta from `changes.csv`. The archive's date — taken from the filename, or its `Last-Modified` header as a fallback — is the floor for that delta. Providers without such an archive (e.g. SUSE) fall back to crawling every document listed in `changes.csv`.
+- **Incremental (have watermark)** — reads `changes.csv` and fetches only documents changed since the watermark.
 
 Parsing uses [`gocsaf/csaf`](https://github.com/gocsaf/csaf) (the strict path) with a permissive map-based fallback for vendor feeds that violate CSAF 2.0 schema rules (SUSE's CPE 2.3 deviations, for example). Extracted per document:
 
@@ -28,7 +31,7 @@ Independent from VEX adapters. Each fetcher pulls a vendor-published mapping fil
 
 ### Sync strategy
 
-- **First run**: adapters pull their entire feed. CSAF for Red Hat is ~313K per-CVE documents and takes hours; SUSE is ~54K. OVAL is one bz2 file per adapter, seconds to minutes.
+- **First run**: adapters seed their whole feed. Red Hat CSAF downloads its weekly bulk archive (~300 MB) and walks it locally — minutes, not the hours a ~313K-document per-file crawl would take. SUSE has no bulk archive, so it crawls its ~54K documents one at a time. OVAL is one bz2 file per adapter (seconds to minutes); Ubuntu's OpenVEX is a single tarball walk.
 - **Incremental**: every adapter stores its own watermark in `adapter_state.last_synced`. CSAF adapters skip documents older than their watermark; OVAL adapters HEAD the feed and skip the GET when unchanged.
 - **Batch writes**: statements accumulate in memory and flush to SQLite in batches of 5,000.
 
@@ -47,10 +50,11 @@ reel-vex/
     source/                    -- source-adapter framework
       adapter.go               -- Adapter interface
       config.go, registry.go   -- AdapterConfig + factory registry
-      csafadapter/             -- CSAF adapter (wraps pkg/csaf)
+      csafadapter/             -- CSAF adapter (wraps pkg/csaf; archive.go = bulk cold-start)
       redhatoval/              -- Red Hat OVAL adapter (wraps oval-to-vex)
       ubuntuoval/              -- Ubuntu OVAL adapter (wraps oval-to-vex)
       debianoval/              -- Debian OVAL adapter (wraps oval-to-vex)
+      ubuntuvex/               -- Canonical OpenVEX 0.2.0 adapter (tarball walk)
     aliases/                   -- alias-fetcher framework
       aliases.go               -- Fetcher interface + registry
       redhat.go                -- Red Hat repository-to-cpe.json fetcher
@@ -61,7 +65,7 @@ reel-vex/
     db/                        -- SQLite + schema migrations
       db.go, migrations.go
     api/                       -- HTTP handlers
-      handler.go, sbom.go, ingest.go
+      handler.go, analyze.go, gzip.go, ingest.go, request_log.go
   test/integration/api_test.go -- end-to-end tests (binary + DB + HTTP)
   testdata/                    -- fixtures: CSAF slices, OVAL fixture, alias sample
   config.yaml                  -- adapter + alias-fetcher configuration

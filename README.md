@@ -6,200 +6,58 @@
 <h1 align="center"><samp>reel</samp> vex</h1>
 
 <p align="center">
-  <strong>Free, open source VEX resolution service.</strong>
+  <strong>Free, open-source VEX service.</strong>
   <br>
-  Aggregates vendor VEX statements from CSAF 2.0, OVAL, and OpenVEX feeds, translates across identifier schemes (PURL ↔ CPE), and serves the result via HTTP API.
+  Aggregates vendor VEX statements (CSAF 2.0, OVAL, OpenVEX) into one database and serves them over an HTTP API.
   <br><br>
   <a href="https://getreel.dev/vex">Web UI</a> · API <code>vex.getreel.dev</code> · <a href="./docs/api.md">API reference</a>
 </p>
 
-## Why
+## What it does
 
-Vulnerability scanners produce long lists of CVEs. Many of those CVEs don't actually affect you — the vendor already confirmed the vulnerable code isn't present, a fix is available, or it's still under investigation. This information is published as VEX (Vulnerability Exploitability eXchange) statements. Red Hat and SUSE publish CSAF 2.0 JSON; Red Hat, Ubuntu, and Debian publish OVAL XML; Canonical also publishes OpenVEX 0.2.0 covering Ubuntu releases beyond what their OVAL feed surfaces. The same vendor often publishes multiple formats with intentionally different coverage between them.
+Scanners report many CVEs that don't actually affect you — the vendor has often already assessed them and published a **VEX** statement: `not_affected`, `fixed`, `affected`, or `under_investigation`. But every vendor uses a different format, location, and identifier scheme.
 
-reel-vex pulls from all three formats, normalizes the statements into one database, and bridges identifier schemes so a scanner querying with a package PURL matches statements vendors published against a platform CPE. One query, unified answer.
+reel-vex pulls those statements from Red Hat, SUSE, Ubuntu, and Debian into one database, bridges identifier schemes (PURL ↔ CPE), and serves the result over HTTP. We mirror what the vendor said and let you decide what to do with it — no pre-filtering.
+
+## What you can ask it
+
+- A **CVE** (and optionally some packages) → the vendor statements for it.
+- A **package list or SBOM with no CVEs** → every vendor statement touching those packages (*broad mode*). Fetch once, reuse on every scan.
+- A **CycloneDX SBOM** → the same SBOM annotated with vendor verdicts, ready for `trivy --vex`.
+
+Request and response shapes are in [`docs/api.md`](./docs/api.md).
 
 ## How it works
 
 ```
-     config.yaml
-         │
-         ▼
-┌──────────────────────────────────────────────────────────┐
-│                   Ingest Pipeline                         │
-│                                                           │
-│   Adapters                           Alias fetchers       │
-│   ────────                           ──────────────       │
-│   ┌─────────────┐                    ┌──────────────┐     │
-│   │ CSAF        │                    │ repo → CPE   │     │
-│   │ (RH, SUSE)  │                    │ (Red Hat)    │     │
-│   └──────┬──────┘                    └──────┬───────┘     │
-│          │                                  │             │
-│   ┌──────┴──────┐                           │             │
-│   │ OVAL        │                           │             │
-│   │ (RH, Ubuntu,│                           │             │
-│   │  Debian)    │                           │             │
-│   └──────┬──────┘                           │             │
-│          │                                  │             │
-│   ┌──────┴──────┐                           │             │
-│   │ OpenVEX     │                           │             │
-│   │ (Ubuntu)    │                           │             │
-│   └──────┬──────┘                           │             │
-│          │                                  │             │
-│          ▼                                  ▼             │
-│   statements + adapter_state         product_aliases      │
-└──────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌──────────────────────────────────────────────────────────┐
-│                    SQLite  vex.db                         │
-│  statements  │ vendors │ product_aliases │ adapter_state  │
-└──────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌──────────────────────────────────────────────────────────┐
-│                        HTTP API                           │
-│                                                           │
-│  POST /v1/statements     (CVE / product / vendor /        │
-│                           status / since filters)         │
-│  POST /v1/analyze        (annotated SBOM + user VEX)      │
-│  GET  /v1/stats                                           │
-│  GET  /v1/ingest         (status) ·  POST /v1/ingest      │
-│  GET  /healthz                                            │
-│                                                           │
-│      Resolver: PURL ↔ CPE translation + CPE prefix match  │
-└──────────────────────────────────────────────────────────┘
+   Vendor feeds                  reel-vex                  You
+   ────────────            ┌──────────────────┐      ────────────
+   Red Hat · SUSE          │ pull · normalize │       query a CVE,
+   Ubuntu · Debian   ────► │ one SQLite file  │ ────► a package, or
+   CSAF·OVAL·OpenVEX       │ HTTP API         │       a full SBOM
+                           └──────────────────┘
 ```
 
-Single Go binary. Single SQLite file. No external dependencies at runtime.
+One Go binary, one SQLite file, no runtime dependencies. The PURL ↔ CPE bridge means a query with a package identifier still matches statements a vendor filed against a platform identifier.
 
-For deeper reading: the ingest pipeline and project layout live in [`docs/architecture.md`](./docs/architecture.md), the database schema in [`docs/data-model.md`](./docs/data-model.md), and the field-level API reference (every endpoint, every enum value, OpenVEX 0.2.0 output) in [`docs/api.md`](./docs/api.md).
+Deeper detail: [`docs/architecture.md`](./docs/architecture.md) (pipeline + layout), [`docs/data-model.md`](./docs/data-model.md) (schema), [`docs/api.md`](./docs/api.md) (every endpoint).
 
 ## Data sources
 
-| Vendor | Format | Feed | Documents | Identifiers |
-|--------|--------|------|-----------|-------------|
-| Red Hat | CSAF VEX | [security.access.redhat.com/data/csaf/v2/vex/](https://security.access.redhat.com/data/csaf/v2/vex/) | ~313K | PURL + CPE |
-| Red Hat | OVAL | [security.access.redhat.com/data/oval/v2/](https://security.access.redhat.com/data/oval/v2/) | 1 per stream (EUS/AUS/E4S/…) | CPE (incl. stream variants) |
-| SUSE | CSAF VEX | [ftp.suse.com/pub/projects/security/csaf-vex/](https://ftp.suse.com/pub/projects/security/csaf-vex/) | ~54K | CPE |
-| Ubuntu | OpenVEX 0.2.0 | [security-metadata.canonical.com/vex/](https://security-metadata.canonical.com/vex/) | ~54K (per-CVE in `vex-all.tar.xz`) | PURL (`pkg:deb/ubuntu/<name>?distro=ubuntu-<v>`) |
-| Ubuntu | OVAL | [security-metadata.canonical.com/oval/](https://security-metadata.canonical.com/oval/) | 1 per LTS release (focal / jammy / noble) | PURL (`pkg:deb/ubuntu/<name>?distro=ubuntu-<v>`) |
-| Debian | OVAL | [www.debian.org/security/oval/](https://www.debian.org/security/oval/) | 1 per release (bullseye / bookworm / trixie) | PURL (`pkg:deb/debian/<name>?distro=debian-<n>`) |
+| Vendor | Format | Feed | Identifiers |
+|--------|--------|------|-------------|
+| Red Hat | CSAF VEX | [security.access.redhat.com/data/csaf/v2/vex/](https://security.access.redhat.com/data/csaf/v2/vex/) | PURL + CPE |
+| Red Hat | OVAL | [security.access.redhat.com/data/oval/v2/](https://security.access.redhat.com/data/oval/v2/) | CPE (incl. stream variants) |
+| SUSE | CSAF VEX | [ftp.suse.com/pub/projects/security/csaf-vex/](https://ftp.suse.com/pub/projects/security/csaf-vex/) | CPE |
+| Ubuntu | OpenVEX 0.2.0 | [security-metadata.canonical.com/vex/](https://security-metadata.canonical.com/vex/) | PURL (`pkg:deb/ubuntu/…?distro=…`) |
+| Ubuntu | OVAL | [security-metadata.canonical.com/oval/](https://security-metadata.canonical.com/oval/) | PURL (`pkg:deb/ubuntu/…?distro=…`) |
+| Debian | OVAL | [www.debian.org/security/oval/](https://www.debian.org/security/oval/) | PURL (`pkg:deb/debian/…?distro=…`) |
 
-**Ubuntu has dual sources by design.** Canonical's OpenVEX feed is broad and includes pre-USN triage; their OVAL feed covers ~10% of identifier shapes the OpenVEX feed expresses under different naming conventions (versioned binary packages like `golang-1.20-go`, source vs binary package families). The two are not strict supersets — keeping both gives consumers the union.
-
-Alias sources:
-
-| Vendor | File | Purpose |
-|--------|------|---------|
-| Red Hat | [repository-to-cpe.json](https://security.access.redhat.com/data/metrics/repository-to-cpe.json) | Maps RPM `repository_id` qualifiers → platform CPEs |
-
-## Adding adapters
-
-`config.yaml` has two top-level lists, `adapters:` and `aliases:`:
-
-```yaml
-adapters:
-  - type: csaf
-    id: redhat
-    name: Red Hat
-    url: https://security.access.redhat.com/data/csaf/v2/provider-metadata.json
-  - type: csaf
-    id: suse
-    name: SUSE
-    url: https://www.suse.com/.well-known/csaf/provider-metadata.json
-  - type: redhat-oval
-    id: redhat-oval-rhel-9.6-eus
-    url: https://security.access.redhat.com/data/oval/v2/RHEL9/rhel-9.6-eus.oval.xml.bz2
-  - type: ubuntu-vex
-    id: ubuntu-vex
-    name: Ubuntu (OpenVEX)
-    url: https://security-metadata.canonical.com/vex/vex-all.tar.xz
-  - type: ubuntu-oval
-    id: ubuntu-oval-noble
-    name: Ubuntu 24.04 LTS
-    url: https://security-metadata.canonical.com/oval/com.ubuntu.noble.usn.oval.xml.bz2
-  - type: debian-oval
-    id: debian-oval-bookworm
-    name: Debian 12 (bookworm)
-    url: https://www.debian.org/security/oval/oval-definitions-bookworm.xml.bz2
-
-aliases:
-  - type: redhat-repository-to-cpe
-    id: redhat
-    # url: defaults to security.access.redhat.com/data/metrics/repository-to-cpe.json
-```
-
-**Adapter types currently registered:**
-- `csaf` — any CSAF 2.0 provider (generic)
-- `redhat-oval` — Red Hat OVAL (one URL per adapter entry)
-- `ubuntu-vex` — Canonical OpenVEX 0.2.0 (single tarball at `vex-all.tar.xz`)
-- `ubuntu-oval` — Canonical USN OVAL (one URL per LTS release)
-- `debian-oval` — Debian Security Tracker OVAL (one URL per release)
-
-**Alias fetcher types currently registered:**
-- `redhat-repository-to-cpe` — Red Hat's repository → CPE mapping
-
-Each adapter `id` must be unique across the config (used as the watermark key in `adapter_state`); the `vendor` written onto statements comes from `Adapter.Vendor()`. For CSAF adapters, `Vendor()` returns the same value as `id`. For OVAL adapters, `Vendor()` returns the canonical vendor name (`redhat`, `ubuntu`, `debian`) regardless of which OVAL file the adapter targets, so all statements from one vendor live under one vendor string and are distinguished by `source_format` and (for deb-shaped products) the `?distro=` qualifier on `product_id`.
-
-## Resolver
-
-At query time, user-supplied product identifiers get expanded into candidate base IDs that are matched against `statements.base_id`. Three expansion rules apply:
-
-1. **Direct**: the base form of the input (PURL stripped of `@version` + qualifiers; CPE as-is).
-2. **via_alias**: for PURLs carrying a `repository_id=` qualifier, the CPEs stored in `product_aliases` for that repository.
-3. **via_cpe_prefix**: for CPE inputs, the first 5 CPE 2.2 URI parts (`part:vendor:product:version:update`) with trailing variants dropped. Implements Red Hat's [SECDATA-1220](https://redhat.atlassian.net/browse/SECDATA-1220) matching contract.
-
-Each returned statement carries a `match_reason` field (`direct`, `via_alias`, `via_cpe_prefix`) so consumers can see which rule fired. Stronger reasons win when the same candidate is produced by multiple rules.
-
-## API
-
-Base URL: `https://vex.getreel.dev`. All VEX-statement-emitting endpoints return [OpenVEX 0.2.0](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md). Full field-level reference — every endpoint, every enum value, user-VEX merge semantics — lives in [`docs/api.md`](./docs/api.md).
-
-Quick batch query:
-
-```bash
-curl -X POST https://vex.getreel.dev/v1/statements \
-  -H "Content-Type: application/json" \
-  -d '{
-    "cves": ["CVE-2021-44228"],
-    "products": ["pkg:rpm/redhat/log4j@2.14.0?repository_id=rhel-8-for-x86_64-appstream-rpms"]
-  }'
-```
-
-```json
-{
-  "@context": "https://openvex.dev/ns/v0.2.0",
-  "@id": "https://openvex.dev/docs/public/vex-...",
-  "author": "reel-vex aggregator <vex@getreel.dev>",
-  "role": "aggregator",
-  "version": 1,
-  "statements": [
-    {
-      "vulnerability": {"name": "CVE-2021-44228"},
-      "products": [{"@id": "pkg:rpm/redhat/log4j", "identifiers": {"purl": "pkg:rpm/redhat/log4j"}}],
-      "status": "not_affected",
-      "status_notes": "source_format=csaf; match_reason=via_alias",
-      "justification": "vulnerable_code_not_present",
-      "supplier": "redhat"
-    }
-  ]
-}
-```
-
-`status_notes` carries `source_format=` (which feed) and `match_reason=` (which rule fired) for diagnostic traceability without inventing custom OpenVEX fields. See [`docs/api.md`](./docs/api.md) for `/v1/statements` filter shapes, `/v1/analyze` (SBOM annotation + user-VEX merge), `/v1/stats`, `/v1/ingest`, and the full field reference.
+Ubuntu has two feeds on purpose: the OpenVEX feed is broad, the OVAL feed covers ~10% of package-name shapes the OpenVEX feed spells differently. They aren't strict supersets, so we keep both.
 
 ## Run it yourself
 
-### Docker (recommended)
-
-Prebuilt images are published to Docker Hub on every release, scanned for vulnerabilities before publishing (see `.github/workflows/release.yml`):
-
-- `getreel/vex-hub:<version>` — pinned to a specific release tag
-- `getreel/vex-hub:v0` — latest in the 0.x series
-- `getreel/vex-hub:latest` — latest release
-
-Minimal run:
+### Docker
 
 ```bash
 docker run -d \
@@ -215,7 +73,7 @@ docker run -d \
   serve
 ```
 
-The SQLite database lives in the mounted `data/` directory so it survives container restarts. First boot runs a full ingest (hours for Red Hat's CSAF; minutes for OVAL adapters); subsequent scheduled runs are incremental.
+The database lives in the mounted `data/` directory, so it survives restarts. First boot ingests everything (Red Hat seeds from a bulk archive in minutes; Ubuntu and SUSE take longer). Scheduled runs after that fetch only what changed. Images: `getreel/vex-hub:latest`, `:v0`, or a pinned `:<version>`.
 
 ### From source
 
@@ -224,29 +82,24 @@ go build -o reel-vex ./cmd/server
 ./reel-vex -config config.yaml -db vex.db serve
 ```
 
-`-addr`, `-ingest-interval`, `-admin-token`, and `-limit` are also available; `./reel-vex --help` for the full list. `./reel-vex -db vex.db query CVE-2021-44228` and `./reel-vex -db vex.db stats` query a local database without starting the server.
+Flags (`--help` for all): `-addr`, `-ingest-interval`, `-admin-token`, `-sbom-max-mb`, `-statements-max`. Query a local DB without the server: `./reel-vex -db vex.db query CVE-2021-44228`, `./reel-vex -db vex.db stats`.
+
+## Adding a source
+
+`config.yaml` lists `adapters:` (data sources) and `aliases:` (identifier-translation files). Registered adapter types: `csaf`, `redhat-oval`, `ubuntu-oval`, `debian-oval`, `ubuntu-vex`. The adapter-author guide and per-source quirks are in [`docs/architecture.md`](./docs/architecture.md).
 
 ## Tests
 
 ```bash
-# Unit + package tests
-go test ./...
-
-# Integration tests (builds binary, seeds DB, hits HTTP)
-go test -tags integration ./test/integration/
+go test ./...                                    # unit + package (no network)
+go test -tags integration ./test/integration/   # builds binary, seeds DB, hits HTTP
 ```
 
-All adapters have httptest-backed tests serving committed fixtures, so the test suite doesn't require network access.
+Adapters are tested against committed fixtures over `httptest`, so no network is needed.
 
 ## Contributing
 
-The most impactful contributions:
-
-1. **New CSAF providers.** If a vendor publishes CSAF 2.0 VEX feeds with a `provider-metadata.json` + `changes.csv`, add an entry to `config.yaml` under `adapters:` and open a PR.
-2. **New OVAL sources.** Each new OVAL source means: extending `oval-to-vex` with a `translator.FromXOVAL()` for that vendor, plus a new adapter package under `pkg/source/xoval/`.
-3. **New alias mappings.** Vendor-published identifier translation files (similar to Red Hat's `repository-to-cpe.json`) plug into `pkg/aliases/` as new `Fetcher` implementations.
-
-For other formats (upstream `.vex/` repos, OCI attestations, OpenVEX files), open an issue to discuss before implementing.
+Most useful: new CSAF providers (a `config.yaml` entry), new OVAL sources (a `translator.FromXOVAL()` in the sibling `oval-to-vex` repo + a small adapter), and new alias mappings. For other formats, open an issue first.
 
 ## License
 
