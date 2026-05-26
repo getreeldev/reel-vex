@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -70,7 +71,10 @@ func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 	s.mux.HandleFunc("GET /v1/ingest", s.handleIngestStatus)
 	s.mux.HandleFunc("POST /v1/ingest", s.handleIngestTrigger)
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
-	s.handler = logRequest(gzipResponse(s.mux))
+	// gzip is innermost (closest to the mux) so the request-log records the
+	// uncompressed payload size — a metric that stays consistent regardless of
+	// the client's Accept-Encoding.
+	s.handler = gzipResponse(logRequest(s.mux))
 	return s
 }
 
@@ -229,6 +233,10 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	offset := req.Offset
+	if offset < 0 {
+		offset = 0
+	}
 	filters := db.QueryFilters{
 		ProductBaseIDs: bases,
 		Vendors:        req.Vendors,
@@ -236,7 +244,7 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		Statuses:       req.Statuses,
 		Justifications: req.Justifications,
 		Since:          req.Since,
-		Offset:         req.Offset,
+		Offset:         offset,
 	}
 	// CVE filter only when not in broad mode.
 	if !broadMode {
@@ -251,7 +259,10 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		limit = req.Limit
 	}
 	if limit > 0 {
-		filters.Limit = limit + 1
+		filters.Limit = limit
+		if limit < math.MaxInt {
+			filters.Limit = limit + 1 // probe row; guard against limit+1 overflow
+		}
 	}
 
 	stmts, err := s.db.QueryStatements(filters)
@@ -275,15 +286,15 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 	}
 	doc := openvex.Encode(stmts, baseToInputs, baseToReason)
 	w.Header().Set("Content-Type", "application/json")
-	// Truncation is signalled out-of-band (header + 206) rather than in the
-	// OpenVEX body — the doc must stay schema-valid (no custom fields). A
-	// dropped statement is a CVE trivy --vex won't suppress, so the response
-	// must advertise that it is incomplete; X-Reel-Next-Offset lets the caller
-	// page the remainder.
+	// Truncation is signalled out-of-band via headers (not in the OpenVEX body,
+	// which must stay schema-valid). Status stays 200: an unsolicited 206 with
+	// no Content-Range violates RFC 7233 and can trip strict consumers/proxies
+	// (incl. trivy --vex). A dropped statement is a CVE the consumer won't
+	// suppress, so X-Reel-Truncated flags incompleteness and X-Reel-Next-Offset
+	// lets the caller page the remainder.
 	if truncated {
 		w.Header().Set("X-Reel-Truncated", "true")
-		w.Header().Set("X-Reel-Next-Offset", strconv.Itoa(req.Offset+limit))
-		w.WriteHeader(http.StatusPartialContent)
+		w.Header().Set("X-Reel-Next-Offset", strconv.Itoa(offset+limit))
 	}
 	if err := json.NewEncoder(w).Encode(doc); err != nil {
 		slog.Error("openvex encode failed", "error", err)

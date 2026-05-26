@@ -220,8 +220,8 @@ func TestHandleStatements_Truncation(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	if w.Code != http.StatusPartialContent {
-		t.Fatalf("expected 206 on truncation, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (truncation signalled via header, not 206), got %d", w.Code)
 	}
 	if w.Header().Get("X-Reel-Truncated") != "true" {
 		t.Errorf("expected X-Reel-Truncated: true, got %q", w.Header().Get("X-Reel-Truncated"))

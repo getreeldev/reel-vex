@@ -47,8 +47,6 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa_macbook_intel}"
 HETZNER_SSH_KEY_NAME="${HETZNER_SSH_KEY_NAME:-andrea-macbook-intel}"
 IMAGE_REPO="${IMAGE_REPO:-getreel/vex-hub}"
 DATA_DIR="/opt/reel-vex/data"
-# Headroom: want disk >= DB_size * SAFETY so future ingests/WAL have room.
-SAFETY="${SAFETY:-1.6}"
 # A product almost certainly present, used to smoke-test broad mode.
 VALIDATION_PRODUCT="${VALIDATION_PRODUCT:-pkg:rpm/redhat/kernel}"
 STATE_FILE="${STATE_FILE:-/tmp/vex-rebuild-swap.state}"
@@ -106,7 +104,9 @@ wait_ssh() { # wait_ssh IP
   die "ssh never came up on $1"
 }
 
-# Pick the cheapest server type whose disk fits DB_size * SAFETY.
+# Pick the cheapest x86 server type whose disk fits the given byte size. The
+# caller passes the current (possibly bloated) DB size, which is a conservative
+# floor since a fresh rebuild is smaller.
 recommend_type() { # recommend_type DB_BYTES
   hapi GET "/server_types?per_page=100" | python3 -c '
 import json,sys

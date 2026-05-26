@@ -61,7 +61,7 @@ func Open(path string) (*DB, error) {
 			"_pragma=journal_mode(WAL)",
 			"_pragma=synchronous(NORMAL)",
 			"_pragma=busy_timeout(5000)",
-			"_pragma=cache_size(-262144)", // 256 MB page cache (negative = KiB)
+			"_pragma=cache_size(-262144)",   // 256 MB page cache (negative = KiB)
 			"_pragma=mmap_size(2147483648)", // 2 GB memory-mapped I/O
 			"_pragma=temp_store(MEMORY)",    // ORDER BY sorts / temp btrees in RAM
 		}, "&")
@@ -261,13 +261,18 @@ func (db *DB) QueryStatements(f QueryFilters) ([]Statement, error) {
 		WHERE %s
 		ORDER BY base_id, cve, product_id, source_format
 	`, strings.Join(clauses, " AND "))
-	if f.Limit > 0 {
+	// SQLite only accepts OFFSET alongside a LIMIT, so when an offset is set
+	// without a real limit we pass LIMIT -1 (unbounded) to keep the OFFSET valid.
+	switch {
+	case f.Limit > 0:
 		query += " LIMIT ?"
 		args = append(args, f.Limit)
-		if f.Offset > 0 {
-			query += " OFFSET ?"
-			args = append(args, f.Offset)
-		}
+	case f.Offset > 0:
+		query += " LIMIT -1"
+	}
+	if f.Offset > 0 {
+		query += " OFFSET ?"
+		args = append(args, f.Offset)
 	}
 
 	rows, err := db.db.Query(query, args...)

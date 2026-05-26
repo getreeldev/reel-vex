@@ -317,9 +317,9 @@ func TestStatements_Truncation(t *testing.T) {
 		"limit": 1,
 	})
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusPartialContent {
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 206, got %d: %s", resp.StatusCode, body)
+		t.Fatalf("expected 200 (truncation signalled via header, not 206), got %d: %s", resp.StatusCode, body)
 	}
 	if resp.Header.Get("X-Reel-Truncated") != "true" {
 		t.Errorf("expected X-Reel-Truncated: true, got %q", resp.Header.Get("X-Reel-Truncated"))

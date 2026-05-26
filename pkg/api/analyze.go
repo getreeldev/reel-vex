@@ -229,9 +229,9 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		rewriteAffectsAsBOMLinks(sbom)
 		if truncated {
 			// Broad-mode synthesis hit the -statements-max cap; some CVEs were
-			// dropped. Signal it out-of-band — never silently truncate.
+			// dropped. Signal it out-of-band (header, 200) — never silently
+			// truncate, and never an unsolicited 206 (see handleStatements).
 			w.Header().Set("X-Reel-Truncated", "true")
-			w.WriteHeader(http.StatusPartialContent)
 		}
 		json.NewEncoder(w).Encode(sbom)
 		return

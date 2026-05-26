@@ -46,9 +46,15 @@ func (a *Adapter) syncFromArchive(ctx context.Context, emit func(source.Statemen
 	archiveDate = parseArchiveDate(name)
 
 	slog.Info("csaf bulk archive: downloading", "adapter", a.id, "file", name)
-	body, err := a.fetchArchiveBytes(ctx, a.feedURL+name)
+	body, lastModified, err := a.fetchArchiveBytes(ctx, a.feedURL+name)
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("download archive %s: %w", name, err)
+	}
+	// Prefer the filename date; fall back to the archive's Last-Modified so a
+	// filename-format change can't silently zero the delta floor (which would
+	// otherwise skip the post-archive changes.csv crawl and leave a gap).
+	if archiveDate.IsZero() {
+		archiveDate = lastModified
 	}
 	slog.Info("csaf bulk archive: walking", "adapter", a.id, "compressed_bytes", len(body))
 
@@ -147,21 +153,23 @@ func (a *Adapter) fetchArchiveName(ctx context.Context) (string, error) {
 // fetchArchiveBytes downloads the archive fully into memory. Buffering (rather
 // than streaming HTTP->zstd->tar) keeps the multi-minute local walk from
 // holding the HTTP connection past its deadline — same rationale as ubuntuvex.
-func (a *Adapter) fetchArchiveBytes(ctx context.Context, url string) ([]byte, error) {
+func (a *Adapter) fetchArchiveBytes(ctx context.Context, url string) ([]byte, time.Time, error) {
 	cl := &http.Client{Timeout: archiveHTTPTimeout}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	resp, err := cl.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, time.Time{}, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	lastModified, _ := http.ParseTime(resp.Header.Get("Last-Modified"))
+	body, err := io.ReadAll(resp.Body)
+	return body, lastModified.UTC(), err
 }
 
 // parseArchiveDate extracts the date from "csaf_vex_2026-05-23.tar.zst".

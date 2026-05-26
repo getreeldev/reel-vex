@@ -143,7 +143,7 @@ When the input SBOM's `vulnerabilities[]` is empty or absent, `/v1/analyze` runs
 
 Rule: **empty-in → populate from broad mode; non-empty-in → annotate only.** A SBOM that already carries `vulnerabilities[]` is annotated exactly as before; broad-mode CVEs are never added on top of a populated list.
 
-The synthesised set is capped by `-statements-max` (default 50 000). If the cap is hit, the response is `206 Partial Content` with `X-Reel-Truncated: true` and some CVEs are omitted — re-scope the request (e.g. fewer components) for complete coverage.
+The synthesised set is capped by `-statements-max` (default 50 000). If the cap is hit, the response stays `200 OK` with `X-Reel-Truncated: true` and some CVEs are omitted — re-scope the request (e.g. fewer components) for complete coverage.
 
 ### User-VEX merge semantics
 
@@ -274,7 +274,7 @@ When `products` is absent, no expansion happens and the encoder emits each state
 ### Cap, truncation, and ordering
 
 - Results are capped at the server's `-statements-max` (default **50 000**; `0` = unlimited). A request `limit` lowers — never raises — that ceiling.
-- **If the cap is hit, the response is `206 Partial Content`** with header **`X-Reel-Truncated: true`** and **`X-Reel-Next-Offset: <n>`**; pass that value back as `offset` to fetch the next page. Truncation is signalled only via headers — the OpenVEX body stays schema-valid (no custom fields). A truncated doc is genuinely incomplete: any statement it drops is a CVE `trivy --vex` won't suppress, so always check for `206`/`X-Reel-Truncated` when relying on broad mode for suppression.
+- **If the cap is hit, the response stays `200 OK`** with header **`X-Reel-Truncated: true`** and **`X-Reel-Next-Offset: <n>`**; pass that value back as `offset` to fetch the next page. Truncation is signalled only via headers — the OpenVEX body stays schema-valid (no custom fields), and the status stays 200 (an unsolicited 206 without `Content-Range` would violate RFC 7233 and can trip strict consumers/proxies). A truncated doc is genuinely incomplete: any statement it drops is a CVE `trivy --vex` won't suppress, so always check for `X-Reel-Truncated` when relying on broad mode for suppression.
 - Statements are returned in a deterministic order (`base_id`, `cve`, `product_id`, `source_format`). The doc is byte-identical across refetches when the underlying data hasn't changed — so a cached/attached broad-mode doc is content-addressable and diff-friendly.
 
 ### Compression
