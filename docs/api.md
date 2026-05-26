@@ -28,7 +28,7 @@ The two SBOM-accepting endpoints serve distinct missions:
 
 Every VEX-statement-emitting endpoint (`/v1/statements`, `/v1/analyze` when `user_vex`-only) returns an [OpenVEX 0.2.0](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md) document. There is no opt-in flag and no alternative response format; OpenVEX is the single canonical interchange format reel-vex serves.
 
-Per-feed provenance (`source_format`) and per-statement match reasoning (`match_reason`) are carried in the spec-blessed `status_notes` free-text field. Format: `source_format=<csaf|oval|openvex>; match_reason=<direct|via_alias|via_cpe_prefix|from_user_vex>`. User-sourced rows omit the `source_format=` prefix entirely (no upstream feed).
+Per-feed provenance (`source_format`) and per-statement match reasoning (`match_reason`) are carried in the spec-blessed `status_notes` free-text field. Format: `source_format=<csaf|oval|openvex>; match_reason=<direct|via_alias|via_cpe_prefix|from_user_vex>`, plus `scope=<product @id>` on product-scoped rows (Rancher VEX — see [Product-scoped statements](#product-scoped-statements)). User-sourced rows omit the `source_format=` prefix entirely (no upstream feed).
 
 Empty results return `204 No Content`. OpenVEX 0.2.0's schema requires `statements: minItems 1`, so we cannot emit a valid doc with zero statements; 204 signals "query valid, no statements" without violating the schema.
 
@@ -51,9 +51,9 @@ Empty results return `204 No Content`. OpenVEX 0.2.0's schema requires `statemen
 | `vulnerability.name` | string | The CVE ID (e.g. `CVE-2021-44228`). |
 | `products[]` | array | One or more products covered by this statement. Each carries an `@id` and/or an `identifiers` object with `purl`/`cpe22`/`cpe23`. When the request includes `products` (`/v1/statements`, `/v1/analyze`), the user's input identifier is echoed verbatim into `products[]` so consumers like Trivy that match on PURL see what they sent. |
 | `status` | string | One of the four VEX statuses (see [Status values](#status-values)). |
-| `status_notes` | string | Diagnostic free text: `source_format=<csaf|oval|openvex>; match_reason=<...>`. Empty `source_format=` is omitted on user-sourced rows. |
+| `status_notes` | string | Diagnostic free text: `source_format=<csaf|oval|openvex>; match_reason=<...>`, plus `scope=<product @id>` on product-scoped rows. Empty `source_format=` is omitted on user-sourced rows. |
 | `justification` | string | Required when `status==not_affected`. OpenVEX 0.2.0 enum (see [Justification values](#justification-values)). |
-| `supplier` | string | Vendor identifier (`redhat`, `suse`, `ubuntu`, `debian`). For user-sourced rows, the value the user self-disclosed via the inbound doc's `supplier` field. |
+| `supplier` | string | Vendor identifier (`redhat`, `suse`, `rancher`, `ubuntu`, `debian`). For user-sourced rows, the value the user self-disclosed via the inbound doc's `supplier` field. |
 | `timestamp` | RFC3339 string | When the upstream advisory (or user document) last updated this statement. |
 
 ### Status values
@@ -103,6 +103,17 @@ For PURL-keyed statements, qualifiers behave in two distinct modes:
 | `repository_id` | filter | Stripped from `base_id`; used by the alias resolver to expand to a CPE (`via_alias`). Required on Red Hat queries that need EUS / AUS / E4S coverage. |
 | `arch`, `epoch` | stripped | Not part of identity; ignored when matching. |
 
+### Product-scoped statements
+
+Most feeds are package-level — a statement is about a package, full stop. The Rancher VEX hub is **product-scoped**: a `not_affected` verdict is about a specific image or Go module (the *scope*), and the package it concerns rides in an OpenVEX subcomponent. reel-vex stores the package as the queryable `product_id` / `base_id` and the product `@id` as the row's `scope`.
+
+A scoped statement matches **only when the caller names its scope** — otherwise it is withheld, so a verdict scoped to one image can never suppress the same package for an unrelated one. Supply the scope two ways:
+
+- **`/v1/statements`** — pass the product/image identifier(s) in the `scopes` array. When you POST an SBOM instead, its root subject (`metadata.component`) supplies the scope automatically.
+- **`/v1/analyze`** — the SBOM's `metadata.component` (purl/cpe) is used automatically as the scope, so scanning an image applies exactly the verdicts scoped to it.
+
+With no scope context, only unscoped (package-level) rows are returned — every other feed behaves exactly as before. Scopes are normalised before matching (the OCI `repository_url` is kept, the tag/digest dropped), and a matched scoped row discloses its scope in `status_notes` as `scope=<product @id>`.
+
 ## `POST /v1/analyze`
 
 Single endpoint for SBOM annotation and user-VEX merging. Accepts either or both inputs. Replaces the v0.2.x `/v1/sbom` endpoint.
@@ -136,6 +147,8 @@ Each `user_vex` document must carry `@context = "https://openvex.dev/ns/v0.2.0"`
 | Neither | `400` with `at least one of sbom or user_vex required`. |
 
 **BOM-Link refs.** On the annotated-CycloneDX path, every `vulnerability.affects[].ref` is rewritten from raw PURL to the CycloneDX 1.5 BOM-Link form `urn:cdx:<serialNumber>/<version>#<bom-ref>`, using the input SBOM's `serialNumber`, `version`, and per-component `bom-ref`. This is what `trivy sbom --vex` binds against; without it, Trivy logs `WARN [vex] Unable to parse BOM-Link` and silently drops statements. Best-effort: if the input SBOM is missing `serialNumber`, the component has no `bom-ref`, or the affected ref doesn't map to any component in the SBOM, the original `.ref` is left in place.
+
+**Product-scoped statements.** Vendor statements scoped to a product (Rancher VEX) are applied only when the SBOM's `metadata.component` matches their scope — scanning an image automatically opts in the verdicts scoped to it, and never applies one scoped to a different image. See [Product-scoped statements](#product-scoped-statements).
 
 ### SBOM with no vulnerabilities — broad-mode synthesis
 
@@ -240,6 +253,7 @@ POST /v1/statements
   "source_formats": ["csaf"],                                                  // optional
   "statuses":       ["not_affected", "fixed"],                                 // optional
   "justifications": ["vulnerable_code_not_present"],                           // optional
+  "scopes":         ["pkg:oci/longhorn-engine?repository_url=..."],            // optional; opts in product-scoped statements (Rancher VEX)
   "since":          "2026-01-01T00:00:00Z",                                    // optional, RFC3339
   "limit":          50000,                                                     // optional, clamped to server -statements-max
   "offset":         0                                                          // optional, for paging a truncated result
@@ -259,7 +273,8 @@ POST /v1/statements
 When `sbom` is present, reel-vex extracts:
 
 - **CVEs** from `.vulnerabilities[].id`,
-- **Products** from `.components[].purl` and `.components[].cpe`.
+- **Products** from `.components[].purl` and `.components[].cpe`,
+- **Scope** from `.metadata.component` (the SBOM's root subject) — opts in any product-scoped statements for that image/module (see [Product-scoped statements](#product-scoped-statements)).
 
 Both sets are unioned with any explicit `cves` / `products` the request also carries — so a caller can broaden the query with extras without losing what the SBOM declared. The SBOM body counts against the same body-size cap as `/v1/analyze` (default 5 MB, configurable on the operator side via `-sbom-max-mb`).
 

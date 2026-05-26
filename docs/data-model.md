@@ -28,7 +28,8 @@ CREATE TABLE statements (
     justification TEXT,            -- for not_affected only
     updated       TEXT NOT NULL,   -- RFC3339 from the upstream advisory
     source_format TEXT NOT NULL DEFAULT 'csaf',  -- "csaf" | "oval" | "openvex"
-    PRIMARY KEY (vendor, cve, product_id, source_format)
+    scope         TEXT NOT NULL DEFAULT '',      -- product the verdict is scoped to ('' = unscoped/package-level)
+    PRIMARY KEY (vendor, cve, product_id, source_format, scope)
 );
 
 CREATE TABLE product_aliases (
@@ -45,7 +46,8 @@ CREATE TABLE product_aliases (
 
 ## Notes
 
-- `statements` PK is `(vendor, cve, product_id, source_format)` — the same vendor + CVE + product combo can appear under different upstream feeds (CSAF and OVAL for Red Hat, for example) and both rows are preserved.
+- `statements` PK is `(vendor, cve, product_id, source_format, scope)` — the same vendor + CVE + product combo can appear under different upstream feeds (CSAF and OVAL for Red Hat) and, for product-scoped sources, under different products; all such rows are preserved.
+- `scope` (added in schema v4) restricts a statement to one product context — an OpenVEX product `@id` such as a container image or Go module. It is `''` for every package-level feed (CSAF, OVAL, Canonical OpenVEX), leaving their storage and query behaviour unchanged. Subcomponent-scoped sources (the Rancher VEX hub) set it: the matchable package is stored in `product_id`/`base_id` while `scope` records *which image/module the verdict was made about*. The query layer only surfaces a scoped row when the caller names a matching scope (see [`api.md`](./api.md)), so a verdict scoped to one image never suppresses the same package elsewhere. Normalised via `pkg/csaf.NormalizeScope` (keeps `repository_url`, strips version/digest).
 - `base_id` is the normalized form of `product_id` used by the resolver: PURLs stripped of `@version` and most qualifiers (but `distro` preserved for deb-shaped identity); CPEs as-is. Indexed for `/v1/statements` lookups.
 - `vendors` is display metadata only; runtime data (feed URLs, watermarks) lives in `adapter_state` so multiple adapters under one vendor (e.g., several Red Hat OVAL streams) don't stomp on each other.
 - A `schema_version` table tracks migration state. Forward-migration is automatic on every binary boot; rollback is manual (restore from a pre-upgrade backup).

@@ -25,13 +25,19 @@ Three OVAL adapters share the same fetch/parse flow: Red Hat, Ubuntu, and Debian
 
 The Red Hat OVAL adapter exists to fill the coverage gap that Red Hat's CSAF feed intentionally leaves: EUS / AUS / E4S / SAP / HA / NFV stream-suffix CPEs (see [SECDATA-1181](https://redhat.atlassian.net/browse/SECDATA-1181)). OVAL has them; CSAF doesn't. Ubuntu and Debian don't publish CSAF, so OVAL is the primary feed for those vendors. Ubuntu deb-shaped statements emit `pkg:deb/ubuntu/<name>?distro=ubuntu-<version>` PURLs; Debian emits `pkg:deb/debian/<name>?distro=debian-<N>`. The `distro` qualifier is part of identity — focal `openssl` and noble `openssl` are distinct products with different fix versions.
 
+### OpenVEX adapters
+
+Two adapters consume OpenVEX 0.2.0 documents directly. **Ubuntu** (`ubuntu-vex`) walks Canonical's single `vex-all.tar.xz` tarball of per-CVE documents — a near-superset of the Ubuntu OVAL feed, adding pre-USN triage state. **Rancher** (`rancher-vex`) ingests SUSE's Rancher VEX hub: one consolidated `rancher.openvex.json` of `not_affected` suppressions for SUSE cloud-native product images (Rancher, RKE2, K3s, Harvester, Longhorn). Both stream the document and short-circuit on `Last-Modified` where the host provides it (`raw.githubusercontent.com` does not, so `rancher-vex` re-ingests each cycle — cheap, and `INSERT OR REPLACE` is idempotent).
+
+Rancher statements are **product-scoped**, which is unique among the feeds. Each names a *product* (`products[].@id` — an OCI image or Go module) and the affected package as an OpenVEX *subcomponent*. The adapter stores the subcomponent as the queryable `product_id` / `base_id` and the product `@id` as the row's `scope` (normalised by `pkg/csaf.NormalizeScope` — `repository_url` kept, version/digest stripped). The same package can thus carry opposite verdicts under different images without colliding: `scope` is part of the `statements` primary key (schema v4). The query layer gates on it — a scoped row is returned only when the caller supplies a matching scope, so a verdict scoped to one image never suppresses the same package elsewhere (see [`api.md`](./api.md#product-scoped-statements) and [`data-model.md`](./data-model.md)). Two statement classes are skipped at ingest: non-CVE-named statements (~3%, mostly `SUSE-SU` advisories with no CVE alias — reel-vex keys by CVE) and any product carrying no subcomponent (which would imply an unscoped, global claim).
+
 ### Alias fetchers
 
 Independent from VEX adapters. Each fetcher pulls a vendor-published mapping file and writes rows into `product_aliases`. The first implementation is Red Hat's `repository-to-cpe.json` — lets a scanner querying with a PURL carrying `?repository_id=rhel-8-for-x86_64-appstream-rpms` match VEX statements keyed on `cpe:/a:redhat:enterprise_linux:8::appstream`.
 
 ### Sync strategy
 
-- **First run**: adapters seed their whole feed. Red Hat CSAF downloads its weekly bulk archive (~300 MB) and walks it locally — minutes, not the hours a ~313K-document per-file crawl would take. SUSE has no bulk archive, so it crawls its ~54K documents one at a time. OVAL is one bz2 file per adapter (seconds to minutes); Ubuntu's OpenVEX is a single tarball walk.
+- **First run**: adapters seed their whole feed. Red Hat CSAF downloads its weekly bulk archive (~300 MB) and walks it locally — minutes, not the hours a ~313K-document per-file crawl would take. SUSE has no bulk archive, so it crawls its ~54K documents one at a time. OVAL is one bz2 file per adapter (seconds to minutes); Ubuntu's OpenVEX is a single tarball walk; Rancher's is a single ~80 MB JSON document.
 - **Incremental**: every adapter stores its own watermark in `adapter_state.last_synced`. CSAF adapters skip documents older than their watermark; OVAL adapters HEAD the feed and skip the GET when unchanged.
 - **Batch writes**: statements accumulate in memory and flush to SQLite in batches of 5,000.
 
@@ -55,6 +61,7 @@ reel-vex/
       ubuntuoval/              -- Ubuntu OVAL adapter (wraps oval-to-vex)
       debianoval/              -- Debian OVAL adapter (wraps oval-to-vex)
       ubuntuvex/               -- Canonical OpenVEX 0.2.0 adapter (tarball walk)
+      ranchervex/              -- SUSE Rancher VEX hub adapter (product-scoped OpenVEX)
     aliases/                   -- alias-fetcher framework
       aliases.go               -- Fetcher interface + registry
       redhat.go                -- Red Hat repository-to-cpe.json fetcher
