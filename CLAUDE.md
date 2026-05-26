@@ -63,6 +63,7 @@ User-supplied OpenVEX merging lives in `pkg/uservex/` — in-memory only, never 
 - **No network** in unit tests. Each adapter has an `httptest.Server` serving committed fixtures from `testdata/`.
 - **Integration tests** (`test/integration/`) build the binary, seed a temp DB, and hit the HTTP API end-to-end. Gated behind `-tags integration` so they don't run in default `go test ./...`.
 - New adapter or endpoint = both a unit test (close to the code) and an integration test (full HTTP path).
+- **Live smoke** (opt-in, network): `pkg/source/ranchervex.TestSmoke_LiveFeed` fetches the real Rancher feed and asserts the adapter's invariants against live data — catches upstream restructuring a committed fixture can't. Gated behind `REEL_VEX_SMOKE=1`; skipped in default `go test ./...`. Run: `REEL_VEX_SMOKE=1 go test -run TestSmoke -v ./pkg/source/ranchervex/`.
 
 ## Per-source quirks: where do fixes live?
 

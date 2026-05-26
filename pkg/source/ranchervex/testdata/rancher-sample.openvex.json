@@ -1,0 +1,118 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://example.test/rancher-sample.openvex.json",
+  "author": "SUSE Rancher Security (trimmed real-feed sample)",
+  "timestamp": "2026-01-01T00:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "CVE-2019-11881"
+      },
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/harvester/harvester",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/github.com/rancher/rancher@v0.0.0-20240919204204-3da2ae0cabd1"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The commit version of the dependency in use doesn't have the vulnerable code"
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2019-11881"
+      },
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/rancher/kube-api-auth",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/github.com/rancher/rancher@v0.0.0-20240730202829-9e0cc54e7e3a"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path"
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2019-11881"
+      },
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/rancher/kube-api-auth",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/github.com/rancher/rancher@v0.0.0-20241004204441-d3c434633444"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path"
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2022-41716",
+        "aliases": [
+          "GO-2022-1095"
+        ]
+      },
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/kube-vip/kube-vip/testing/e2e/servicesClient",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/stdlib@v1.19.2"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Govulncheck determined that the vulnerable code isn't called"
+    },
+    {
+      "vulnerability": {
+        "name": "SUSE-SU-2024:0136-1"
+      },
+      "products": [
+        {
+          "@id": "pkg:oci/istio-installer?repository_url=index.docker.io/rancher/istio-installer",
+          "subcomponents": [
+            {
+              "@id": "pkg:rpm/suse/pam"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "Container authenticates via certificates/tokens/OIDC; the PAM library is not called at runtime"
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-m425-mq94-257g"
+      },
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/kubernetes-sigs/cri-tools",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/google.golang.org/grpc@v1.51.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "Upstream confirmed that the affected code is not present in cri-tools - https://github.com/kubernetes-sigs/cri-tools/issues/1285 ."
+    }
+  ]
+}
