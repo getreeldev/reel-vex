@@ -34,6 +34,14 @@ type Statement struct {
 	Justification string
 	Updated       string
 	SourceFormat  string // "csaf", "oval", ... — upstream feed format
+	// Scope restricts a statement to one product context (an OpenVEX product
+	// @id — e.g. a container image). Empty for every package-level feed; set
+	// only for subcomponent-scoped sources (Rancher VEX). Part of the primary
+	// key from schema v4 so the same package+CVE can carry different verdicts
+	// under different products without colliding. Gated at query time —
+	// QueryStatements only returns scoped rows when QueryFilters.Scopes names
+	// a match.
+	Scope string
 }
 
 // Stats holds database coverage statistics.
@@ -141,8 +149,8 @@ func (db *DB) BulkInsert(stmts []Statement) error {
 	defer tx.Rollback()
 
 	prepared, err := tx.Prepare(`
-		INSERT OR REPLACE INTO statements (vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT OR REPLACE INTO statements (vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format, scope)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -162,7 +170,7 @@ func (db *DB) BulkInsert(stmts []Statement) error {
 		if sourceFormat == "" {
 			sourceFormat = "csaf"
 		}
-		if _, err := prepared.Exec(s.Vendor, s.CVE, s.ProductID, base, version, s.IDType, s.Status, s.Justification, s.Updated, sourceFormat); err != nil {
+		if _, err := prepared.Exec(s.Vendor, s.CVE, s.ProductID, base, version, s.IDType, s.Status, s.Justification, s.Updated, sourceFormat, s.Scope); err != nil {
 			return err
 		}
 	}
@@ -212,8 +220,15 @@ type QueryFilters struct {
 	Statuses       []string
 	Justifications []string
 	Since          string
-	Limit          int
-	Offset         int
+	// Scopes authorises product-scoped statements. Empty (the default) returns
+	// only unscoped rows — every package-level feed — so a product-scoped
+	// not_affected (Rancher VEX) is withheld unless the caller names the
+	// product/image it is scanning. When set, a row matches if it is unscoped
+	// OR its scope is in the list. Callers pass already-normalised scopes (see
+	// pkg/csaf.NormalizeScope).
+	Scopes []string
+	Limit  int
+	Offset int
 }
 
 // QueryStatements is the unified VEX statement query primitive — replaces
@@ -224,7 +239,7 @@ func (db *DB) QueryStatements(f QueryFilters) ([]Statement, error) {
 		return nil, nil
 	}
 
-	clauses := make([]string, 0, 7)
+	clauses := make([]string, 0, 8)
 	args := make([]any, 0)
 
 	addIn := func(col string, vals []string) {
@@ -251,12 +266,28 @@ func (db *DB) QueryStatements(f QueryFilters) ([]Statement, error) {
 		args = append(args, f.Since)
 	}
 
+	// Scope gate. Scoped statements (scope != '') only apply when the caller
+	// names a matching scope — the product/image being analysed. With no scope
+	// context, only unscoped rows (every package-level feed) are returned, so a
+	// product-scoped not_affected can never suppress a finding for an unrelated
+	// product. See pkg/csaf.NormalizeScope and pkg/source/ranchervex.
+	if len(f.Scopes) == 0 {
+		clauses = append(clauses, "scope = ''")
+	} else {
+		ph := strings.Repeat("?,", len(f.Scopes))
+		ph = ph[:len(ph)-1]
+		clauses = append(clauses, fmt.Sprintf("(scope = '' OR scope IN (%s))", ph))
+		for _, sc := range f.Scopes {
+			args = append(args, sc)
+		}
+	}
+
 	// Deterministic order: makes LIMIT/OFFSET paging stable and the emitted
 	// VEX document byte-identical across refetches when data is unchanged.
 	// Broad mode filters on base_id via idx_statements_base_id; the sort is a
 	// separate step (acceptable for the fetch-once-and-cache path).
 	query := fmt.Sprintf(`
-		SELECT vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format
+		SELECT vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format, scope
 		FROM statements
 		WHERE %s
 		ORDER BY base_id, cve, product_id, source_format
@@ -459,7 +490,7 @@ func scanStatements(rows *sql.Rows) ([]Statement, error) {
 	for rows.Next() {
 		var s Statement
 		var just, version sql.NullString
-		if err := rows.Scan(&s.Vendor, &s.CVE, &s.ProductID, &s.BaseID, &version, &s.IDType, &s.Status, &just, &s.Updated, &s.SourceFormat); err != nil {
+		if err := rows.Scan(&s.Vendor, &s.CVE, &s.ProductID, &s.BaseID, &version, &s.IDType, &s.Status, &just, &s.Updated, &s.SourceFormat, &s.Scope); err != nil {
 			return nil, err
 		}
 		s.Justification = just.String

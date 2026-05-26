@@ -112,6 +112,9 @@ func seedDB(path string) error {
 	if err := database.UpsertVendor("suse", "SUSE"); err != nil {
 		return err
 	}
+	if err := database.UpsertVendor("rancher", "SUSE Rancher (OpenVEX)"); err != nil {
+		return err
+	}
 
 	stmts := []db.Statement{
 		// CVE-2024-1234: Red Hat, openssl, not_affected
@@ -133,6 +136,12 @@ func seedDB(path string) error {
 
 		// CVE-2024-3333: Red Hat, affected, no justification
 		{Vendor: "redhat", CVE: "CVE-2024-3333", ProductID: "pkg:rpm/redhat/httpd@2.4.57-5.el9", BaseID: "pkg:rpm/redhat/httpd", Version: "2.4.57-5.el9", IDType: "purl", Status: "affected", Updated: "2024-10-01T00:00:00Z", SourceFormat: "csaf"},
+
+		// CVE-2024-7777: Rancher VEX (product-scoped, openvex). The verdict for
+		// this Go module is scoped to the longhorn-engine image; the scope gate
+		// must withhold it unless that image is named (statements) or is the
+		// SBOM root (analyze). See the scope-gate tests below.
+		{Vendor: "rancher", CVE: "CVE-2024-7777", ProductID: "pkg:golang/golang.org/x/net@v0.17.0", BaseID: "pkg:golang/golang.org/x/net", Version: "v0.17.0", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-09-10T00:00:00Z", SourceFormat: "openvex", Scope: "pkg:oci/longhorn-engine?repository_url=registry.suse.com/rancher/longhorn-engine"},
 	}
 
 	return database.BulkInsert(stmts)
@@ -513,14 +522,14 @@ func TestStats(t *testing.T) {
 		t.Fatalf("decode stats: %s\nbody: %s", err, body)
 	}
 
-	if stats["vendors"] != 2 {
-		t.Fatalf("expected 2 vendors, got %d", stats["vendors"])
+	if stats["vendors"] != 3 {
+		t.Fatalf("expected 3 vendors, got %d", stats["vendors"])
 	}
-	if stats["cves"] != 6 {
-		t.Fatalf("expected 6 CVEs, got %d", stats["cves"])
+	if stats["cves"] != 7 {
+		t.Fatalf("expected 7 CVEs, got %d", stats["cves"])
 	}
-	if stats["statements"] != 8 {
-		t.Fatalf("expected 8 statements, got %d", stats["statements"])
+	if stats["statements"] != 9 {
+		t.Fatalf("expected 9 statements, got %d", stats["statements"])
 	}
 }
 
@@ -638,6 +647,116 @@ func TestAnalyze_SBOMOnly_NoMatchReturnsAsIs(t *testing.T) {
 }
 
 // --- /v1/analyze broad-mode synthesis (empty-vulns path, v0.5.1) ---
+
+// --- product-scoped statements (Rancher VEX) + scope gate ---
+
+const longhornImage = "pkg:oci/longhorn-engine?repository_url=registry.suse.com/rancher/longhorn-engine"
+
+// A product-scoped not_affected is withheld when the caller names no scope —
+// it must never suppress findings for an image it wasn't asserted about.
+func TestStatements_ScopeWithheldByDefault(t *testing.T) {
+	resp := post(t, "/v1/statements", map[string]any{
+		"cves": []string{"CVE-2024-7777"},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != 204 {
+		t.Fatalf("expected 204 (scoped row withheld without scope), got %d", resp.StatusCode)
+	}
+}
+
+// Naming the matching scope surfaces the row, with scope= disclosed in status_notes.
+func TestStatements_ScopeMatched(t *testing.T) {
+	resp := post(t, "/v1/statements", map[string]any{
+		"cves":   []string{"CVE-2024-7777"},
+		"scopes": []string{longhornImage},
+	})
+	expectStatus(t, resp, 200)
+	stmts := decodeOpenVEXStatements(t, resp)
+	if len(stmts) != 1 {
+		t.Fatalf("expected 1 scoped statement, got %d", len(stmts))
+	}
+	if stmts[0].Supplier != "rancher" || stmts[0].Status != "not_affected" {
+		t.Errorf("unexpected statement: supplier=%q status=%q", stmts[0].Supplier, stmts[0].Status)
+	}
+	if !strings.Contains(stmts[0].StatusNotes, "scope="+longhornImage) {
+		t.Errorf("status_notes should disclose scope, got %q", stmts[0].StatusNotes)
+	}
+}
+
+// A non-matching scope does not surface the row.
+func TestStatements_ScopeMismatch(t *testing.T) {
+	resp := post(t, "/v1/statements", map[string]any{
+		"cves":   []string{"CVE-2024-7777"},
+		"scopes": []string{"pkg:oci/other?repository_url=r.io/x/other"},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != 204 {
+		t.Fatalf("expected 204 (non-matching scope), got %d", resp.StatusCode)
+	}
+}
+
+// /v1/analyze derives the scope from the SBOM's root component: scanning the
+// longhorn image applies the scoped not_affected to its bundled Go module.
+func TestAnalyze_ScopeGateAppliesForMatchingImage(t *testing.T) {
+	result := analyzeSBOM(t, map[string]any{
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.5",
+		"metadata": map[string]any{
+			"component": map[string]any{
+				"type": "container",
+				"name": "longhorn-engine",
+				"purl": "pkg:oci/longhorn-engine@sha256:deadbeef?repository_url=registry.suse.com/rancher/longhorn-engine",
+			},
+		},
+		"components": []any{
+			map[string]any{"type": "library", "name": "x/net", "purl": "pkg:golang/golang.org/x/net@v0.17.0", "bom-ref": "c1"},
+		},
+	})
+	vulns, ok := result["vulnerabilities"].([]any)
+	if !ok {
+		t.Fatalf("expected synthesised vulnerabilities[], got %v", result["vulnerabilities"])
+	}
+	var found bool
+	for _, raw := range vulns {
+		v := raw.(map[string]any)
+		if v["id"] == "CVE-2024-7777" {
+			found = true
+			a, ok := v["analysis"].(map[string]any)
+			if !ok || a["state"] != "not_affected" {
+				t.Fatalf("expected not_affected analysis on scoped CVE, got %v", v["analysis"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("scoped CVE-2024-7777 should be applied when scanning its image")
+	}
+}
+
+// Scanning a DIFFERENT image must NOT apply the longhorn-scoped verdict, even
+// though the same Go module is present — the over-suppression guard.
+func TestAnalyze_ScopeGateWithheldForOtherImage(t *testing.T) {
+	result := analyzeSBOM(t, map[string]any{
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.5",
+		"metadata": map[string]any{
+			"component": map[string]any{
+				"type": "container",
+				"name": "unrelated",
+				"purl": "pkg:oci/unrelated@sha256:cafe?repository_url=registry.example.com/foo/unrelated",
+			},
+		},
+		"components": []any{
+			map[string]any{"type": "library", "name": "x/net", "purl": "pkg:golang/golang.org/x/net@v0.17.0", "bom-ref": "c1"},
+		},
+	})
+	if v, ok := result["vulnerabilities"].([]any); ok {
+		for _, raw := range v {
+			if raw.(map[string]any)["id"] == "CVE-2024-7777" {
+				t.Fatal("longhorn-scoped CVE leaked onto an unrelated image scan")
+			}
+		}
+	}
+}
 
 func analyzeSBOM(t *testing.T, sbom map[string]any) map[string]any {
 	t.Helper()

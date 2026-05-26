@@ -50,3 +50,41 @@ func SplitPURL(id string) (base, version string) {
 	}
 	return base, version
 }
+
+// NormalizeScope canonicalizes an OpenVEX product identifier for use as a
+// statement *scope* key. Unlike SplitPURL — which strips nearly every
+// qualifier — it preserves the identity-bearing `repository_url` (for pkg:oci
+// the registry/repository *is* the image identity) while dropping the version
+// or digest (the @-suffix), the subpath fragment, and all other qualifiers.
+// Non-PURL identifiers (e.g. CPEs) are returned trimmed and otherwise
+// unchanged.
+//
+// Both the Rancher VEX adapter (at ingest) and the API scope gate (at query
+// time) call this so a scanned image's root component and a stored scope
+// canonicalize to the same string. A normalization mismatch only ever costs a
+// missed suppression, never a false one, so byte-exact qualifier fidelity is
+// not required.
+func NormalizeScope(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" || !strings.HasPrefix(id, "pkg:") {
+		return id
+	}
+
+	var repoURL string
+	if i := strings.IndexByte(id, '?'); i >= 0 {
+		if vals, err := url.ParseQuery(id[i+1:]); err == nil {
+			repoURL = vals.Get("repository_url")
+		}
+		id = id[:i]
+	}
+	if i := strings.IndexByte(id, '#'); i >= 0 {
+		id = id[:i]
+	}
+	if i := strings.LastIndexByte(id, '@'); i >= 0 {
+		id = id[:i]
+	}
+	if repoURL != "" {
+		id += "?repository_url=" + repoURL
+	}
+	return id
+}

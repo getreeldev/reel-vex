@@ -8,7 +8,7 @@ import (
 // currentSchemaVersion is the schema version this binary expects. Each migration
 // brings the database up to the next version; on Open() we apply every
 // migration whose target is higher than the stored version.
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
 
 // migrations lists every forward-only schema migration in order. The index
 // doesn't matter; we use target versions to decide what to run. A migration
@@ -18,6 +18,7 @@ var migrations = []migration{
 	{version: 1, apply: migrateV0ToV1},
 	{version: 2, apply: migrateV1ToV2},
 	{version: 3, apply: migrateV2ToV3},
+	{version: 4, apply: migrateV3ToV4},
 }
 
 type migration struct {
@@ -224,6 +225,70 @@ func migrateV2ToV3(tx *sql.Tx) error {
 	} {
 		if _, err := tx.Exec(ddl); err != nil {
 			return fmt.Errorf("drop column: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateV3ToV4 adds the `scope` column to statements and extends the primary
+// key to (vendor, cve, product_id, source_format, scope).
+//
+// scope holds the OpenVEX product @id that a subcomponent-scoped statement
+// applies to (Rancher VEX hub): the matchable package rides in product_id /
+// base_id while scope records which image/module the verdict was made about.
+// It enters the PK so the same package+CVE can carry different verdicts under
+// different products without colliding — `INSERT OR REPLACE` would otherwise
+// silently overwrite one with another.
+//
+// Every existing row backfills to scope=” — meaning "unscoped, behaves
+// exactly as before" — so all package-level feeds (CSAF, OVAL, Canonical
+// OpenVEX) are untouched both in storage and in query semantics (the query
+// layer returns scope=” rows by default). The statements table always exists
+// by v4 (created in v1), so this is unconditionally a rebuild: SQLite can't
+// add a column to an existing primary key in place. On a freshly-ingested DB
+// the table is empty and the copy is instant; an in-place upgrade pays a
+// one-time full-table rewrite.
+func migrateV3ToV4(tx *sql.Tx) error {
+	if _, err := tx.Exec(`CREATE TABLE statements_v4 (
+		vendor         TEXT NOT NULL,
+		cve            TEXT NOT NULL,
+		product_id     TEXT NOT NULL,
+		base_id        TEXT NOT NULL,
+		version        TEXT,
+		id_type        TEXT NOT NULL,
+		status         TEXT NOT NULL,
+		justification  TEXT,
+		updated        TEXT NOT NULL,
+		source_format  TEXT NOT NULL DEFAULT 'csaf',
+		scope          TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (vendor, cve, product_id, source_format, scope)
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO statements_v4
+		(vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format, scope)
+		SELECT vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format, ''
+		FROM statements`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE statements`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE statements_v4 RENAME TO statements`); err != nil {
+		return err
+	}
+
+	// Indexes are dropped with the old table — recreate them. No index on
+	// scope: it's a residual equality filter applied after the cve/base_id
+	// index has already narrowed the result, and a dedicated index would
+	// double storage on the largest table for no query the planner needs.
+	for _, idx := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_statements_cve ON statements(cve)`,
+		`CREATE INDEX IF NOT EXISTS idx_statements_base_id ON statements(base_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_statements_source ON statements(source_format)`,
+	} {
+		if _, err := tx.Exec(idx); err != nil {
+			return err
 		}
 	}
 	return nil

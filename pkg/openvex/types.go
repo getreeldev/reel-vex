@@ -58,6 +58,14 @@ type Vulnerability struct {
 type Component struct {
 	ID          string       `json:"@id,omitempty"`
 	Identifiers *Identifiers `json:"identifiers,omitempty"`
+	// Subcomponents are the sub-elements of a product the statement actually
+	// concerns — e.g. an OS package or Go module bundled inside a container
+	// image. When present, the product @id scopes the statement and the
+	// subcomponent carries the identifier a scanner matches against an SBOM
+	// component (OpenVEX 0.2.0 subcomponent struct). CollectIdentifiers does
+	// not descend into this field — callers that care about scoping walk it
+	// explicitly (see pkg/source/ranchervex).
+	Subcomponents []Component `json:"subcomponents,omitempty"`
 }
 
 // Identifiers carries per-scheme identifiers. Only purl, cpe22, and cpe23

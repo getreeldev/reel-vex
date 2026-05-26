@@ -136,7 +136,14 @@ type statementsRequest struct {
 	SourceFormats  []string        `json:"source_formats,omitempty"`
 	Statuses       []string        `json:"statuses,omitempty"`
 	Justifications []string        `json:"justifications,omitempty"`
-	Since          string          `json:"since,omitempty"`
+	// Scopes opts product-scoped statements (Rancher VEX) into the result by
+	// naming the product(s)/image(s) being scanned. Without it — and without an
+	// SBOM whose root component supplies the scope — scoped statements are
+	// withheld so a verdict scoped to one image can't suppress the same package
+	// elsewhere. When an SBOM is supplied, its metadata.component scope is added
+	// automatically.
+	Scopes []string `json:"scopes,omitempty"`
+	Since  string   `json:"since,omitempty"`
 	// Limit / Offset paginate the result. Limit is clamped to the server's
 	// configured ceiling (-statements-max); Offset skips that many rows. Both
 	// mainly matter in broad mode, where the result set can be large.
@@ -157,6 +164,10 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
+
+	// rootScopes holds the scope identifiers derived from an SBOM's root
+	// subject (metadata.component); populated in the SBOM block below.
+	var rootScopes []string
 
 	// SBOM input — derive CVEs and products from CycloneDX, union with any
 	// explicit fields the caller also passed.
@@ -200,6 +211,10 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		for p := range purlSet {
 			req.Products = append(req.Products, p)
 		}
+
+		// Scope context from the SBOM's root subject (the scanned image/module)
+		// — authorises product-scoped statements for this product.
+		rootScopes = extractRootScopes(sbom)
 	}
 
 	// Broad mode: no CVEs but products/components present → return every vendor
@@ -237,12 +252,22 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 	if offset < 0 {
 		offset = 0
 	}
+	// Scope set: SBOM-derived root scope(s) plus any the caller named
+	// explicitly (normalised so they match the form stored at ingest).
+	scopes := rootScopes
+	for _, sc := range req.Scopes {
+		if n := csaf.NormalizeScope(sc); n != "" {
+			scopes = append(scopes, n)
+		}
+	}
+
 	filters := db.QueryFilters{
 		ProductBaseIDs: bases,
 		Vendors:        req.Vendors,
 		SourceFormats:  req.SourceFormats,
 		Statuses:       req.Statuses,
 		Justifications: req.Justifications,
+		Scopes:         scopes,
 		Since:          req.Since,
 		Offset:         offset,
 	}

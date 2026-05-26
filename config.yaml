@@ -63,6 +63,19 @@ adapters:
     id: debian-oval-trixie
     name: Debian 13 (trixie)
     url: https://www.debian.org/security/oval/oval-definitions-trixie.xml.bz2
+  # SUSE Rancher VEX Hub (contributed via issue #1): one consolidated OpenVEX
+  # 0.2.0 document of not_affected suppressions for SUSE cloud-native product
+  # images (Rancher, RKE2, K3s, Harvester, Longhorn). Statements are
+  # subcomponent-scoped: the matchable package rides in subcomponents[] and
+  # becomes the row's product_id, while the product image/module is stored as
+  # the row's `scope` and gated at query time (a verdict scoped to one image
+  # never suppresses the same package elsewhere). Non-CVE-named statements
+  # (~3%, mostly SUSE-SU advisories with no CVE alias) are skipped — we key and
+  # serve by CVE. Vendor "rancher", distinct from SUSE CSAF's "suse".
+  - type: rancher-vex
+    id: rancher-vex
+    name: SUSE Rancher (OpenVEX)
+    url: https://raw.githubusercontent.com/rancher/vexhub/main/reports/rancher.openvex.json
 
 aliases:
   - type: redhat-repository-to-cpe

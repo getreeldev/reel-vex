@@ -113,6 +113,7 @@ func runAdapter(ctx context.Context, a source.Adapter, database *db.DB, opts Opt
 			Justification: s.Justification,
 			Updated:       s.Updated.Format(time.RFC3339),
 			SourceFormat:  a.SourceFormat(),
+			Scope:         s.Scope,
 		})
 		processed++
 		if len(batch) >= batchSize {

@@ -100,8 +100,8 @@ func stmtKey(s db.Statement) string {
 //     fallback when the upstream didn't supply one); affected emits a
 //     generic action_statement.
 //   - Supplier carries the source vendor; status_notes carries
-//     source_format + match_reason for diagnostics (reel-vex fields with no
-//     direct OpenVEX equivalent).
+//     source_format + match_reason (+ scope for product-scoped rows) for
+//     diagnostics (reel-vex fields with no direct OpenVEX equivalent).
 func toStatement(s db.Statement, baseToInputs map[string][]string, baseToReason map[string]string) Statement {
 	rawInputs := baseToInputs[s.BaseID]
 	if len(rawInputs) == 0 {
@@ -124,6 +124,12 @@ func toStatement(s db.Statement, baseToInputs map[string][]string, baseToReason 
 	}
 	if reason := baseToReason[s.BaseID]; reason != "" {
 		notesParts = append(notesParts, "match_reason="+reason)
+	}
+	// Product-scoped rows (Rancher VEX) disclose the scope they were asserted
+	// under: the consumer named it (the image being scanned), and surfacing it
+	// makes the conditional nature of the verdict explicit in the document.
+	if s.Scope != "" {
+		notesParts = append(notesParts, "scope="+s.Scope)
 	}
 	notes := strings.Join(notesParts, "; ")
 	out := Statement{

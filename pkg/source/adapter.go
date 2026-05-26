@@ -71,4 +71,12 @@ type Statement struct {
 	Status        string
 	Justification string
 	Updated       time.Time
+	// Scope, when non-empty, restricts the statement to a single product
+	// context — an OpenVEX product @id such as a container image or Go module
+	// (see pkg/csaf.NormalizeScope). The orchestrator stores it on the row and
+	// the query layer only surfaces a scoped statement when the caller supplies
+	// a matching scope, so a product-scoped not_affected never suppresses
+	// findings for an unrelated product. Empty for package-level feeds (CSAF,
+	// OVAL, Canonical OpenVEX); set by the Rancher VEX adapter.
+	Scope string
 }

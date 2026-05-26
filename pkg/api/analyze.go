@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
 	"github.com/getreeldev/reel-vex/pkg/openvex"
 	"github.com/getreeldev/reel-vex/pkg/uservex"
@@ -108,6 +109,13 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Scope context for product-scoped statements (Rancher VEX): the SBOM's
+	// root subject (metadata.component — the scanned image/module). Passing it
+	// authorises scoped statements for *this* product; without it they stay
+	// withheld so they can't suppress findings for an unrelated image. nil for
+	// the user-vex-only path (no SBOM, no product context). See db scope gate.
+	scopes := extractRootScopes(sbom)
+
 	// 3. Build the query inputs for the vendor lookup — union of SBOM-derived
 	//    and user-derived (cves, base_ids). SBOM components run through
 	//    the resolver so via_alias / via_cpe_prefix candidates surface.
@@ -139,7 +147,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	var truncated bool
 	switch {
 	case synthesize && len(queryBases) > 0:
-		filters := db.QueryFilters{ProductBaseIDs: mapKeysSorted(queryBases)}
+		filters := db.QueryFilters{ProductBaseIDs: mapKeysSorted(queryBases), Scopes: scopes}
 		if s.statementsMax > 0 {
 			filters.Limit = s.statementsMax + 1 // +1 to detect truncation
 		}
@@ -159,6 +167,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		vendorStmts, err = s.db.QueryStatements(db.QueryFilters{
 			CVEs:           mapKeysSorted(queryCVEs),
 			ProductBaseIDs: mapKeysSorted(queryBases),
+			Scopes:         scopes,
 		})
 		if err != nil {
 			slog.Error("analyze query failed", "error", err)
@@ -298,6 +307,31 @@ func extractVulnerabilities(sbom map[string]any) map[int]string {
 		}
 	}
 	return result
+}
+
+// extractRootScopes returns the normalized scope identifiers for the SBOM's
+// root subject — metadata.component's purl and/or cpe (the image/module being
+// scanned). These authorise product-scoped vendor statements (Rancher VEX)
+// whose scope matches; without them such statements are withheld. Returns nil
+// when the SBOM has no metadata.component identifier. Normalised via
+// csaf.NormalizeScope so the value matches the scope stored at ingest.
+func extractRootScopes(sbom map[string]any) []string {
+	meta, ok := sbom["metadata"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	comp, ok := meta["component"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	if purl, ok := comp["purl"].(string); ok && purl != "" {
+		out = append(out, csaf.NormalizeScope(purl))
+	}
+	if cpe, ok := comp["cpe"].(string); ok && cpe != "" {
+		out = append(out, csaf.NormalizeScope(cpe))
+	}
+	return out
 }
 
 // annotateSBOM adds VEX analysis to vulnerabilities in the SBOM.

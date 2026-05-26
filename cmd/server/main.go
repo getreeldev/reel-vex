@@ -19,6 +19,7 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/source"
 	"github.com/getreeldev/reel-vex/pkg/source/csafadapter"
 	"github.com/getreeldev/reel-vex/pkg/source/debianoval"
+	"github.com/getreeldev/reel-vex/pkg/source/ranchervex"
 	"github.com/getreeldev/reel-vex/pkg/source/redhatoval"
 	"github.com/getreeldev/reel-vex/pkg/source/ubuntuoval"
 	"github.com/getreeldev/reel-vex/pkg/source/ubuntuvex"
@@ -33,6 +34,7 @@ func registerAdapters() {
 	source.Register(ubuntuoval.Type, ubuntuoval.New)
 	source.Register(ubuntuvex.Type, ubuntuvex.New)
 	source.Register(debianoval.Type, debianoval.New)
+	source.Register(ranchervex.Type, ranchervex.New)
 	aliases.Register(aliases.RedHatRepoToCPEType, aliases.NewRedHatRepoToCPE)
 }
 
