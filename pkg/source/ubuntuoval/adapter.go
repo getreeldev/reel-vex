@@ -22,6 +22,7 @@ import (
 
 	"github.com/getreeldev/oval-to-vex/translator"
 	"github.com/getreeldev/reel-vex/pkg/source"
+	"github.com/getreeldev/reel-vex/pkg/source/httpretry"
 )
 
 // Type is the adapter-type string used in config.yaml.
@@ -43,7 +44,7 @@ func New(cfg source.AdapterConfig) (source.Adapter, error) {
 		id:   cfg.ID,
 		name: name,
 		url:  cfg.URL,
-		http: &http.Client{Timeout: 5 * time.Minute}, // OVAL files are 700KB-1MB compressed, multi-MB uncompressed
+		http: &http.Client{Timeout: 5 * time.Minute, Transport: httpretry.New(nil)}, // OVAL files are 700KB-1MB compressed, multi-MB uncompressed
 	}, nil
 }
 

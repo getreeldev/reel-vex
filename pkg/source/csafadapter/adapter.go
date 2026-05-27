@@ -13,6 +13,7 @@ import (
 
 	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/source"
+	"github.com/getreeldev/reel-vex/pkg/source/httpretry"
 )
 
 // Type is the adapter-type string used in config.yaml.
@@ -30,7 +31,7 @@ func New(cfg source.AdapterConfig) (source.Adapter, error) {
 		id:          cfg.ID,
 		name:        cfg.Name,
 		metadataURL: cfg.URL,
-		http:        &http.Client{Timeout: 60 * time.Second},
+		http:        &http.Client{Timeout: 60 * time.Second, Transport: httpretry.New(nil)},
 	}, nil
 }
 

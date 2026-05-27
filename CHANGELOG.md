@@ -2,6 +2,12 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.6.2] — retry transient feed-fetch failures
+
+### Added
+
+- **`pkg/source/httpretry`**: a shared `http.RoundTripper` that retries idempotent requests (GET/HEAD) on transient failures — network errors and `429`/`500`/`502`/`503`/`504` — with exponential backoff (3 retries, 500 ms → 8 s cap), aborting on context cancellation. Wired into every adapter's HTTP client (Red Hat CSAF + bulk archive, SUSE CSAF, all OVAL streams, Ubuntu OpenVEX, Rancher). Previously a single transient blip (e.g. a CDN `503` on Canonical's `vex-all.tar.xz`) failed the adapter for the whole ingest cycle; on a **cold-start fresh box** (the rebuild-and-swap deploy model) that left the feed's data entirely missing until the next 4 h cycle. Non-idempotent methods are never replayed; the cap and backoff bound the added latency.
+
 ## [0.6.1] — expose truncation headers to browsers
 
 ### Fixed

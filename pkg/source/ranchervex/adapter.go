@@ -44,6 +44,7 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/openvex"
 	"github.com/getreeldev/reel-vex/pkg/source"
+	"github.com/getreeldev/reel-vex/pkg/source/httpretry"
 )
 
 // Type is the adapter-type string used in config.yaml.
@@ -65,7 +66,7 @@ func New(cfg source.AdapterConfig) (source.Adapter, error) {
 		id:   cfg.ID,
 		name: name,
 		url:  cfg.URL,
-		http: &http.Client{Timeout: 15 * time.Minute}, // ~80 MB document; allow slow links
+		http: &http.Client{Timeout: 15 * time.Minute, Transport: httpretry.New(nil)}, // ~80 MB document; allow slow links
 	}, nil
 }
 

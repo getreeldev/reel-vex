@@ -13,6 +13,7 @@ import (
 
 	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/source"
+	"github.com/getreeldev/reel-vex/pkg/source/httpretry"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -154,7 +155,7 @@ func (a *Adapter) fetchArchiveName(ctx context.Context) (string, error) {
 // than streaming HTTP->zstd->tar) keeps the multi-minute local walk from
 // holding the HTTP connection past its deadline — same rationale as ubuntuvex.
 func (a *Adapter) fetchArchiveBytes(ctx context.Context, url string) ([]byte, time.Time, error) {
-	cl := &http.Client{Timeout: archiveHTTPTimeout}
+	cl := &http.Client{Timeout: archiveHTTPTimeout, Transport: httpretry.New(nil)}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, time.Time{}, err
