@@ -103,6 +103,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	// Custom response headers aren't readable by cross-origin JS (e.g. the
+	// vex.getreel.dev playground) unless explicitly exposed — only the CORS
+	// safelist is. The truncation signal is useless to a browser otherwise.
+	w.Header().Set("Access-Control-Expose-Headers", "X-Reel-Truncated, X-Reel-Next-Offset")
 
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)

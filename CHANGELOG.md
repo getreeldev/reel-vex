@@ -2,6 +2,12 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.6.1] — expose truncation headers to browsers
+
+### Fixed
+
+- **`Access-Control-Expose-Headers`** (`pkg/api/handler.go`): the truncation signal (`X-Reel-Truncated`, `X-Reel-Next-Offset`) is now exposed cross-origin. CORS hides all but a small safelist of response headers from browser JS, so a cross-origin client (the `vex.getreel.dev` playground) couldn't read truncation at all — a broad-mode/components-only-SBOM query capped at `-statements-max` looked like a complete result. curl/Go/Trivy were unaffected (CORS gates browsers only). The cap itself is unchanged.
+
 ## [0.6.0] — SUSE Rancher VEX hub (product-scoped statements)
 
 Adds a `rancher-vex` adapter for SUSE's Rancher VEX hub (`github.com/rancher/vexhub`) — a single consolidated OpenVEX 0.2.0 document of `not_affected` suppressions for SUSE cloud-native product images (Rancher, RKE2, K3s, Harvester, Longhorn). These statements are **product-scoped**, a model new to reel-vex: the product (`products[].@id` — an OCI image or Go module) is the context a verdict was made in, and the affected package rides in an OpenVEX *subcomponent*. To represent this faithfully without over-claiming, statements gain a `scope` dimension.

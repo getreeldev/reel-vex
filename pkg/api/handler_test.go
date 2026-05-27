@@ -561,6 +561,13 @@ func TestCORS(t *testing.T) {
 	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
 		t.Fatal("missing CORS header")
 	}
+	// Truncation headers must be exposed or a cross-origin browser can't read them.
+	expose := w.Header().Get("Access-Control-Expose-Headers")
+	for _, h := range []string{"X-Reel-Truncated", "X-Reel-Next-Offset"} {
+		if !strings.Contains(expose, h) {
+			t.Fatalf("Access-Control-Expose-Headers missing %q (got %q)", h, expose)
+		}
+	}
 }
 
 // TestHandleAnalyze_SBOMOnly covers the analyze endpoint with only an SBOM
