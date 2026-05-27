@@ -32,6 +32,8 @@
 package ranchervex
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -149,12 +151,23 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 		return fmt.Errorf("GET %s: HTTP %d", a.url, getResp.StatusCode)
 	}
 
+	// rancher.openvex.json (~100 MB) is stored in Git LFS. When the upstream
+	// repo's LFS bandwidth quota is exhausted, raw.githubusercontent.com serves
+	// the LFS *pointer* (a tiny text file starting with
+	// "version https://git-lfs.github.com/spec/...") instead of the document.
+	// Detect it and fail clearly rather than feeding the pointer to the JSON
+	// decoder, which only reports a cryptic "invalid character 'v'".
+	br := bufio.NewReader(getResp.Body)
+	if head, _ := br.Peek(40); bytes.HasPrefix(head, []byte("version https://git-lfs.github.com/spec")) {
+		return fmt.Errorf("rancher feed returned a Git LFS pointer, not the document: the upstream repo's LFS bandwidth is likely exhausted (GitHub serves the pointer when the quota is hit). Retry after the quota resets, or fetch via an LFS-aware path")
+	}
+
 	fallback := lastModified
 	if fallback.IsZero() {
 		fallback = time.Now().UTC()
 	}
 
-	counts, err := a.streamStatements(ctx, getResp.Body, fallback, emit)
+	counts, err := a.streamStatements(ctx, br, fallback, emit)
 	if err != nil {
 		return err
 	}

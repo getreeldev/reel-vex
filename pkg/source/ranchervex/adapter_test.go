@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,6 +42,28 @@ func serveDoc(t *testing.T, payload []byte, lastModified time.Time) (*httptest.S
 		w.Write(payload)
 	})
 	return httptest.NewServer(mux), &getCalls
+}
+
+// TestAdapter_Sync_LFSPointerError: when the feed is a Git-LFS-backed file and
+// the upstream repo's LFS bandwidth is exhausted, raw.githubusercontent.com
+// serves the LFS pointer instead of the document. The adapter must report that
+// clearly, not as a cryptic JSON parse error.
+func TestAdapter_Sync_LFSPointerError(t *testing.T) {
+	pointer := []byte("version https://git-lfs.github.com/spec/v1\noid sha256:c0bf822569c3\nsize 105001115\n")
+	server, _ := serveDoc(t, pointer, time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC))
+	defer server.Close()
+
+	a, err := New(source.AdapterConfig{Type: Type, ID: "rancher-vex", URL: server.URL + feedPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = a.Sync(context.Background(), time.Time{}, func(source.Statement) error { return nil })
+	if err == nil {
+		t.Fatal("expected an error for an LFS pointer body, got nil")
+	}
+	if !strings.Contains(err.Error(), "Git LFS pointer") {
+		t.Fatalf("want a clear LFS-pointer error, got: %v", err)
+	}
 }
 
 // scopedProduct builds a product Component with subcomponents.

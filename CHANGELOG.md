@@ -2,6 +2,12 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.6.4] — Unreleased — clearer rancher Git-LFS-pointer error
+
+### Changed
+
+- **rancher-vex: detect a Git LFS pointer** (`pkg/source/ranchervex/adapter.go`): `rancher.openvex.json` (~100 MB) is stored in Git LFS, and `raw.githubusercontent.com` serves the LFS *pointer* (a tiny `version https://git-lfs.github.com/spec/…` text file) instead of the document when the upstream repo's LFS bandwidth quota is exhausted. The adapter now detects the pointer and fails with a clear, actionable message instead of the cryptic `invalid character 'v'` JSON-parse error. A failed cycle leaves existing rancher data untouched (watermark preserved). Actually *resolving* the pointer via an LFS-aware fetch is a separate follow-up.
+
 ## [0.6.3] — skip rewriting unchanged statements on ingest
 
 ### Changed
