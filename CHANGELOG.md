@@ -2,7 +2,7 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
-## [0.6.3] — Unreleased — skip rewriting unchanged statements on ingest
+## [0.6.3] — skip rewriting unchanged statements on ingest
 
 ### Changed
 
