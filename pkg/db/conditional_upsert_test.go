@@ -104,4 +104,31 @@ func TestConditionalUpsert_NullSafety(t *testing.T) {
 	if got := oneRow(t, d, cveB); got.Version != "" {
 		t.Errorf("value->NULL not detected: version=%q, want empty", got.Version)
 	}
+
+	// justification is the other change-test column. Via BulkInsert it's never
+	// NULL (only version gets the nil-conversion), so this exercises the
+	// reachable empty<->value transition — version above covers true NULL.
+	const cveC = "CVE-2024-0005"
+	cc := Statement{Vendor: "ubuntu", CVE: cveC, ProductID: "pkg:deb/ubuntu/c", BaseID: "pkg:deb/ubuntu/c", IDType: "purl", Status: "not_affected", Justification: "", Updated: "2024-01-01T00:00:00Z", SourceFormat: "openvex"}
+	if err := d.BulkInsert([]Statement{cc}); err != nil {
+		t.Fatal(err)
+	}
+	cc2 := cc
+	cc2.Justification = "vulnerable_code_not_present" // NULL -> value
+	cc2.Updated = "2024-06-01T00:00:00Z"
+	if err := d.BulkInsert([]Statement{cc2}); err != nil {
+		t.Fatal(err)
+	}
+	if got := oneRow(t, d, cveC); got.Justification != "vulnerable_code_not_present" {
+		t.Errorf("justification NULL->value not detected: %q", got.Justification)
+	}
+	cc3 := cc2
+	cc3.Justification = "" // value -> NULL
+	cc3.Updated = "2024-09-01T00:00:00Z"
+	if err := d.BulkInsert([]Statement{cc3}); err != nil {
+		t.Fatal(err)
+	}
+	if got := oneRow(t, d, cveC); got.Justification != "" {
+		t.Errorf("justification value->NULL not detected: %q", got.Justification)
+	}
 }
