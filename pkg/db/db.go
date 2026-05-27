@@ -148,9 +148,32 @@ func (db *DB) BulkInsert(stmts []Statement) error {
 	}
 	defer tx.Rollback()
 
+	// Conditional upsert: rewrite a row only when a verdict-bearing column
+	// actually changed. INSERT OR REPLACE rewrote every row unconditionally,
+	// so re-walking a monolithic feed (Canonical's tarball, Rancher) re-upserted
+	// all ~164M rows even on a no-op republish — hours of WAL churn for nothing.
+	// The WHERE makes an unchanged row a true no-op (no write, no index update).
+	//
+	// `updated` is deliberately NOT in the change-test: vendors may bump every
+	// statement's timestamp on each republish, which would defeat the skip. So
+	// `updated` here means "when the verdict last materially changed", and a
+	// timestamp-only bump is skipped. `IS NOT` (not `!=`) is null-safe — version
+	// and justification are nullable, and `!=` would miss NULL<->value changes.
 	prepared, err := tx.Prepare(`
-		INSERT OR REPLACE INTO statements (vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format, scope)
+		INSERT INTO statements (vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format, scope)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(vendor, cve, product_id, source_format, scope) DO UPDATE SET
+			base_id=excluded.base_id,
+			version=excluded.version,
+			id_type=excluded.id_type,
+			status=excluded.status,
+			justification=excluded.justification,
+			updated=excluded.updated
+		WHERE statements.status        IS NOT excluded.status
+		   OR statements.justification IS NOT excluded.justification
+		   OR statements.base_id       IS NOT excluded.base_id
+		   OR statements.version       IS NOT excluded.version
+		   OR statements.id_type       IS NOT excluded.id_type
 	`)
 	if err != nil {
 		return err

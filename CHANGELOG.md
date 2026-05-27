@@ -2,6 +2,12 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.6.3] — Unreleased — skip rewriting unchanged statements on ingest
+
+### Changed
+
+- **Conditional upsert** (`pkg/db/db.go` `BulkInsert`): ingest now rewrites a row only when a verdict-bearing column (`status`, `justification`, `base_id`, `version`, `id_type`) actually changed — `INSERT … ON CONFLICT(…) DO UPDATE … WHERE … IS NOT excluded.…`. Previously `INSERT OR REPLACE` rewrote every row unconditionally, so re-walking a monolithic feed (Canonical's `vex-all.tar.xz`, Rancher's consolidated doc) re-upserted all ~164M rows on a no-op republish — hours of WAL churn. Unchanged rows are now true no-ops, collapsing a no-change re-walk from hours to minutes. `updated` is deliberately excluded from the change-test, so a timestamp-only bump is skipped and `updated` now tracks the last *material* verdict change; the null-safe `IS NOT` catches NULL↔value transitions on the nullable `version`/`justification` columns. No schema change.
+
 ## [0.6.2] — retry transient feed-fetch failures
 
 ### Added
