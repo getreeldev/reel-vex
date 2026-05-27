@@ -21,13 +21,12 @@ func TestAdapter_RealSample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, _ := serveDoc(t, payload, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
+	// Serve the trimmed real-feed fixture as a single per-package file behind a
+	// one-entry index — exercises the index path against real shapes.
+	files := map[string][]byte{"pkg/sample/scan.openvex.json": payload}
+	server, _ := serveRepo(t, files, nil)
 	defer server.Close()
-
-	a, err := New(source.AdapterConfig{Type: Type, ID: "rancher-vex", URL: server.URL + feedPath})
-	if err != nil {
-		t.Fatal(err)
-	}
+	a := newAdapter(t, server)
 	var stmts []source.Statement
 	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		stmts = append(stmts, s)

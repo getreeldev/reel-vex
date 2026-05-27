@@ -10,8 +10,9 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/source"
 )
 
-// liveFeedURL is the production Rancher VEX hub document.
-const liveFeedURL = "https://raw.githubusercontent.com/rancher/vexhub/main/reports/rancher.openvex.json"
+// liveFeedURL is the production Rancher VEX hub repo index (non-LFS); the
+// adapter walks it to the per-package documents.
+const liveFeedURL = "https://raw.githubusercontent.com/rancher/vexhub/refs/heads/main/index.json"
 
 // TestSmoke_LiveFeed hits the real Rancher VEX hub and checks the adapter's
 // invariants against live data: it ingests end-to-end, every emitted row is
@@ -25,7 +26,7 @@ const liveFeedURL = "https://raw.githubusercontent.com/rancher/vexhub/main/repor
 //	REEL_VEX_SMOKE=1 go test -run TestSmoke -v ./pkg/source/ranchervex/
 func TestSmoke_LiveFeed(t *testing.T) {
 	if os.Getenv("REEL_VEX_SMOKE") == "" {
-		t.Skip("set REEL_VEX_SMOKE=1 to run the live-feed smoke test (~80MB network fetch)")
+		t.Skip("set REEL_VEX_SMOKE=1 to run the live-feed smoke test (walks the live index + hundreds of per-package fetches)")
 	}
 
 	a, err := New(source.AdapterConfig{Type: Type, ID: "rancher-vex", URL: liveFeedURL})

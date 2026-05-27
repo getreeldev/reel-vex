@@ -32,7 +32,6 @@
 package ranchervex
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -40,7 +39,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/getreeldev/reel-vex/pkg/csaf"
@@ -65,18 +66,20 @@ func New(cfg source.AdapterConfig) (source.Adapter, error) {
 		name = "SUSE Rancher (OpenVEX)"
 	}
 	return &Adapter{
-		id:   cfg.ID,
-		name: name,
-		url:  cfg.URL,
-		http: &http.Client{Timeout: 15 * time.Minute, Transport: httpretry.New(nil)}, // ~80 MB document; allow slow links
+		id:      cfg.ID,
+		name:    name,
+		url:     cfg.URL,
+		apiBase: "https://api.github.com",
+		http:    &http.Client{Timeout: 15 * time.Minute, Transport: httpretry.New(nil)}, // many small non-LFS files; allow slow links
 	}, nil
 }
 
 // Adapter streams statements from the Rancher VEX Hub consolidated document.
 type Adapter struct {
-	id   string
-	name string
-	url  string
+	id      string
+	name    string
+	url     string
+	apiBase string // GitHub API base; overridable in tests
 
 	http *http.Client
 }
@@ -108,78 +111,300 @@ func (a *Adapter) Discover(ctx context.Context) (*source.FeedInfo, error) {
 	return &source.FeedInfo{FeedURL: a.url}, nil
 }
 
-// Sync streams VEX statements from the consolidated document. Incremental via
-// Last-Modified: when the server's value is ≤ since, skip the GET entirely.
+// Sync ingests the Rancher VEX hub via its repo index (index.json) — a small,
+// non-LFS manifest mapping each package to a per-package scan.openvex.json. The
+// consolidated reports/rancher.openvex.json is deliberately NOT used: it is
+// Git-LFS-backed, so fetching it draws down the upstream repo's LFS bandwidth
+// quota and breaks (serves the LFS pointer) once that's exhausted. The
+// per-package files are non-LFS and tiny.
 //
-// The document is one JSON object with a large `statements` array; we walk it
-// with a streaming decoder so we never hold all ~140K statements in memory at
-// once. The feed carries no per-statement timestamp, so every emitted row is
-// stamped with the feed's Last-Modified (or now() if absent) — that becomes the
-// adapter watermark for the next incremental cycle.
+// First sync (zero watermark): walk the whole index. Incremental: ask the
+// GitHub commits API what changed since the watermark and fetch only those
+// files — most cycles touch nothing. Both paths emit identical rows (the
+// monolith was just the aggregation of these files), so the DB is self-
+// consistent regardless of which path produced a given statement.
 func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.Statement) error) error {
-	headReq, err := http.NewRequestWithContext(ctx, http.MethodHead, a.url, nil)
+	coords, err := repoCoords(a.url)
 	if err != nil {
 		return err
 	}
-	headResp, err := a.http.Do(headReq)
-	if err != nil {
-		return fmt.Errorf("HEAD %s: %w", a.url, err)
-	}
-	headResp.Body.Close()
-	if headResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HEAD %s: HTTP %d", a.url, headResp.StatusCode)
+
+	var locations []string
+	switch {
+	case since.IsZero():
+		idx, err := a.fetchIndex(ctx)
+		if err != nil {
+			return err
+		}
+		locations = idx.locations()
+		slog.Info("rancher-vex full index seed", "adapter", a.id, "packages", len(locations))
+	default:
+		changed, err := a.changedSince(ctx, coords, since)
+		if err != nil {
+			// A commits-API hiccup shouldn't stall the feed; fall back to a full
+			// index walk (conditional upsert makes the redundant pass cheap).
+			slog.Warn("rancher-vex incremental check failed; falling back to full index",
+				"adapter", a.id, "error", err)
+			idx, ferr := a.fetchIndex(ctx)
+			if ferr != nil {
+				return ferr
+			}
+			locations = idx.locations()
+		} else if len(changed) == 0 {
+			slog.Info("rancher-vex up to date, no changes since watermark", "adapter", a.id, "since", since)
+			return nil
+		} else {
+			locations = changed
+			slog.Info("rancher-vex incremental sync", "adapter", a.id,
+				"changed_files", len(locations), "since", since)
+		}
 	}
 
-	lastModified, _ := http.ParseTime(headResp.Header.Get("Last-Modified"))
-	if lastModified.IsZero() {
-		slog.Warn("no Last-Modified header on Rancher VEX feed; full re-ingest each cycle", "adapter", a.id)
-	} else if !since.IsZero() && !lastModified.After(since) {
-		slog.Info("rancher-vex up to date, skipping GET", "adapter", a.id, "last_modified", lastModified, "since", since)
-		return nil
-	}
-
-	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, a.url, nil)
-	if err != nil {
-		return err
-	}
-	getResp, err := a.http.Do(getReq)
-	if err != nil {
-		return fmt.Errorf("GET %s: %w", a.url, err)
-	}
-	defer getResp.Body.Close()
-	if getResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: HTTP %d", a.url, getResp.StatusCode)
-	}
-
-	// rancher.openvex.json (~100 MB) is stored in Git LFS. When the upstream
-	// repo's LFS bandwidth quota is exhausted, raw.githubusercontent.com serves
-	// the LFS *pointer* (a tiny text file starting with
-	// "version https://git-lfs.github.com/spec/...") instead of the document.
-	// Detect it and fail clearly rather than feeding the pointer to the JSON
-	// decoder, which only reports a cryptic "invalid character 'v'".
-	br := bufio.NewReader(getResp.Body)
-	if head, _ := br.Peek(40); bytes.HasPrefix(head, []byte("version https://git-lfs.github.com/spec")) {
-		return fmt.Errorf("rancher feed returned a Git LFS pointer, not the document: the upstream repo's LFS bandwidth is likely exhausted (GitHub serves the pointer when the quota is hit). Retry after the quota resets, or fetch via an LFS-aware path")
-	}
-
-	fallback := lastModified
-	if fallback.IsZero() {
-		fallback = time.Now().UTC()
-	}
-
-	counts, err := a.streamStatements(ctx, br, fallback, emit)
+	counts, err := a.fetchAndEmit(ctx, coords.rawBase, locations, emit)
 	if err != nil {
 		return err
 	}
 	slog.Info("rancher-vex sync complete", "adapter", a.id,
-		"statements", counts.emitted, "skipped_non_cve", counts.skippedNonCVE, "skipped_no_subcomponent", counts.skippedNoSub)
+		"statements", counts.emitted, "skipped_non_cve", counts.skippedNonCVE,
+		"skipped_no_subcomponent", counts.skippedNoSub, "files_failed", counts.filesFailed)
 	return nil
+}
+
+// indexManifest is the top-level index.json: each package points at its
+// per-package OpenVEX document (a repo-relative path).
+type indexManifest struct {
+	Packages []struct {
+		ID       string `json:"id"`
+		Location string `json:"location"`
+	} `json:"packages"`
+}
+
+func (m indexManifest) locations() []string {
+	locs := make([]string, 0, len(m.Packages))
+	for _, p := range m.Packages {
+		if p.Location != "" {
+			locs = append(locs, p.Location)
+		}
+	}
+	return locs
+}
+
+// repoSpec holds the GitHub coordinates derived from the configured index URL.
+type repoSpec struct {
+	owner, repo, ref, rawBase string
+}
+
+// repoCoords parses a raw.githubusercontent.com index URL into the pieces we
+// need for raw per-file fetches and GitHub API calls, e.g.
+//
+//	https://raw.githubusercontent.com/rancher/vexhub/refs/heads/main/index.json
+//	  -> owner=rancher repo=vexhub ref=main
+//	     rawBase=https://raw.githubusercontent.com/rancher/vexhub/refs/heads/main/
+func repoCoords(indexURL string) (repoSpec, error) {
+	u, err := url.Parse(indexURL)
+	if err != nil {
+		return repoSpec{}, fmt.Errorf("parse index url: %w", err)
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 4 {
+		return repoSpec{}, fmt.Errorf("index url %q: want /owner/repo/.../index.json", indexURL)
+	}
+	slash := strings.LastIndex(indexURL, "/")
+	return repoSpec{
+		owner:   parts[0],
+		repo:    parts[1],
+		ref:     parts[len(parts)-2], // the directory that holds index.json
+		rawBase: indexURL[:slash+1],
+	}, nil
+}
+
+// fetchIndex downloads and decodes index.json.
+func (a *Adapter) fetchIndex(ctx context.Context) (indexManifest, error) {
+	var idx indexManifest
+	b, err := a.getBytes(ctx, a.url)
+	if err != nil {
+		return idx, fmt.Errorf("index.json: %w", err)
+	}
+	if err := json.Unmarshal(b, &idx); err != nil {
+		return idx, fmt.Errorf("decode index.json: %w", err)
+	}
+	return idx, nil
+}
+
+// changedSince asks the GitHub commits API which per-package files changed since
+// the watermark, via a single commits listing plus one compare call. Returns
+// nil,nil when nothing changed. Removed files are ignored — the ingest never
+// deletes (a withdrawn suppression lingering is a separate, known follow-up).
+func (a *Adapter) changedSince(ctx context.Context, coords repoSpec, since time.Time) ([]string, error) {
+	api := a.apiBase + "/repos/" + coords.owner + "/" + coords.repo
+	commitsURL := fmt.Sprintf("%s/commits?sha=%s&since=%s&per_page=100",
+		api, url.QueryEscape(coords.ref), url.QueryEscape(since.UTC().Format(time.RFC3339)))
+
+	var commits []struct {
+		SHA     string `json:"sha"`
+		Parents []struct {
+			SHA string `json:"sha"`
+		} `json:"parents"`
+	}
+	if err := a.getAPIJSON(ctx, commitsURL, &commits); err != nil {
+		return nil, err
+	}
+	if len(commits) == 0 {
+		return nil, nil
+	}
+	if len(commits) >= 100 {
+		return nil, fmt.Errorf("≥100 commits since watermark — full reseed is cheaper")
+	}
+	oldest := commits[len(commits)-1]
+	if len(oldest.Parents) == 0 {
+		return nil, fmt.Errorf("oldest commit %.7s has no parent", oldest.SHA)
+	}
+	cmpURL := fmt.Sprintf("%s/compare/%s...%s", api, oldest.Parents[0].SHA, commits[0].SHA)
+
+	var cmp struct {
+		Files []struct {
+			Filename string `json:"filename"`
+			Status   string `json:"status"`
+		} `json:"files"`
+	}
+	if err := a.getAPIJSON(ctx, cmpURL, &cmp); err != nil {
+		return nil, err
+	}
+	var changed []string
+	for _, f := range cmp.Files {
+		if f.Status != "removed" && strings.HasSuffix(f.Filename, "scan.openvex.json") {
+			changed = append(changed, f.Filename)
+		}
+	}
+	return changed, nil
+}
+
+// fetchAndEmit downloads each per-package document concurrently, parses it, and
+// emits its statements. emit is serialised (the orchestrator's emit is not
+// concurrency-safe). A single file failing is logged and skipped; only an
+// all-failed batch is fatal.
+func (a *Adapter) fetchAndEmit(ctx context.Context, rawBase string, locations []string, emit func(source.Statement) error) (syncCounts, error) {
+	var (
+		mu       sync.Mutex
+		counts   syncCounts
+		firstErr error
+	)
+	safeEmit := func(s source.Statement) error {
+		mu.Lock()
+		defer mu.Unlock()
+		return emit(s)
+	}
+
+	workers := 16
+	if len(locations) < workers {
+		workers = len(locations)
+	}
+	jobs := make(chan string)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for loc := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				c, err := a.fetchFile(ctx, rawBase+loc, safeEmit)
+				mu.Lock()
+				counts.emitted += c.emitted
+				counts.skippedNonCVE += c.skippedNonCVE
+				counts.skippedNoSub += c.skippedNoSub
+				if err != nil {
+					counts.filesFailed++
+					if firstErr == nil {
+						firstErr = err
+					}
+				}
+				mu.Unlock()
+				if err != nil {
+					slog.Warn("rancher-vex: per-package file failed; skipping",
+						"adapter", a.id, "file", loc, "error", err)
+				}
+			}
+		}()
+	}
+	for _, loc := range locations {
+		if ctx.Err() != nil {
+			break
+		}
+		jobs <- loc
+	}
+	close(jobs)
+	wg.Wait()
+
+	if ctx.Err() != nil {
+		return counts, ctx.Err()
+	}
+	if len(locations) > 0 && counts.filesFailed == len(locations) {
+		return counts, fmt.Errorf("all %d per-package fetches failed: %w", len(locations), firstErr)
+	}
+	return counts, nil
+}
+
+// fetchFile downloads + parses one per-package document.
+func (a *Adapter) fetchFile(ctx context.Context, rawURL string, emit func(source.Statement) error) (syncCounts, error) {
+	b, err := a.getBytes(ctx, rawURL)
+	if err != nil {
+		return syncCounts{}, err
+	}
+	return a.streamStatements(ctx, bytes.NewReader(b), time.Now().UTC(), emit)
+}
+
+// getBytes GETs a raw file, guards against a Git LFS pointer (served when the
+// upstream LFS quota is exhausted), and returns the body. Files are small, so
+// reading fully is fine.
+func (a *Adapter) getBytes(ctx context.Context, rawURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := a.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GET %s: %w", rawURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %s: HTTP %d", rawURL, resp.StatusCode)
+	}
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", rawURL, err)
+	}
+	if bytes.HasPrefix(b, []byte("version https://git-lfs.github.com/spec")) {
+		return nil, fmt.Errorf("%s returned a Git LFS pointer, not the document (upstream LFS bandwidth likely exhausted)", rawURL)
+	}
+	return b, nil
+}
+
+// getAPIJSON GETs a GitHub API URL (which requires a User-Agent) and decodes it.
+func (a *Adapter) getAPIJSON(ctx context.Context, apiURL string, into any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "reel-vex")
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := a.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("GET %s: %w", apiURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s: HTTP %d", apiURL, resp.StatusCode)
+	}
+	return json.NewDecoder(resp.Body).Decode(into)
 }
 
 type syncCounts struct {
 	emitted       int
 	skippedNonCVE int
 	skippedNoSub  int
+	filesFailed   int
 }
 
 // streamStatements walks the top-level JSON object, decodes the `statements`

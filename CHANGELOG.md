@@ -2,11 +2,15 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
-## [0.6.4] — Unreleased — clearer rancher Git-LFS-pointer error
+## [0.6.4] — Unreleased — rancher-vex consumes the index.json repo format
 
 ### Changed
 
-- **rancher-vex: detect a Git LFS pointer** (`pkg/source/ranchervex/adapter.go`): `rancher.openvex.json` (~100 MB) is stored in Git LFS, and `raw.githubusercontent.com` serves the LFS *pointer* (a tiny `version https://git-lfs.github.com/spec/…` text file) instead of the document when the upstream repo's LFS bandwidth quota is exhausted. The adapter now detects the pointer and fails with a clear, actionable message instead of the cryptic `invalid character 'v'` JSON-parse error. A failed cycle leaves existing rancher data untouched (watermark preserved). Actually *resolving* the pointer via an LFS-aware fetch is a separate follow-up.
+- **rancher-vex switches from the Git-LFS monolith to the `index.json` repo format** (`pkg/source/ranchervex/adapter.go`). It previously fetched the consolidated `reports/rancher.openvex.json` (~100 MB) every cycle; that file is Git-LFS-backed, so the per-cycle re-pull drew down the upstream repo's GitHub LFS bandwidth quota — and once exhausted, `raw.githubusercontent.com` serves the LFS *pointer* (`version https://git-lfs.github.com/spec/…`) instead of the document, breaking ingest. The adapter now walks the small, **non-LFS** `index.json` manifest to the per-package `scan.openvex.json` files (~3–4 KB each). Identical rows (the monolith was just their aggregation) — no data or schema change.
+  - **First sync**: full index walk, fetched via a bounded concurrent worker pool.
+  - **Incremental**: the GitHub commits API (`?since=<watermark>` + one `compare`) reports which per-package files changed; only those are fetched — most cycles touch nothing. Reuses the existing timestamp watermark (no new state).
+  - A per-file Git-LFS-pointer guard remains as a defensive net (clear error, not a cryptic `invalid character 'v'`); individual per-file fetch failures are logged and skipped, not fatal.
+  - **Deploy note (two-part)**: the host `config.yaml` rancher URL must change from `…/reports/rancher.openvex.json` to `…/refs/heads/main/index.json`. Removals aren't reconciled (the ingest never deletes — a separate follow-up).
 
 ## [0.6.3] — skip rewriting unchanged statements on ingest
 
