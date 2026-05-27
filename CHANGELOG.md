@@ -2,11 +2,11 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
-## [0.6.4] — Unreleased — rancher-vex consumes the index.json repo format
+## [0.6.4] — rancher-vex consumes the index.json repo format
 
 ### Changed
 
-- **rancher-vex switches from the Git-LFS monolith to the `index.json` repo format** (`pkg/source/ranchervex/adapter.go`). It previously fetched the consolidated `reports/rancher.openvex.json` (~100 MB) every cycle; that file is Git-LFS-backed, so the per-cycle re-pull drew down the upstream repo's GitHub LFS bandwidth quota — and once exhausted, `raw.githubusercontent.com` serves the LFS *pointer* (`version https://git-lfs.github.com/spec/…`) instead of the document, breaking ingest. The adapter now walks the small, **non-LFS** `index.json` manifest to the per-package `scan.openvex.json` files (~3–4 KB each). Identical rows (the monolith was just their aggregation) — no data or schema change.
+- **rancher-vex switches from the Git-LFS monolith to the `index.json` repo format** (`pkg/source/ranchervex/adapter.go`). It previously fetched the consolidated `reports/rancher.openvex.json` (~100 MB) every cycle; that file is Git-LFS-backed, so the per-cycle re-pull drew down the upstream repo's GitHub LFS bandwidth quota — and once exhausted, `raw.githubusercontent.com` serves the LFS *pointer* (`version https://git-lfs.github.com/spec/…`) instead of the document, breaking ingest. The adapter now walks the small, **non-LFS** `index.json` manifest to the per-package `scan.openvex.json` files (~3–4 KB each). The index is in fact a **superset** of the consolidated report (which was a partial roll-up): a first reseed observed ~+18% more rows over the same scope set — broader, vendor-published, scope-gated coverage, with no schema change.
   - **First sync**: full index walk, fetched via a bounded concurrent worker pool.
   - **Incremental**: the GitHub commits API (`?since=<watermark>` + one `compare`) reports which per-package files changed; only those are fetched — most cycles touch nothing. Reuses the existing timestamp watermark (no new state).
   - A per-file Git-LFS-pointer guard remains as a defensive net (clear error, not a cryptic `invalid character 'v'`); individual per-file fetch failures are logged and skipped, not fatal.
