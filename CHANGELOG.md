@@ -2,7 +2,7 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
-## [0.6.0] — Unreleased — SUSE Rancher VEX hub (product-scoped statements)
+## [0.6.0] — SUSE Rancher VEX hub (product-scoped statements)
 
 Adds a `rancher-vex` adapter for SUSE's Rancher VEX hub (`github.com/rancher/vexhub`) — a single consolidated OpenVEX 0.2.0 document of `not_affected` suppressions for SUSE cloud-native product images (Rancher, RKE2, K3s, Harvester, Longhorn). These statements are **product-scoped**, a model new to reel-vex: the product (`products[].@id` — an OCI image or Go module) is the context a verdict was made in, and the affected package rides in an OpenVEX *subcomponent*. To represent this faithfully without over-claiming, statements gain a `scope` dimension.
 
