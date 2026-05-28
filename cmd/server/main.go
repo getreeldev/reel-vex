@@ -154,6 +154,10 @@ func runStats(dbPath string) error {
 	return nil
 }
 
+// version is the build version, surfaced via /v1/stats. Injected at build time
+// with -ldflags "-X main.version=<tag>"; "dev" for local/CI builds.
+var version = "dev"
+
 func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adminToken string, sbomMaxMB, statementsMax int) error {
 	adapters, fetchers, err := loadPipeline(configPath)
 	if err != nil {
@@ -177,6 +181,7 @@ func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adm
 	apiSrv := api.NewServer(database, runner)
 	apiSrv.SetSBOMMaxBytes(int64(sbomMaxMB) << 20)
 	apiSrv.SetStatementsMax(statementsMax)
+	apiSrv.SetVersion(version)
 
 	srv := &http.Server{
 		Addr:         addr,

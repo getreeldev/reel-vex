@@ -570,6 +570,49 @@ func TestCORS(t *testing.T) {
 	}
 }
 
+// TestHandleStats_Version: /v1/stats carries the server build version when set,
+// alongside the unchanged counts.
+func TestHandleStats_Version(t *testing.T) {
+	database := setupTestDB(t)
+	if _, err := database.RefreshStats(); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(database, nil)
+	srv.SetVersion("v9.9.9")
+
+	req := httptest.NewRequest("GET", "/v1/stats", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d", w.Code)
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["version"] != "v9.9.9" {
+		t.Errorf("version: got %v, want v9.9.9 (body: %s)", resp["version"], w.Body.String())
+	}
+	if _, ok := resp["statements"]; !ok {
+		t.Errorf("stats shape changed — 'statements' missing (body: %s)", w.Body.String())
+	}
+}
+
+// Unset version is omitted, not rendered as empty.
+func TestHandleStats_VersionOmittedWhenUnset(t *testing.T) {
+	database := setupTestDB(t)
+	if _, err := database.RefreshStats(); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(database, nil) // no SetVersion
+	req := httptest.NewRequest("GET", "/v1/stats", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if strings.Contains(w.Body.String(), "version") {
+		t.Errorf("unset version should be omitted, got: %s", w.Body.String())
+	}
+}
+
 // TestHandleAnalyze_SBOMOnly covers the analyze endpoint with only an SBOM
 // in the request — the v0.3.0 successor to /v1/sbom. Output is annotated
 // CycloneDX, byte-stable vs the prior /v1/sbom behaviour.

@@ -52,6 +52,9 @@ type Server struct {
 	// truncated and flagged (HTTP 200 + X-Reel-Truncated). Default 50000; 0
 	// means unlimited. Wired from the -statements-max server flag.
 	statementsMax int
+	// version is the server build version, surfaced in /v1/stats. Set via
+	// SetVersion (wired from a build-time -ldflags var); empty in dev/CI.
+	version string
 }
 
 // NewServer creates a new API server.
@@ -95,6 +98,10 @@ func (s *Server) SetStatementsMax(n int) {
 		s.statementsMax = n
 	}
 }
+
+// SetVersion records the server build version, surfaced in /v1/stats. Wired
+// from a build-time -ldflags var; empty (omitted) when unset, e.g. dev/CI.
+func (s *Server) SetVersion(v string) { s.version = v }
 
 // ServeHTTP implements http.Handler. CORS preflight is short-circuited
 // before the logged handler chain so preflight noise doesn't pollute the
@@ -330,6 +337,14 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// statsResponse is the /v1/stats body: the cached DB counts plus the server
+// build version. Embedding promotes Stats' fields, so the shape is unchanged
+// except for the added (optional) version.
+type statsResponse struct {
+	db.Stats
+	Version string `json:"version,omitempty"`
+}
+
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := s.db.Stats()
 	if err != nil {
@@ -340,7 +355,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	setCacheControl(w, cacheStats)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	json.NewEncoder(w).Encode(statsResponse{Stats: stats, Version: s.version})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

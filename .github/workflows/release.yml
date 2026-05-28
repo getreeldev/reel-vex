@@ -92,6 +92,8 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          build-args: |
+            VERSION=${{ steps.tags.outputs.version }}
           tags: |
             getreel/vex-hub:${{ steps.tags.outputs.version }}
             getreel/vex-hub:${{ steps.tags.outputs.major }}

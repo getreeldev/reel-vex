@@ -2,6 +2,12 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.7.0] — report server version in /v1/stats
+
+### Added
+
+- **Server build version in `/v1/stats`** (`version` field). The version is injected into the binary at build time via `-ldflags "-X main.version=<tag>"` (Dockerfile `ARG VERSION`, set from the release tag in CI); `dev` for local/CI builds. Additive and `omitempty` — existing `/v1/stats` consumers are unaffected. Surfaced so the website can show which version is running.
+
 ## [0.6.4] — rancher-vex consumes the index.json repo format
 
 ### Changed

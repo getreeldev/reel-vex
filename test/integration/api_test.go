@@ -515,21 +515,31 @@ func TestStats(t *testing.T) {
 	resp := get(t, "/v1/stats")
 	expectStatus(t, resp, 200)
 
-	var stats map[string]int
+	// Typed decode: counts are ints, version is a string (added in 0.6.5). The
+	// old map[string]int target choked on the string version field.
+	var stats struct {
+		Vendors    int    `json:"vendors"`
+		CVEs       int    `json:"cves"`
+		Statements int    `json:"statements"`
+		Version    string `json:"version"`
+	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err := json.Unmarshal(body, &stats); err != nil {
 		t.Fatalf("decode stats: %s\nbody: %s", err, body)
 	}
 
-	if stats["vendors"] != 3 {
-		t.Fatalf("expected 3 vendors, got %d", stats["vendors"])
+	if stats.Vendors != 3 {
+		t.Fatalf("expected 3 vendors, got %d", stats.Vendors)
 	}
-	if stats["cves"] != 7 {
-		t.Fatalf("expected 7 CVEs, got %d", stats["cves"])
+	if stats.CVEs != 7 {
+		t.Fatalf("expected 7 CVEs, got %d", stats.CVEs)
 	}
-	if stats["statements"] != 9 {
-		t.Fatalf("expected 9 statements, got %d", stats["statements"])
+	if stats.Statements != 9 {
+		t.Fatalf("expected 9 statements, got %d", stats.Statements)
+	}
+	if stats.Version == "" {
+		t.Fatalf("expected /v1/stats to carry a version field; body: %s", body)
 	}
 }
 
