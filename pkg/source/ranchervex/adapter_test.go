@@ -251,6 +251,34 @@ func TestAdapter_Sync(t *testing.T) {
 	}
 }
 
+// TestAdapter_DocTimestamp: statements carry no timestamp of their own, so the
+// emitted row must inherit the document-level timestamp (vendor assertion time),
+// not fall back to ingest-time now().
+func TestAdapter_DocTimestamp(t *testing.T) {
+	doc := openvex.Document{Context: openvex.Context, Version: 1,
+		Timestamp: "2026-05-12T09:52:44Z",
+		Statements: []openvex.Statement{
+			stmt("CVE-2024-7", "not_affected", "vulnerable_code_not_present",
+				scopedProduct("pkg:golang/github.com/x/y", "pkg:golang/z@v1.0.0")),
+		}}
+	files := map[string][]byte{"pkg/golang/x/scan.openvex.json": mustJSON(t, doc)}
+	server, _ := serveRepo(t, files, nil)
+	defer server.Close()
+	a := newAdapter(t, server)
+
+	var got source.Statement
+	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+		got = s
+		return nil
+	}); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	want, _ := time.Parse(time.RFC3339, "2026-05-12T09:52:44Z")
+	if !got.Updated.Equal(want) {
+		t.Errorf("Updated: got %v, want doc timestamp %v", got.Updated, want)
+	}
+}
+
 // TestAdapter_Incremental covers the commits-API incremental path: nothing
 // changed → skip with zero per-file fetches; a changed file → fetch only it.
 func TestAdapter_Incremental(t *testing.T) {

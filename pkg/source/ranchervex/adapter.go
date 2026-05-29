@@ -59,7 +59,7 @@ func New(cfg source.AdapterConfig) (source.Adapter, error) {
 		return nil, fmt.Errorf("rancher-vex adapter: id required")
 	}
 	if cfg.URL == "" {
-		return nil, fmt.Errorf("rancher-vex adapter %q: url required (point at rancher.openvex.json)", cfg.ID)
+		return nil, fmt.Errorf("rancher-vex adapter %q: url required (point at index.json)", cfg.ID)
 	}
 	name := cfg.Name
 	if name == "" {
@@ -270,6 +270,13 @@ func (a *Adapter) changedSince(ctx context.Context, coords repoSpec, since time.
 	if err := a.getAPIJSON(ctx, cmpURL, &cmp); err != nil {
 		return nil, err
 	}
+	// GitHub's compare endpoint caps `files` at 300 and truncates beyond that
+	// (no pagination in this response). A truncated list would silently drop
+	// changed files; fall back to a full index walk instead, same as the
+	// ≥100-commits guard above. Conditional upsert makes the full pass cheap.
+	if len(cmp.Files) >= 300 {
+		return nil, fmt.Errorf("compare returned ≥300 files (truncated) — full reseed is safer")
+	}
 	var changed []string
 	for _, f := range cmp.Files {
 		if f.Status != "removed" && strings.HasSuffix(f.Filename, "scan.openvex.json") {
@@ -352,7 +359,18 @@ func (a *Adapter) fetchFile(ctx context.Context, rawURL string, emit func(source
 	if err != nil {
 		return syncCounts{}, err
 	}
-	return a.streamStatements(ctx, bytes.NewReader(b), time.Now().UTC(), emit)
+	// OpenVEX statements inherit the document-level timestamp when they carry
+	// none — and Rancher's per-package docs only set it at the document level.
+	// Use it as the per-statement fallback so rows keep the vendor's assertion
+	// time (provenance + ?since= filtering), not ingest time.
+	fallback := time.Now().UTC()
+	var meta struct {
+		Timestamp string `json:"timestamp"`
+	}
+	if json.Unmarshal(b, &meta) == nil {
+		fallback = parseRFC3339(meta.Timestamp, fallback)
+	}
+	return a.streamStatements(ctx, bytes.NewReader(b), fallback, emit)
 }
 
 // getBytes GETs a raw file, guards against a Git LFS pointer (served when the
