@@ -2,6 +2,22 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.7.1] — user-VEX format detection, larger upload cap, rancher-vex hardening
+
+### Added
+
+- **CycloneDX-vocabulary detection on user-VEX upload** (`pkg/uservex`). An OpenVEX-shaped document whose `status`/`justification` values are actually CycloneDX VEX vocabulary (`requires_environment`, `code_not_reachable`, `in_triage`, …) now fails with a single clear "this is CycloneDX — convert to OpenVEX first" error, instead of rejecting one off-spec enum value at a time (whack-a-mole). reel-vex accepts OpenVEX 0.2.0 only; this is the common real-world case where a tool emits an OpenVEX envelope filled with CycloneDX terms.
+
+### Changed
+
+- **SBOM/VEX upload cap raised from 5 MB to 10 MB** (`-sbom-max-mb` default; `/v1/analyze`, `/v1/statements`). Real vendor VEX documents exceed 5 MB, and the old cap forced truncation that yields confusing partial results.
+
+### Fixed
+
+- **rancher-vex incremental sync no longer silently undercounts** (`pkg/source/ranchervex/adapter.go`). When the GitHub `compare` response hits its 300-file cap (truncated, no pagination), the adapter now falls back to a full index walk rather than dropping the overflow files. The commit-count guard alone didn't bound file count.
+- **rancher-vex preserves the vendor assertion timestamp** (`pkg/source/ranchervex/adapter.go`). Rancher's per-package documents set the OpenVEX `timestamp` only at the document level; statements now inherit it instead of being stamped with ingest time — fixing provenance and `/v1/statements?since=` filtering.
+- **rancher-vex `New()` error message** points at `index.json`, not the removed LFS monolith `rancher.openvex.json`.
+
 ## [0.7.0] — report server version in /v1/stats
 
 ### Added
