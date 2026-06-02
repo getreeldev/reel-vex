@@ -2,6 +2,19 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.8.0] — accept CycloneDX VEX on upload (normalised to OpenVEX)
+
+### Added
+
+- **`/v1/analyze` accepts CycloneDX VEX** in `user_vex`, alongside OpenVEX 0.2.0 (`pkg/uservex`). A CycloneDX BOM carrying VEX is converted whole; an OpenVEX envelope that uses CycloneDX status/justification vocabulary (e.g. `requires_environment`) has those values remapped in place. Conversion uses the new [`getreeldev/cyclonedx-to-openvex`](https://github.com/getreeldev/cyclonedx-to-openvex) library and its published, fidelity-flagged crosswalk; every converted statement records provenance in `status_notes` (`converted_from=cyclonedx-vex; original_justification=…; fidelity=lossy`). Lossy mappings (CycloneDX is finer-grained than OpenVEX's five justifications) are flagged, not hidden.
+- **`reject_cyclonedx_lossy` request flag** (default false): strict mode — drop any statement whose mapping isn't exact instead of mapping to the nearest bucket.
+- **`X-Reel-Converted` response header**: counts of converted / lossy / contested / skipped statements, so normalisation is never silent (counts only — user VEX is never logged or persisted).
+
+### Changed
+
+- **Tolerant user-VEX parsing**: a single statement that isn't valid OpenVEX (bad/missing status or justification, no product identifier) is now skipped and counted, not fatal — one malformed row no longer sinks a multi-thousand-statement upload. Numeric limits (docs / statements / products per request) stay hard `400` resource guards.
+- **User-VEX statement cap raised 1000 → 25000** to admit real tool-exported documents under the 10 MB body cap.
+
 ## [0.7.1] — user-VEX format detection, larger upload cap, rancher-vex hardening
 
 ### Added

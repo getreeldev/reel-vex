@@ -42,6 +42,11 @@ type Statement struct {
 	// QueryStatements only returns scoped rows when QueryFilters.Scopes names
 	// a match.
 	Scope string
+	// Notes is transient conversion provenance (e.g. "converted_from=cyclonedx-vex;
+	// original_justification=...; fidelity=lossy") for user-uploaded VEX that was
+	// normalised on the way in. Never a DB column — empty for every stored row,
+	// set only on in-memory user rows and appended to status_notes by the encoder.
+	Notes string
 }
 
 // Stats holds database coverage statistics.

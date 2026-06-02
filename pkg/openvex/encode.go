@@ -131,6 +131,11 @@ func toStatement(s db.Statement, baseToInputs map[string][]string, baseToReason 
 	if s.Scope != "" {
 		notesParts = append(notesParts, "scope="+s.Scope)
 	}
+	// Conversion provenance for user VEX normalised on the way in (CycloneDX ->
+	// OpenVEX). Already in `key=value; ...` shape, so append verbatim.
+	if s.Notes != "" {
+		notesParts = append(notesParts, s.Notes)
+	}
 	notes := strings.Join(notesParts, "; ")
 	out := Statement{
 		Vulnerability: Vulnerability{Name: s.CVE},

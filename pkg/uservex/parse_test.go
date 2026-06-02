@@ -32,7 +32,7 @@ func mustRaw(t *testing.T, s string) json.RawMessage {
 }
 
 func TestParse_HappyPath(t *testing.T) {
-	stmts, err := Parse([]json.RawMessage{mustRaw(t, validDoc)}, time.Now())
+	stmts, _, err := Parse([]json.RawMessage{mustRaw(t, validDoc)}, time.Now(), Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestParse_TimestampFallbackChain(t *testing.T) {
   ]
 }`
 	requestTime := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	stmts, err := Parse([]json.RawMessage{mustRaw(t, docNoStmtTS)}, requestTime)
+	stmts, _, err := Parse([]json.RawMessage{mustRaw(t, docNoStmtTS)}, requestTime, Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestParse_TimestampFallbackChain(t *testing.T) {
     {"vulnerability":{"name":"CVE-X"},"products":[{"@id":"pkg:rpm/x"}],"status":"fixed"}
   ]
 }`
-	stmts, err = Parse([]json.RawMessage{mustRaw(t, docNoTS)}, requestTime)
+	stmts, _, err = Parse([]json.RawMessage{mustRaw(t, docNoTS)}, requestTime, Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,51 +99,115 @@ func TestParse_TimestampFallbackChain(t *testing.T) {
 
 func TestParse_RejectsBadContext(t *testing.T) {
 	bad := `{"@context":"https://wrong.example/","statements":[]}`
-	_, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now())
+	_, _, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now(), Options{})
 	if !errors.Is(err, ErrInvalidContext) {
 		t.Fatalf("expected ErrInvalidContext, got %v", err)
 	}
 }
 
-func TestParse_RejectsInvalidStatus(t *testing.T) {
+func TestParse_SkipsInvalidStatus(t *testing.T) {
 	bad := `{
   "@context": "https://openvex.dev/ns/v0.2.0",
   "statements":[{"vulnerability":{"name":"CVE-X"},"products":[{"@id":"pkg:rpm/x"}],"status":"made_up"}]
 }`
-	_, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now())
-	if !errors.Is(err, ErrInvalidStatus) {
-		t.Fatalf("expected ErrInvalidStatus, got %v", err)
+	stmts, info, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now(), Options{})
+	if err != nil || len(stmts) != 0 || info.Skipped != 1 {
+		t.Fatalf("tolerant skip expected: got stmts=%d skipped=%d err=%v", len(stmts), info.Skipped, err)
 	}
 }
 
-// A CycloneDX-flavoured justification (the real-world case: an OpenVEX-shaped
-// doc carrying CycloneDX analysis.justification values) must surface the
-// format-mismatch error, not the generic invalid-justification one — so the
-// user is told to convert, not to whack-a-mole each bad value.
-func TestParse_DetectsCycloneDXJustification(t *testing.T) {
-	bad := `{
+// An OpenVEX-shaped doc carrying a CycloneDX justification (Pau's real-world
+// case) is now NORMALISED in place via the crosswalk, not rejected:
+// requires_environment -> vulnerable_code_cannot_be_controlled_by_adversary
+// (lossy), with provenance in the row's Notes.
+func TestParse_RemapsCycloneDXJustification(t *testing.T) {
+	doc := `{
   "@context": "https://openvex.dev/ns/v0.2.0",
   "statements":[{"vulnerability":{"name":"CVE-2022-42898"},"products":[{"@id":"pkg:deb/debian/libk5crypto3"}],"status":"not_affected","justification":"requires_environment"}]
 }`
-	_, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now())
-	if !errors.Is(err, ErrCycloneDXVocabulary) {
-		t.Fatalf("expected ErrCycloneDXVocabulary, got %v", err)
+	stmts, info, err := Parse([]json.RawMessage{mustRaw(t, doc)}, time.Now(), Options{})
+	if err != nil {
+		t.Fatalf("expected conversion, got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "requires_environment") {
-		t.Errorf("error should name the offending value, got %v", err)
+	if len(stmts) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(stmts))
+	}
+	if stmts[0].Justification != "vulnerable_code_cannot_be_controlled_by_adversary" {
+		t.Errorf("justification not remapped: got %q", stmts[0].Justification)
+	}
+	if info.Converted != 1 || info.Lossy != 1 {
+		t.Errorf("info: converted=%d lossy=%d (want 1/1)", info.Converted, info.Lossy)
+	}
+	for _, want := range []string{"converted_from=cyclonedx-vex", "original_justification=requires_environment", "fidelity=lossy"} {
+		if !strings.Contains(stmts[0].Notes, want) {
+			t.Errorf("Notes missing %q: got %q", want, stmts[0].Notes)
+		}
 	}
 }
 
-// A CycloneDX analysis.state value must likewise be detected as a format
-// mismatch rather than a generic invalid-status error.
-func TestParse_DetectsCycloneDXState(t *testing.T) {
-	bad := `{
+// A CycloneDX analysis.state in an OpenVEX envelope is likewise remapped:
+// in_triage -> under_investigation (exact, no justification needed).
+func TestParse_RemapsCycloneDXState(t *testing.T) {
+	doc := `{
   "@context": "https://openvex.dev/ns/v0.2.0",
   "statements":[{"vulnerability":{"name":"CVE-X"},"products":[{"@id":"pkg:rpm/x"}],"status":"in_triage"}]
 }`
-	_, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now())
-	if !errors.Is(err, ErrCycloneDXVocabulary) {
-		t.Fatalf("expected ErrCycloneDXVocabulary, got %v", err)
+	stmts, info, err := Parse([]json.RawMessage{mustRaw(t, doc)}, time.Now(), Options{})
+	if err != nil {
+		t.Fatalf("expected conversion, got error: %v", err)
+	}
+	if len(stmts) != 1 || stmts[0].Status != "under_investigation" {
+		t.Fatalf("status not remapped: %+v", stmts)
+	}
+	if info.Converted != 1 {
+		t.Errorf("info.Converted=%d, want 1", info.Converted)
+	}
+}
+
+// RejectLossy drops the lossy mapping instead of normalising it.
+func TestParse_RejectLossyDropsLossy(t *testing.T) {
+	doc := `{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "statements":[{"vulnerability":{"name":"CVE-X"},"products":[{"@id":"pkg:rpm/x"}],"status":"not_affected","justification":"requires_environment"}]
+}`
+	stmts, info, err := Parse([]json.RawMessage{mustRaw(t, doc)}, time.Now(), Options{RejectLossy: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stmts) != 0 || info.Skipped != 1 {
+		t.Errorf("reject-lossy: stmts=%d skipped=%d (want 0/1)", len(stmts), info.Skipped)
+	}
+}
+
+// A genuine CycloneDX BOM in the user_vex slot is converted whole.
+func TestParse_ConvertsCycloneDXBOM(t *testing.T) {
+	bom := `{
+  "bomFormat":"CycloneDX","specVersion":"1.6",
+  "vulnerabilities":[{"id":"CVE-2023-0001","analysis":{"state":"not_affected","justification":"code_not_reachable"},"affects":[{"ref":"pkg:golang/x@v1.0.0"}]}]
+}`
+	stmts, info, err := Parse([]json.RawMessage{mustRaw(t, bom)}, time.Now(), Options{})
+	if err != nil {
+		t.Fatalf("BOM conversion failed: %v", err)
+	}
+	if len(stmts) != 1 || stmts[0].Justification != "vulnerable_code_not_in_execute_path" {
+		t.Fatalf("BOM not converted as expected: %+v", stmts)
+	}
+	if info.Converted != 1 {
+		t.Errorf("info.Converted=%d, want 1", info.Converted)
+	}
+	if !strings.Contains(stmts[0].Notes, "converted_from=cyclonedx-vex") {
+		t.Errorf("BOM row missing conversion provenance: %q", stmts[0].Notes)
+	}
+}
+
+// Plain OpenVEX is left untouched — no conversion, no Notes.
+func TestParse_PlainOpenVEXUntouched(t *testing.T) {
+	stmts, info, err := Parse([]json.RawMessage{mustRaw(t, validDoc)}, time.Now(), Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info.Converted != 0 || stmts[0].Notes != "" {
+		t.Errorf("plain OpenVEX should be untouched: converted=%d notes=%q", info.Converted, stmts[0].Notes)
 	}
 }
 
@@ -152,9 +216,9 @@ func TestParse_NotAffectedRequiresJustification(t *testing.T) {
   "@context": "https://openvex.dev/ns/v0.2.0",
   "statements":[{"vulnerability":{"name":"CVE-X"},"products":[{"@id":"pkg:rpm/x"}],"status":"not_affected"}]
 }`
-	_, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now())
-	if !errors.Is(err, ErrJustificationMissing) {
-		t.Fatalf("expected ErrJustificationMissing, got %v", err)
+	stmts, info, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now(), Options{})
+	if err != nil || len(stmts) != 0 || info.Skipped != 1 {
+		t.Fatalf("tolerant skip expected: got stmts=%d skipped=%d err=%v", len(stmts), info.Skipped, err)
 	}
 }
 
@@ -163,9 +227,9 @@ func TestParse_JustificationOnlyValidWithNotAffected(t *testing.T) {
   "@context": "https://openvex.dev/ns/v0.2.0",
   "statements":[{"vulnerability":{"name":"CVE-X"},"products":[{"@id":"pkg:rpm/x"}],"status":"affected","justification":"vulnerable_code_not_present"}]
 }`
-	_, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now())
-	if !errors.Is(err, ErrJustificationMisplaced) {
-		t.Fatalf("expected ErrJustificationMisplaced, got %v", err)
+	stmts, info, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now(), Options{})
+	if err != nil || len(stmts) != 0 || info.Skipped != 1 {
+		t.Fatalf("tolerant skip expected: got stmts=%d skipped=%d err=%v", len(stmts), info.Skipped, err)
 	}
 }
 
@@ -174,9 +238,9 @@ func TestParse_MissingVulnerabilityName(t *testing.T) {
   "@context": "https://openvex.dev/ns/v0.2.0",
   "statements":[{"vulnerability":{},"products":[{"@id":"pkg:rpm/x"}],"status":"fixed"}]
 }`
-	_, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now())
-	if !errors.Is(err, ErrVulnerabilityNameMissing) {
-		t.Fatalf("expected ErrVulnerabilityNameMissing, got %v", err)
+	stmts, info, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now(), Options{})
+	if err != nil || len(stmts) != 0 || info.Skipped != 1 {
+		t.Fatalf("tolerant skip expected: got stmts=%d skipped=%d err=%v", len(stmts), info.Skipped, err)
 	}
 }
 
@@ -185,9 +249,9 @@ func TestParse_MissingProducts(t *testing.T) {
   "@context": "https://openvex.dev/ns/v0.2.0",
   "statements":[{"vulnerability":{"name":"CVE-X"},"products":[],"status":"fixed"}]
 }`
-	_, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now())
-	if !errors.Is(err, ErrNoProducts) {
-		t.Fatalf("expected ErrNoProducts, got %v", err)
+	stmts, info, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now(), Options{})
+	if err != nil || len(stmts) != 0 || info.Skipped != 1 {
+		t.Fatalf("tolerant skip expected: got stmts=%d skipped=%d err=%v", len(stmts), info.Skipped, err)
 	}
 }
 
@@ -196,9 +260,9 @@ func TestParse_ProductWithoutIdentifier(t *testing.T) {
   "@context": "https://openvex.dev/ns/v0.2.0",
   "statements":[{"vulnerability":{"name":"CVE-X"},"products":[{}],"status":"fixed"}]
 }`
-	_, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now())
-	if !errors.Is(err, ErrProductNoIdentifier) {
-		t.Fatalf("expected ErrProductNoIdentifier, got %v", err)
+	stmts, info, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now(), Options{})
+	if err != nil || len(stmts) != 0 || info.Skipped != 1 {
+		t.Fatalf("tolerant skip expected: got stmts=%d skipped=%d err=%v", len(stmts), info.Skipped, err)
 	}
 }
 
@@ -207,7 +271,7 @@ func TestParse_TooManyDocs(t *testing.T) {
 	for i := range docs {
 		docs[i] = mustRaw(t, validDoc)
 	}
-	_, err := Parse(docs, time.Now())
+	_, _, err := Parse(docs, time.Now(), Options{})
 	if !errors.Is(err, ErrTooManyDocs) || !IsClientError(err) {
 		t.Fatalf("expected ErrTooManyDocs (client error), got %v", err)
 	}
@@ -224,7 +288,7 @@ func TestParse_TooManyStatements(t *testing.T) {
 		b.WriteString(`{"vulnerability":{"name":"CVE-X"},"products":[{"@id":"pkg:rpm/x"}],"status":"fixed"}`)
 	}
 	b.WriteString(`]}`)
-	_, err := Parse([]json.RawMessage{mustRaw(t, b.String())}, time.Now())
+	_, _, err := Parse([]json.RawMessage{mustRaw(t, b.String())}, time.Now(), Options{})
 	if !errors.Is(err, ErrTooManyStatements) || !IsClientError(err) {
 		t.Fatalf("expected ErrTooManyStatements (client error), got %v", err)
 	}
@@ -242,7 +306,7 @@ func TestParse_TooManyProductsPerStatement(t *testing.T) {
 		b.WriteString(`"}`)
 	}
 	b.WriteString(`]}]}`)
-	_, err := Parse([]json.RawMessage{mustRaw(t, b.String())}, time.Now())
+	_, _, err := Parse([]json.RawMessage{mustRaw(t, b.String())}, time.Now(), Options{})
 	if !errors.Is(err, ErrTooManyProducts) || !IsClientError(err) {
 		t.Fatalf("expected ErrTooManyProducts (client error), got %v", err)
 	}
@@ -260,7 +324,7 @@ func TestParse_OneStatementMultipleIdentifiers(t *testing.T) {
     "status":"fixed"
   }]
 }`
-	stmts, err := Parse([]json.RawMessage{mustRaw(t, doc)}, time.Now())
+	stmts, _, err := Parse([]json.RawMessage{mustRaw(t, doc)}, time.Now(), Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -291,7 +355,7 @@ func TestParse_PURLBaseIDPreservesDistroQualifier(t *testing.T) {
     "status":"fixed"
   }]
 }`
-	stmts, err := Parse([]json.RawMessage{mustRaw(t, doc)}, time.Now())
+	stmts, _, err := Parse([]json.RawMessage{mustRaw(t, doc)}, time.Now(), Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -312,7 +376,7 @@ func TestParse_EmptySupplier(t *testing.T) {
     "status":"fixed"
   }]
 }`
-	stmts, err := Parse([]json.RawMessage{mustRaw(t, doc)}, time.Now())
+	stmts, _, err := Parse([]json.RawMessage{mustRaw(t, doc)}, time.Now(), Options{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

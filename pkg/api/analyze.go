@@ -29,6 +29,11 @@ const (
 type analyzeRequest struct {
 	SBOM    json.RawMessage   `json:"sbom,omitempty"`
 	UserVEX []json.RawMessage `json:"user_vex,omitempty"`
+	// RejectCycloneDXLossy makes inbound VEX normalisation strict: CycloneDX
+	// values with no exact OpenVEX equivalent are dropped instead of mapped to
+	// the nearest bucket. Default false = normalise everything (lossy mappings
+	// are flagged in the result's status_notes).
+	RejectCycloneDXLossy bool `json:"reject_cyclonedx_lossy,omitempty"`
 }
 
 // handleAnalyze routes by input shape:
@@ -64,7 +69,9 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	//    is a 422 shape violation.
 	var userStmts []db.Statement
 	if hasUserVEX {
-		parsed, err := uservex.Parse(req.UserVEX, time.Now().UTC())
+		parsed, info, err := uservex.Parse(req.UserVEX, time.Now().UTC(), uservex.Options{
+			RejectLossy: req.RejectCycloneDXLossy,
+		})
 		if err != nil {
 			status := http.StatusUnprocessableEntity
 			if uservex.IsClientError(err) {
@@ -74,6 +81,12 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		userStmts = parsed
+		// Surface inbound CycloneDX->OpenVEX normalisation so it's never silent
+		// (counts only — user VEX content is never logged or echoed elsewhere).
+		if info.Converted > 0 || info.Skipped > 0 {
+			w.Header().Set("X-Reel-Converted", fmt.Sprintf("converted=%d; lossy=%d; contested=%d; skipped=%d",
+				info.Converted, info.Lossy, info.Contested, info.Skipped))
+		}
 	}
 
 	// 2. Decode SBOM (if any) and extract its identifiers + CVE list.

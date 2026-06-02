@@ -126,7 +126,7 @@ Content-Type: application/json
 
 {
   "sbom": { /* CycloneDX 1.4+ */ },                 // optional
-  "user_vex": [                                  // optional; OpenVEX 0.2.0 only (one or more docs)
+  "user_vex": [                                  // optional; OpenVEX 0.2.0 or CycloneDX VEX (normalised to OpenVEX)
     { "@context": "https://openvex.dev/ns/v0.2.0", "statements": [ /* ... */ ] }
   ]
 }
