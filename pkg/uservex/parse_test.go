@@ -116,6 +116,37 @@ func TestParse_RejectsInvalidStatus(t *testing.T) {
 	}
 }
 
+// A CycloneDX-flavoured justification (the real-world case: an OpenVEX-shaped
+// doc carrying CycloneDX analysis.justification values) must surface the
+// format-mismatch error, not the generic invalid-justification one — so the
+// user is told to convert, not to whack-a-mole each bad value.
+func TestParse_DetectsCycloneDXJustification(t *testing.T) {
+	bad := `{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "statements":[{"vulnerability":{"name":"CVE-2022-42898"},"products":[{"@id":"pkg:deb/debian/libk5crypto3"}],"status":"not_affected","justification":"requires_environment"}]
+}`
+	_, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now())
+	if !errors.Is(err, ErrCycloneDXVocabulary) {
+		t.Fatalf("expected ErrCycloneDXVocabulary, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "requires_environment") {
+		t.Errorf("error should name the offending value, got %v", err)
+	}
+}
+
+// A CycloneDX analysis.state value must likewise be detected as a format
+// mismatch rather than a generic invalid-status error.
+func TestParse_DetectsCycloneDXState(t *testing.T) {
+	bad := `{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "statements":[{"vulnerability":{"name":"CVE-X"},"products":[{"@id":"pkg:rpm/x"}],"status":"in_triage"}]
+}`
+	_, err := Parse([]json.RawMessage{mustRaw(t, bad)}, time.Now())
+	if !errors.Is(err, ErrCycloneDXVocabulary) {
+		t.Fatalf("expected ErrCycloneDXVocabulary, got %v", err)
+	}
+}
+
 func TestParse_NotAffectedRequiresJustification(t *testing.T) {
 	bad := `{
   "@context": "https://openvex.dev/ns/v0.2.0",

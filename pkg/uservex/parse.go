@@ -39,9 +39,14 @@ var (
 	ErrTooManyStatements = errors.New("too many user statements")
 	ErrTooManyProducts   = errors.New("too many products in a user statement")
 
-	ErrInvalidContext           = errors.New("user_vex doc has invalid @context (must be https://openvex.dev/ns/v0.2.0)")
-	ErrInvalidStatus            = errors.New("user statement has invalid status")
-	ErrInvalidJustification     = errors.New("user statement has invalid justification")
+	ErrInvalidContext       = errors.New("user_vex doc has invalid @context (must be https://openvex.dev/ns/v0.2.0)")
+	ErrInvalidStatus        = errors.New("user statement has invalid status")
+	ErrInvalidJustification = errors.New("user statement has invalid justification")
+	// ErrCycloneDXVocabulary fires when an off-spec status/justification value
+	// is recognisably CycloneDX VEX vocabulary rather than a typo. reel-vex
+	// accepts OpenVEX 0.2.0 only, so this points the user at conversion instead
+	// of leaving them to whack-a-mole one bad enum value at a time.
+	ErrCycloneDXVocabulary      = errors.New("document uses CycloneDX VEX vocabulary, not OpenVEX 0.2.0 — reel-vex accepts OpenVEX input only; convert the document to OpenVEX before uploading")
 	ErrJustificationMissing     = errors.New("user statement with status=not_affected requires a justification")
 	ErrJustificationMisplaced   = errors.New("user statement justification only valid with status=not_affected")
 	ErrVulnerabilityNameMissing = errors.New("user statement is missing vulnerability.name")

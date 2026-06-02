@@ -43,7 +43,7 @@ type Server struct {
 	handler http.Handler
 	ingest  *IngestRunner
 	// sbomMaxBytes caps body size on SBOM-accepting endpoints
-	// (/v1/analyze, /v1/statements). Default 5MB; override with
+	// (/v1/analyze, /v1/statements). Default 10MB; override with
 	// SetSBOMMaxBytes (wired from the -sbom-max-mb server flag).
 	sbomMaxBytes int64
 	// statementsMax caps the number of statements /v1/statements returns.
@@ -65,8 +65,8 @@ func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 		resolver:      resolver.New(database),
 		mux:           http.NewServeMux(),
 		ingest:        ingest,
-		sbomMaxBytes:  5 << 20, // 5MB default
-		statementsMax: 50000,   // broad-mode safety ceiling; -statements-max overrides
+		sbomMaxBytes:  10 << 20, // 10MB default
+		statementsMax: 50000,    // broad-mode safety ceiling; -statements-max overrides
 	}
 	s.mux.HandleFunc("POST /v1/statements", s.handleStatements)
 	s.mux.HandleFunc("GET /v1/stats", s.handleStats)
@@ -81,7 +81,7 @@ func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 	return s
 }
 
-// SetSBOMMaxBytes overrides the default 5MB body cap for SBOM-accepting
+// SetSBOMMaxBytes overrides the default 10MB body cap for SBOM-accepting
 // endpoints (/v1/analyze, /v1/statements). Production wires this from the
 // -sbom-max-mb server flag. n <= 0 is ignored, preserving the default.
 func (s *Server) SetSBOMMaxBytes(n int64) {
