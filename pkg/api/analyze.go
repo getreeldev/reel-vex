@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -18,6 +20,14 @@ import (
 const (
 	maxSBOMComponents = 50000
 	maxSBOMVulns      = 10000
+	// maxAnalyzeCVEs bounds the CVE-mode vendor query (SBOM-with-vulns or
+	// user_vex). The query cost scales with distinct CVEs × product bases, so a
+	// large upload (e.g. a multi-thousand-statement VEX) can otherwise build a
+	// query that pins the DB. Past this, reject with a clear 400 rather than run
+	// it. Broad mode (components-only) is unaffected — it has no CVE filter and
+	// is bounded by -statements-max. The DB-side queryTimeout is the hard
+	// backstop for anything under this cap that's still slow.
+	maxAnalyzeCVEs = 1000
 )
 
 // analyzeRequest wraps the inputs accepted by /v1/analyze.
@@ -148,6 +158,15 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		queryBases[c.BaseID] = true
 	}
 
+	// Bound the CVE-mode query breadth (see maxAnalyzeCVEs). Reject up front
+	// rather than build a query that scans the table for thousands of CVEs.
+	if len(queryCVEs) > maxAnalyzeCVEs {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf(
+			"analyze input matches too many CVEs (%d > %d) — narrow the products/CVEs or split the document into smaller uploads",
+			len(queryCVEs), maxAnalyzeCVEs))
+		return
+	}
+
 	// 4. Query vendor data. Two shapes, mirroring the scanner combos reel needs:
 	//   - empty-vulns SBOM (components only): BROAD MODE — query every CVE
 	//     touching the components, no CVE filter, then synthesise
@@ -167,6 +186,10 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		var err error
 		vendorStmts, err = s.db.QueryStatements(filters)
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				writeError(w, http.StatusServiceUnavailable, "query timed out — input too broad or server busy; narrow the products/CVEs or split the document")
+				return
+			}
 			slog.Error("analyze broad-mode query failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "query failed")
 			return
@@ -183,6 +206,10 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			Scopes:         scopes,
 		})
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				writeError(w, http.StatusServiceUnavailable, "query timed out — input too broad or server busy; narrow the products/CVEs or split the document")
+				return
+			}
 			slog.Error("analyze query failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "query failed")
 			return

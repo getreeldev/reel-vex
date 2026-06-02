@@ -1,13 +1,20 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+// queryTimeout is the hard ceiling on a single statement query. It bounds the
+// blast radius of an over-broad request (e.g. a large user-VEX analyze that
+// expands to thousands of CVEs) so no one request can pin the DB indefinitely.
+const queryTimeout = 15 * time.Second
 
 // DB wraps a SQLite database for VEX statement storage.
 type DB struct {
@@ -334,7 +341,9 @@ func (db *DB) QueryStatements(f QueryFilters) ([]Statement, error) {
 		args = append(args, f.Offset)
 	}
 
-	rows, err := db.db.Query(query, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+	rows, err := db.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

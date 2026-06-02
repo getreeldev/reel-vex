@@ -2,6 +2,12 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.8.1] — bound /v1/analyze query cost
+
+### Fixed
+
+- **`/v1/analyze` no longer lets a large upload pin the database.** A user-VEX document expanding to many distinct CVEs (a multi-thousand-statement VEX) built a vendor query over (distinct CVEs × product bases) that scanned for minutes — ~175 s observed on the prod-size DB, ending in a client-visible timeout. Two guards: the CVE-mode query is rejected up front with a clear `400` when it would touch more than `maxAnalyzeCVEs` (1000) distinct CVEs ("narrow the products/CVEs or split the document"), and **every statement query now carries a 15 s DB-side timeout** (`QueryStatements` via `QueryContext`) as a hard backstop — a slow query returns `503`, never an indefinite hold. Broad mode (components-only SBOM) is unaffected: no CVE filter, already bounded by `-statements-max`.
+
 ## [0.8.0] — accept CycloneDX VEX on upload (normalised to OpenVEX)
 
 ### Added
