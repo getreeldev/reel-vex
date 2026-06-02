@@ -2,6 +2,12 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.8.4] — skip the boot-time ingest when data is fresh
+
+### Changed
+
+- **The scheduler no longer runs a full ingest on every restart.** `StartScheduler` ingests on boot only when data is stale (last cycle ≥ one interval old, or never ingested); within the interval it skips the boot run and aligns the next run to `last+interval`. Restarts/redeploys no longer trigger the contention-heavy full ingest (the `ubuntu-vex` long pole) that slowed every query and left `/v1/stats` cold. A manual `POST /v1/ingest` still forces a run anytime. To support this, `adapter_state.updated` now records the real cycle time (`now()`) instead of a watermark copy, and `db.LastIngestAt()` reads `MAX(updated)`. No migration — legacy values read as stale, so the first restart after upgrade ingests once and the timestamps self-correct.
+
 ## [0.8.3] — make the /v1/analyze CVE cap a host flag
 
 ### Changed

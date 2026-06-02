@@ -71,28 +71,47 @@ func (r *IngestRunner) Status() IngestStatus {
 	return s
 }
 
-// StartScheduler runs ingest immediately, then on the configured interval.
-// Blocks until ctx is cancelled.
-func (r *IngestRunner) StartScheduler(ctx context.Context) {
+// shouldIngestOnBoot reports whether to run an ingest immediately at startup:
+// when nothing has ever been ingested, or the last cycle is at least one
+// interval old. Data that's still within the interval is left alone, so a
+// restart/redeploy doesn't re-trigger a costly full ingest (and the DB
+// contention + cold stats that come with it).
+func shouldIngestOnBoot(lastIngest time.Time, interval time.Duration, now time.Time) bool {
+	return lastIngest.IsZero() || now.Sub(lastIngest) >= interval
+}
+
+// StartScheduler runs ingest on the configured interval, blocking until ctx is
+// cancelled. On boot it ingests immediately only if data is stale (see
+// shouldIngestOnBoot); otherwise it skips the boot run and aligns the next run
+// to lastIngest+interval, so the cadence survives restarts. A manual
+// POST /v1/ingest can always force a run regardless.
+func (r *IngestRunner) StartScheduler(ctx context.Context, lastIngest time.Time) {
 	slog.Info("ingest scheduler started", "interval", r.interval)
 
-	// Run immediately on boot.
-	r.TriggerIngest()
-
-	ticker := time.NewTicker(r.interval)
-	defer ticker.Stop()
+	delay := r.interval
+	if shouldIngestOnBoot(lastIngest, r.interval, time.Now()) {
+		r.TriggerIngest()
+	} else {
+		delay = r.interval - time.Since(lastIngest)
+		slog.Info("boot ingest skipped; data within schedule window",
+			"last_ingest", lastIngest.Format(time.RFC3339), "next_run_in", delay.Round(time.Second))
+	}
 
 	r.mu.Lock()
-	r.nextRun = time.Now().Add(r.interval)
+	r.nextRun = time.Now().Add(delay)
 	r.mu.Unlock()
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("ingest scheduler stopped")
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			r.TriggerIngest()
+			timer.Reset(r.interval)
 			r.mu.Lock()
 			r.nextRun = time.Now().Add(r.interval)
 			r.mu.Unlock()

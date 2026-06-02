@@ -193,7 +193,15 @@ func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adm
 		IdleTimeout:  60 * time.Second,
 	}
 
-	go runner.StartScheduler(ctx)
+	// Gate the boot ingest on data freshness: a restart within the ingest
+	// interval shouldn't re-run a full (contention-heavy) ingest. Best-effort —
+	// a lookup error yields the zero time, which StartScheduler treats as stale
+	// and ingests, preserving the old always-ingest-on-boot behaviour on doubt.
+	lastIngest, err := database.LastIngestAt()
+	if err != nil {
+		slog.Warn("could not read last ingest time; will ingest on boot", "error", err)
+	}
+	go runner.StartScheduler(ctx, lastIngest)
 
 	// Warm the /v1/stats cache in the background. The first call after restart
 	// would otherwise hit a 30-60s SQL scan on a multi-GB DB before the

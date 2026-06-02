@@ -126,7 +126,10 @@ func (db *DB) UpsertVendor(id, name string) error {
 func (db *DB) UpsertAdapterState(adapterID, feedURL, lastSynced string) error {
 	// If lastSynced is empty, preserve the prior watermark (we didn't see
 	// new data this cycle). feed_url is always refreshed since Discover
-	// re-resolves it each cycle.
+	// re-resolves it each cycle. `updated` is the real wall-clock time of this
+	// write (NOT the watermark) — it's the "this adapter ran a cycle now"
+	// signal that LastIngestAt() aggregates to gate the boot-time ingest.
+	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := db.db.Exec(`
 		INSERT INTO adapter_state (adapter_id, feed_url, last_synced, updated)
 		VALUES (?, ?, NULLIF(?, ''), ?)
@@ -134,7 +137,7 @@ func (db *DB) UpsertAdapterState(adapterID, feedURL, lastSynced string) error {
 			feed_url = excluded.feed_url,
 			last_synced = COALESCE(NULLIF(excluded.last_synced, ''), adapter_state.last_synced),
 			updated = excluded.updated
-	`, adapterID, feedURL, lastSynced, lastSynced)
+	`, adapterID, feedURL, lastSynced, now)
 	return err
 }
 
@@ -150,6 +153,27 @@ func (db *DB) AdapterLastSynced(adapterID string) (string, error) {
 		return "", err
 	}
 	return ts.String, nil
+}
+
+// LastIngestAt returns the wall-clock time of the most recent adapter_state
+// write across all adapters (MAX(updated)) — i.e. roughly when the last ingest
+// cycle ran. Returns the zero time when no adapter has run yet, or when the
+// stored value can't be parsed (e.g. a legacy pre-fix watermark string) — the
+// caller treats either as "stale", so the next boot ingests once and the value
+// self-corrects. Used to gate the boot-time ingest (see IngestRunner).
+func (db *DB) LastIngestAt() (time.Time, error) {
+	var ts sql.NullString
+	if err := db.db.QueryRow("SELECT MAX(updated) FROM adapter_state").Scan(&ts); err != nil {
+		return time.Time{}, err
+	}
+	if !ts.Valid || ts.String == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, ts.String)
+	if err != nil {
+		return time.Time{}, nil
+	}
+	return t, nil
 }
 
 // BulkInsert inserts statements in a single transaction.
