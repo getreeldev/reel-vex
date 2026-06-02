@@ -62,6 +62,7 @@ func run() error {
 	adminToken := flag.String("admin-token", "", "bearer token for admin endpoints (empty = no auth)")
 	sbomMaxMB := flag.Int("sbom-max-mb", 10, "max body size in MB for SBOM-accepting endpoints (/v1/analyze, /v1/statements)")
 	statementsMax := flag.Int("statements-max", 50000, "max statements returned by /v1/statements (0 = unlimited); broad mode is truncated with HTTP 200 + X-Reel-Truncated header when hit")
+	analyzeMaxCVEs := flag.Int("analyze-max-cves", 500, "max distinct CVEs a /v1/analyze request may query before a 400; cost is ~linear in CVEs against the full table, so keep it under the DB query timeout. Host-tunable.")
 	flag.Parse()
 
 	registerAdapters()
@@ -69,7 +70,7 @@ func run() error {
 	cmd := flag.Arg(0)
 	switch cmd {
 	case "serve":
-		return runServe(*configPath, *dbPath, *addr, *ingestInterval, *adminToken, *sbomMaxMB, *statementsMax)
+		return runServe(*configPath, *dbPath, *addr, *ingestInterval, *adminToken, *sbomMaxMB, *statementsMax, *analyzeMaxCVEs)
 	case "ingest":
 		return runIngest(*configPath, *dbPath, *limit)
 	case "stats":
@@ -158,7 +159,7 @@ func runStats(dbPath string) error {
 // with -ldflags "-X main.version=<tag>"; "dev" for local/CI builds.
 var version = "dev"
 
-func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adminToken string, sbomMaxMB, statementsMax int) error {
+func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adminToken string, sbomMaxMB, statementsMax, analyzeMaxCVEs int) error {
 	adapters, fetchers, err := loadPipeline(configPath)
 	if err != nil {
 		return err
@@ -181,6 +182,7 @@ func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adm
 	apiSrv := api.NewServer(database, runner)
 	apiSrv.SetSBOMMaxBytes(int64(sbomMaxMB) << 20)
 	apiSrv.SetStatementsMax(statementsMax)
+	apiSrv.SetAnalyzeMaxCVEs(analyzeMaxCVEs)
 	apiSrv.SetVersion(version)
 
 	srv := &http.Server{

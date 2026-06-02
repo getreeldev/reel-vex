@@ -20,14 +20,6 @@ import (
 const (
 	maxSBOMComponents = 50000
 	maxSBOMVulns      = 10000
-	// maxAnalyzeCVEs bounds the CVE-mode vendor query (SBOM-with-vulns or
-	// user_vex). The query cost is ~linear in distinct CVEs (per-CVE row fetches
-	// against the 183M-row table): measured on prod ~18ms/CVE — 250→4s, 400→7.4s,
-	// 600→11.3s. 800 lands near ~15s, leaving ~5s margin under the 20s DB-side
-	// queryTimeout, so an accepted analyze reliably completes; past it we reject
-	// with a clear 400 ("split the document"). Broad mode (components-only) is
-	// unaffected — no CVE filter, bounded by -statements-max.
-	maxAnalyzeCVEs = 800
 )
 
 // analyzeRequest wraps the inputs accepted by /v1/analyze.
@@ -158,12 +150,12 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		queryBases[c.BaseID] = true
 	}
 
-	// Bound the CVE-mode query breadth (see maxAnalyzeCVEs). Reject up front
+	// Bound the CVE-mode query breadth (see analyzeMaxCVEs). Reject up front
 	// rather than build a query that scans the table for thousands of CVEs.
-	if len(queryCVEs) > maxAnalyzeCVEs {
+	if len(queryCVEs) > s.analyzeMaxCVEs {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf(
 			"analyze input matches too many CVEs (%d > %d) — narrow the products/CVEs or split the document into smaller uploads",
-			len(queryCVEs), maxAnalyzeCVEs))
+			len(queryCVEs), s.analyzeMaxCVEs))
 		return
 	}
 

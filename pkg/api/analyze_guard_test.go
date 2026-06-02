@@ -20,7 +20,7 @@ func TestHandleAnalyze_RejectsTooManyCVEs(t *testing.T) {
 
 	var b strings.Builder
 	b.WriteString(`{"@context":"https://openvex.dev/ns/v0.2.0","statements":[`)
-	for i := 0; i <= maxAnalyzeCVEs; i++ { // maxAnalyzeCVEs+1 distinct CVEs
+	for i := 0; i <= srv.analyzeMaxCVEs; i++ { // analyzeMaxCVEs+1 distinct CVEs
 		if i > 0 {
 			b.WriteString(",")
 		}

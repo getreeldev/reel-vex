@@ -55,18 +55,24 @@ type Server struct {
 	// version is the server build version, surfaced in /v1/stats. Set via
 	// SetVersion (wired from a build-time -ldflags var); empty in dev/CI.
 	version string
+	// analyzeMaxCVEs caps the distinct CVEs a /v1/analyze request may query
+	// before a 400. The CVE-mode query cost is ~linear in CVEs against the full
+	// table, so this keeps an accepted analyze under the DB query timeout.
+	// Default 500; wired from the -analyze-max-cves flag.
+	analyzeMaxCVEs int
 }
 
 // NewServer creates a new API server.
 // ingest may be nil if running without ingest support.
 func NewServer(database *db.DB, ingest *IngestRunner) *Server {
 	s := &Server{
-		db:            database,
-		resolver:      resolver.New(database),
-		mux:           http.NewServeMux(),
-		ingest:        ingest,
-		sbomMaxBytes:  10 << 20, // 10MB default
-		statementsMax: 50000,    // broad-mode safety ceiling; -statements-max overrides
+		db:             database,
+		resolver:       resolver.New(database),
+		mux:            http.NewServeMux(),
+		ingest:         ingest,
+		sbomMaxBytes:   10 << 20, // 10MB default
+		statementsMax:  50000,    // broad-mode safety ceiling; -statements-max overrides
+		analyzeMaxCVEs: 500,      // analyze CVE-query ceiling; -analyze-max-cves overrides
 	}
 	s.mux.HandleFunc("POST /v1/statements", s.handleStatements)
 	s.mux.HandleFunc("GET /v1/stats", s.handleStats)
@@ -96,6 +102,15 @@ func (s *Server) SetSBOMMaxBytes(n int64) {
 func (s *Server) SetStatementsMax(n int) {
 	if n >= 0 {
 		s.statementsMax = n
+	}
+}
+
+// SetAnalyzeMaxCVEs overrides the default 500 cap on distinct CVEs a
+// /v1/analyze request may query. Production wires this from -analyze-max-cves.
+// n <= 0 is ignored, preserving the default.
+func (s *Server) SetAnalyzeMaxCVEs(n int) {
+	if n > 0 {
+		s.analyzeMaxCVEs = n
 	}
 }
 

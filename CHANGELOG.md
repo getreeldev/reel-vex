@@ -2,6 +2,12 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.8.3] — make the /v1/analyze CVE cap a host flag
+
+### Changed
+
+- **`-analyze-max-cves` flag** (default 500) replaces the hard-coded constant, so the analyze CVE-query ceiling is tunable on the host without a release — same pattern as `-statements-max` and `-sbom-max-mb`. The default is lowered 800 → 500: 800 was observed to exceed the 20 s query timeout under ingest-time DB load (queries run slower while a cycle is writing). Raise it on the host when there's headroom.
+
 ## [0.8.2] — calibrate the /v1/analyze cap to measured query cost
 
 ### Changed
