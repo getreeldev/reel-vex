@@ -2,6 +2,12 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.8.2] — calibrate the /v1/analyze cap to measured query cost
+
+### Changed
+
+- **`maxAnalyzeCVEs` 1000 → 800; query timeout 15s → 20s.** 0.8.1's cap of 1000 was an estimate; measured on the prod-size DB the CVE-mode query is ~linear at ~18 ms/CVE (250→4 s, 400→7.4 s, 600→11.3 s, ~1000 exceeded 15 s). 800 distinct CVEs lands near ~15 s, within the raised 20 s `QueryStatements` timeout, so an accepted analyze reliably completes instead of tripping the backstop. Larger inputs still get a clear `400` to split.
+
 ## [0.8.1] — bound /v1/analyze query cost
 
 ### Fixed

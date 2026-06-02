@@ -21,13 +21,13 @@ const (
 	maxSBOMComponents = 50000
 	maxSBOMVulns      = 10000
 	// maxAnalyzeCVEs bounds the CVE-mode vendor query (SBOM-with-vulns or
-	// user_vex). The query cost scales with distinct CVEs × product bases, so a
-	// large upload (e.g. a multi-thousand-statement VEX) can otherwise build a
-	// query that pins the DB. Past this, reject with a clear 400 rather than run
-	// it. Broad mode (components-only) is unaffected — it has no CVE filter and
-	// is bounded by -statements-max. The DB-side queryTimeout is the hard
-	// backstop for anything under this cap that's still slow.
-	maxAnalyzeCVEs = 1000
+	// user_vex). The query cost is ~linear in distinct CVEs (per-CVE row fetches
+	// against the 183M-row table): measured on prod ~18ms/CVE — 250→4s, 400→7.4s,
+	// 600→11.3s. 800 lands near ~15s, leaving ~5s margin under the 20s DB-side
+	// queryTimeout, so an accepted analyze reliably completes; past it we reject
+	// with a clear 400 ("split the document"). Broad mode (components-only) is
+	// unaffected — no CVE filter, bounded by -statements-max.
+	maxAnalyzeCVEs = 800
 )
 
 // analyzeRequest wraps the inputs accepted by /v1/analyze.

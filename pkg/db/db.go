@@ -14,7 +14,7 @@ import (
 // queryTimeout is the hard ceiling on a single statement query. It bounds the
 // blast radius of an over-broad request (e.g. a large user-VEX analyze that
 // expands to thousands of CVEs) so no one request can pin the DB indefinitely.
-const queryTimeout = 15 * time.Second
+const queryTimeout = 20 * time.Second
 
 // DB wraps a SQLite database for VEX statement storage.
 type DB struct {
