@@ -26,7 +26,7 @@ type Fetcher interface {
 
 	// Fetch retrieves the mapping file and upserts rows via database. Errors
 	// are returned up so callers can log or retry.
-	Fetch(ctx context.Context, database *db.DB) error
+	Fetch(ctx context.Context, database db.Store) error
 }
 
 // Config is one fetcher's configuration entry in config.yaml.

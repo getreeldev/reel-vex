@@ -2,6 +2,17 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.8.5] — every bounding limit is now a host flag
+
+### Added
+
+- **Five more server flags expose the remaining hard-coded limits**, so a self-hoster can lift them without a code change: `-query-timeout` (default 20s — the per-query DB ceiling, previously a constant), `-max-sbom-components` (50000), `-max-sbom-vulns` (10000), `-max-statements-items` (10000), `-max-user-vex-statements` (25000). With `-sbom-max-mb`, `-statements-max`, and `-analyze-max-cves` (already flags), every request-bounding number on the API is now tunable. The public hub keeps its conservative shared-instance defaults; the README's new **Limits** table documents the full set.
+- The HTTP server's `WriteTimeout` now auto-tracks `-query-timeout` (`max(30s, query-timeout+10s)`), so raising the query ceiling can't silently cut a long-but-allowed response short before its `503`.
+
+### Changed (internal)
+
+- **Extracted a `db.Store` interface** as the persistence seam; API, ingest, resolver, and alias layers now depend on it instead of the concrete `*db.DB` (SQLite). No behavior change — `*db.DB` is the only implementation today — but it lets a second backend (Postgres) drop in without touching those layers. Groundwork for the planned hub/DB split.
+
 ## [0.8.4] — skip the boot-time ingest when data is fresh
 
 ### Changed

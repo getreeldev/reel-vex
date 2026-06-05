@@ -12,6 +12,7 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/db"
 	"github.com/getreeldev/reel-vex/pkg/openvex"
 	"github.com/getreeldev/reel-vex/pkg/resolver"
+	"github.com/getreeldev/reel-vex/pkg/uservex"
 )
 
 // Cache-Control values for GET endpoints.
@@ -34,7 +35,7 @@ func setCacheControl(w http.ResponseWriter, value string) {
 
 // Server is the HTTP API server.
 type Server struct {
-	db       *db.DB
+	db       db.Store
 	resolver *resolver.Resolver
 	mux      *http.ServeMux
 	// handler is the mux wrapped with the request-log middleware. All non-
@@ -60,19 +61,32 @@ type Server struct {
 	// table, so this keeps an accepted analyze under the DB query timeout.
 	// Default 500; wired from the -analyze-max-cves flag.
 	analyzeMaxCVEs int
+	// maxSBOMComponents / maxSBOMVulns cap how large an inbound SBOM may be on
+	// the SBOM-accepting endpoints. maxStatementsItems caps the cves/products
+	// arrays on /v1/statements. maxUserVEXStatements caps the flattened user-VEX
+	// statement fan-out per /v1/analyze request. All wired from server flags;
+	// a self-hoster on dedicated hardware can raise them freely.
+	maxSBOMComponents    int
+	maxSBOMVulns         int
+	maxStatementsItems   int
+	maxUserVEXStatements int
 }
 
 // NewServer creates a new API server.
 // ingest may be nil if running without ingest support.
-func NewServer(database *db.DB, ingest *IngestRunner) *Server {
+func NewServer(database db.Store, ingest *IngestRunner) *Server {
 	s := &Server{
-		db:             database,
-		resolver:       resolver.New(database),
-		mux:            http.NewServeMux(),
-		ingest:         ingest,
-		sbomMaxBytes:   10 << 20, // 10MB default
-		statementsMax:  50000,    // broad-mode safety ceiling; -statements-max overrides
-		analyzeMaxCVEs: 500,      // analyze CVE-query ceiling; -analyze-max-cves overrides
+		db:                   database,
+		resolver:             resolver.New(database),
+		mux:                  http.NewServeMux(),
+		ingest:               ingest,
+		sbomMaxBytes:         10 << 20,                   // 10MB default
+		statementsMax:        50000,                      // broad-mode safety ceiling; -statements-max overrides
+		analyzeMaxCVEs:       500,                        // analyze CVE-query ceiling; -analyze-max-cves overrides
+		maxSBOMComponents:    50000,                      // -max-sbom-components overrides
+		maxSBOMVulns:         10000,                      // -max-sbom-vulns overrides
+		maxStatementsItems:   10000,                      // -max-statements-items overrides
+		maxUserVEXStatements: uservex.MaxStatementsTotal, // -max-user-vex-statements overrides
 	}
 	s.mux.HandleFunc("POST /v1/statements", s.handleStatements)
 	s.mux.HandleFunc("GET /v1/stats", s.handleStats)
@@ -111,6 +125,34 @@ func (s *Server) SetStatementsMax(n int) {
 func (s *Server) SetAnalyzeMaxCVEs(n int) {
 	if n > 0 {
 		s.analyzeMaxCVEs = n
+	}
+}
+
+// SetMaxSBOMComponents / SetMaxSBOMVulns / SetMaxStatementsItems /
+// SetMaxUserVEXStatements override the corresponding inbound-size ceilings.
+// Production wires each from a server flag. n <= 0 is ignored, preserving the
+// default.
+func (s *Server) SetMaxSBOMComponents(n int) {
+	if n > 0 {
+		s.maxSBOMComponents = n
+	}
+}
+
+func (s *Server) SetMaxSBOMVulns(n int) {
+	if n > 0 {
+		s.maxSBOMVulns = n
+	}
+}
+
+func (s *Server) SetMaxStatementsItems(n int) {
+	if n > 0 {
+		s.maxStatementsItems = n
+	}
+}
+
+func (s *Server) SetMaxUserVEXStatements(n int) {
+	if n > 0 {
+		s.maxUserVEXStatements = n
 	}
 }
 
@@ -177,8 +219,6 @@ type statementsRequest struct {
 	Offset int `json:"offset,omitempty"`
 }
 
-const maxStatementsItems = 10000
-
 func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength > s.sbomMaxBytes {
 		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request body too large (max %dMB)", s.sbomMaxBytes>>20))
@@ -205,12 +245,12 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		}
 		components := extractComponents(sbom)
 		vulns := extractVulnerabilities(sbom)
-		if len(components) > maxSBOMComponents {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("too many components (max %d)", maxSBOMComponents))
+		if len(components) > s.maxSBOMComponents {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("too many components (max %d)", s.maxSBOMComponents))
 			return
 		}
-		if len(vulns) > maxSBOMVulns {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("too many vulnerabilities (max %d)", maxSBOMVulns))
+		if len(vulns) > s.maxSBOMVulns {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("too many vulnerabilities (max %d)", s.maxSBOMVulns))
 			return
 		}
 		cveSet := make(map[string]bool, len(req.CVEs)+len(vulns))
@@ -254,8 +294,8 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "one of cves, products, or sbom (with components or vulnerabilities) is required")
 		return
 	}
-	if len(req.CVEs) > maxStatementsItems || len(req.Products) > maxStatementsItems {
-		writeError(w, http.StatusBadRequest, "too many items (max 10000 per array)")
+	if len(req.CVEs) > s.maxStatementsItems || len(req.Products) > s.maxStatementsItems {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many items (max %d per array)", s.maxStatementsItems))
 		return
 	}
 

@@ -32,10 +32,10 @@ type Candidate struct {
 // CPE-prefix expansion (no alias table access) use the CPEPrefix helper
 // directly.
 type Resolver struct {
-	db *db.DB
+	db db.Store
 }
 
-func New(database *db.DB) *Resolver {
+func New(database db.Store) *Resolver {
 	return &Resolver{db: database}
 }
 

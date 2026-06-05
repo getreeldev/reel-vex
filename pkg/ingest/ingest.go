@@ -24,7 +24,7 @@ type Options struct {
 
 // Run drives every adapter then every alias fetcher sequentially. A failure
 // in any one is logged and skipped so the others still run.
-func Run(ctx context.Context, adapters []source.Adapter, fetchers []aliases.Fetcher, database *db.DB, opts Options) error {
+func Run(ctx context.Context, adapters []source.Adapter, fetchers []aliases.Fetcher, database db.Store, opts Options) error {
 	for _, a := range adapters {
 		if err := runAdapter(ctx, a, database, opts); err != nil {
 			slog.Error("adapter ingest failed", "adapter", a.ID(), "error", err)
@@ -55,7 +55,7 @@ func Run(ctx context.Context, adapters []source.Adapter, fetchers []aliases.Fetc
 // hit. Caught and swallowed by runAdapter; never escapes.
 var errLimitReached = errors.New("statement limit reached")
 
-func runAdapter(ctx context.Context, a source.Adapter, database *db.DB, opts Options) error {
+func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts Options) error {
 	slog.Info("adapter discover", "adapter", a.ID(), "vendor", a.Vendor(), "format", a.SourceFormat())
 	feed, err := a.Discover(ctx)
 	if err != nil {

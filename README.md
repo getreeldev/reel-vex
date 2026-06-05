@@ -85,7 +85,25 @@ go build -o reel-vex ./cmd/server
 ./reel-vex -config config.yaml -db vex.db serve
 ```
 
-Flags (`--help` for all): `-addr`, `-ingest-interval`, `-admin-token`, `-sbom-max-mb`, `-statements-max`. Query a local DB without the server: `./reel-vex -db vex.db query CVE-2021-44228`, `./reel-vex -db vex.db stats`.
+Run `./reel-vex --help` for all flags. Query a local DB without the server: `./reel-vex -db vex.db query CVE-2021-44228`, `./reel-vex -db vex.db stats`.
+
+### Limits
+
+The public hub at `vex.getreel.dev` is breadth- and size-limited because it's a single shared instance. **Your own instance has no such constraint** — every limit is a flag, so set them to whatever your hardware allows (or effectively off):
+
+| Flag | Default | Bounds |
+|------|---------|--------|
+| `-sbom-max-mb` | 10 | request body size (MB) for `/v1/analyze` and `/v1/statements` |
+| `-analyze-max-cves` | 500 | distinct CVEs one `/v1/analyze` may query before a 400 |
+| `-statements-max` | 50000 | rows `/v1/statements` returns (0 = unlimited) |
+| `-query-timeout` | 20s | hard ceiling on a single DB query (over-broad request → 503) |
+| `-max-sbom-components` | 50000 | components in an inbound SBOM |
+| `-max-sbom-vulns` | 10000 | vulnerabilities in an inbound SBOM |
+| `-max-statements-items` | 10000 | items in the `cves`/`products` arrays on `/v1/statements` |
+| `-max-user-vex-statements` | 25000 | flattened user-VEX statements per `/v1/analyze` |
+| `-ingest-interval` | 24h | how often feeds are re-pulled |
+
+The HTTP write timeout auto-tracks `-query-timeout`, so raising the query ceiling won't cut a long response short.
 
 ## Adding a source
 

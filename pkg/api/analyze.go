@@ -17,11 +17,6 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/uservex"
 )
 
-const (
-	maxSBOMComponents = 50000
-	maxSBOMVulns      = 10000
-)
-
 // analyzeRequest wraps the inputs accepted by /v1/analyze.
 //
 // At least one of SBOM or UserVEX is required. SBOM is a CycloneDX 1.4+
@@ -72,7 +67,8 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	var userStmts []db.Statement
 	if hasUserVEX {
 		parsed, info, err := uservex.Parse(req.UserVEX, time.Now().UTC(), uservex.Options{
-			RejectLossy: req.RejectCycloneDXLossy,
+			RejectLossy:   req.RejectCycloneDXLossy,
+			MaxStatements: s.maxUserVEXStatements,
 		})
 		if err != nil {
 			status := http.StatusUnprocessableEntity
@@ -102,12 +98,12 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 		components := extractComponents(sbom)
 		vulns := extractVulnerabilities(sbom)
-		if len(components) > maxSBOMComponents {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("too many components (max %d)", maxSBOMComponents))
+		if len(components) > s.maxSBOMComponents {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("too many components (max %d)", s.maxSBOMComponents))
 			return
 		}
-		if len(vulns) > maxSBOMVulns {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("too many vulnerabilities (max %d)", maxSBOMVulns))
+		if len(vulns) > s.maxSBOMVulns {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("too many vulnerabilities (max %d)", s.maxSBOMVulns))
 			return
 		}
 		seen := make(map[string]bool)

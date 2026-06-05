@@ -63,6 +63,11 @@ func run() error {
 	sbomMaxMB := flag.Int("sbom-max-mb", 10, "max body size in MB for SBOM-accepting endpoints (/v1/analyze, /v1/statements)")
 	statementsMax := flag.Int("statements-max", 50000, "max statements returned by /v1/statements (0 = unlimited); broad mode is truncated with HTTP 200 + X-Reel-Truncated header when hit")
 	analyzeMaxCVEs := flag.Int("analyze-max-cves", 500, "max distinct CVEs a /v1/analyze request may query before a 400; cost is ~linear in CVEs against the full table, so keep it under the DB query timeout. Host-tunable.")
+	queryTimeout := flag.Duration("query-timeout", 20*time.Second, "hard ceiling on a single DB statement query; an over-broad request returns 503 when hit. Raise on dedicated hardware.")
+	maxSBOMComponents := flag.Int("max-sbom-components", 50000, "max components in an inbound SBOM before a 400")
+	maxSBOMVulns := flag.Int("max-sbom-vulns", 10000, "max vulnerabilities in an inbound SBOM before a 400")
+	maxStatementsItems := flag.Int("max-statements-items", 10000, "max items in the cves/products arrays on /v1/statements before a 400")
+	maxUserVEXStatements := flag.Int("max-user-vex-statements", 25000, "max flattened user-VEX statements per /v1/analyze request before a 400")
 	flag.Parse()
 
 	registerAdapters()
@@ -70,7 +75,21 @@ func run() error {
 	cmd := flag.Arg(0)
 	switch cmd {
 	case "serve":
-		return runServe(*configPath, *dbPath, *addr, *ingestInterval, *adminToken, *sbomMaxMB, *statementsMax, *analyzeMaxCVEs)
+		return runServe(serveOptions{
+			configPath:           *configPath,
+			dbPath:               *dbPath,
+			addr:                 *addr,
+			ingestInterval:       *ingestInterval,
+			adminToken:           *adminToken,
+			sbomMaxMB:            *sbomMaxMB,
+			statementsMax:        *statementsMax,
+			analyzeMaxCVEs:       *analyzeMaxCVEs,
+			queryTimeout:         *queryTimeout,
+			maxSBOMComponents:    *maxSBOMComponents,
+			maxSBOMVulns:         *maxSBOMVulns,
+			maxStatementsItems:   *maxStatementsItems,
+			maxUserVEXStatements: *maxUserVEXStatements,
+		})
 	case "ingest":
 		return runIngest(*configPath, *dbPath, *limit)
 	case "stats":
@@ -159,17 +178,35 @@ func runStats(dbPath string) error {
 // with -ldflags "-X main.version=<tag>"; "dev" for local/CI builds.
 var version = "dev"
 
-func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adminToken string, sbomMaxMB, statementsMax, analyzeMaxCVEs int) error {
-	adapters, fetchers, err := loadPipeline(configPath)
+// serveOptions bundles the serve-command knobs. Every field maps to a server
+// flag; keeping them in a struct avoids a long, mis-orderable positional
+// signature on runServe.
+type serveOptions struct {
+	configPath, dbPath, addr string
+	ingestInterval           time.Duration
+	adminToken               string
+	sbomMaxMB                int
+	statementsMax            int
+	analyzeMaxCVEs           int
+	queryTimeout             time.Duration
+	maxSBOMComponents        int
+	maxSBOMVulns             int
+	maxStatementsItems       int
+	maxUserVEXStatements     int
+}
+
+func runServe(opts serveOptions) error {
+	adapters, fetchers, err := loadPipeline(opts.configPath)
 	if err != nil {
 		return err
 	}
 
-	database, err := db.Open(dbPath)
+	database, err := db.Open(opts.dbPath)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer database.Close()
+	database.SetQueryTimeout(opts.queryTimeout)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -177,19 +214,31 @@ func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adm
 	ingestFn := func() error {
 		return ingest.Run(ctx, adapters, fetchers, database, ingest.Options{})
 	}
-	runner := api.NewIngestRunner(ingestFn, ingestInterval, adminToken)
+	runner := api.NewIngestRunner(ingestFn, opts.ingestInterval, opts.adminToken)
 
 	apiSrv := api.NewServer(database, runner)
-	apiSrv.SetSBOMMaxBytes(int64(sbomMaxMB) << 20)
-	apiSrv.SetStatementsMax(statementsMax)
-	apiSrv.SetAnalyzeMaxCVEs(analyzeMaxCVEs)
+	apiSrv.SetSBOMMaxBytes(int64(opts.sbomMaxMB) << 20)
+	apiSrv.SetStatementsMax(opts.statementsMax)
+	apiSrv.SetAnalyzeMaxCVEs(opts.analyzeMaxCVEs)
+	apiSrv.SetMaxSBOMComponents(opts.maxSBOMComponents)
+	apiSrv.SetMaxSBOMVulns(opts.maxSBOMVulns)
+	apiSrv.SetMaxStatementsItems(opts.maxStatementsItems)
+	apiSrv.SetMaxUserVEXStatements(opts.maxUserVEXStatements)
 	apiSrv.SetVersion(version)
 
+	// WriteTimeout must stay above the DB query ceiling, else a long-but-allowed
+	// query would have its response cut off by the HTTP server before
+	// QueryStatements returns its 503. Tie the two together so raising
+	// -query-timeout doesn't silently break responses.
+	writeTimeout := 30 * time.Second
+	if d := opts.queryTimeout + 10*time.Second; d > writeTimeout {
+		writeTimeout = d
+	}
 	srv := &http.Server{
-		Addr:         addr,
+		Addr:         opts.addr,
 		Handler:      apiSrv,
 		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: writeTimeout,
 		IdleTimeout:  60 * time.Second,
 	}
 
@@ -223,7 +272,7 @@ func runServe(configPath, dbPath, addr string, ingestInterval time.Duration, adm
 		srv.Shutdown(shutdownCtx)
 	}()
 
-	slog.Info("starting server", "addr", addr, "ingest_interval", ingestInterval)
+	slog.Info("starting server", "addr", opts.addr, "ingest_interval", opts.ingestInterval)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		return err
 	}

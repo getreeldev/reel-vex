@@ -26,10 +26,11 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/openvex"
 )
 
-// Limits applied to inbound user VEX submissions. Hardcoded; not
-// configurable via flags or environment. Each violation returns a typed
-// error so the HTTP handler can map to 400 (limit overflow) versus 422
-// (shape violation).
+// Default limits applied to inbound user VEX submissions. Each violation
+// returns a typed error so the HTTP handler can map to 400 (limit overflow)
+// versus 422 (shape violation). MaxStatementsTotal is the default for
+// Options.MaxStatements and can be raised per-instance via the
+// -max-user-vex-statements server flag; the other two are fixed.
 const (
 	MaxDocsPerRequest = 10
 	// MaxStatementsTotal bounds the flatten fan-out per request. Sized to admit
@@ -70,6 +71,10 @@ type Options struct {
 	// mapping is not exact (lossy/contested) instead of normalising it. The
 	// dropped count is reported in Info. Default false = normalise everything.
 	RejectLossy bool
+	// MaxStatements caps the flattened statement fan-out per request. <= 0 uses
+	// MaxStatementsTotal. Wired from the -max-user-vex-statements server flag so
+	// a self-hoster can raise it.
+	MaxStatements int
 }
 
 // Info summarises what Parse did to inbound VEX so the caller can surface it
@@ -102,6 +107,10 @@ func Parse(docs []json.RawMessage, requestTime time.Time, opts Options) ([]db.St
 	if len(docs) > MaxDocsPerRequest {
 		return nil, info, fmt.Errorf("%w: got %d, max %d", ErrTooManyDocs, len(docs), MaxDocsPerRequest)
 	}
+	maxStatements := opts.MaxStatements
+	if maxStatements <= 0 {
+		maxStatements = MaxStatementsTotal
+	}
 
 	var out []db.Statement
 	total := 0
@@ -132,8 +141,8 @@ func Parse(docs []json.RawMessage, requestTime time.Time, opts Options) ([]db.St
 		docTime := pickTimestamp(doc.Timestamp, requestTime)
 		for j, stmt := range doc.Statements {
 			total++
-			if total > MaxStatementsTotal {
-				return nil, info, fmt.Errorf("%w: > %d", ErrTooManyStatements, MaxStatementsTotal)
+			if total > maxStatements {
+				return nil, info, fmt.Errorf("%w: > %d", ErrTooManyStatements, maxStatements)
 			}
 			if len(stmt.Products) > MaxProductsPerStatement {
 				return nil, info, fmt.Errorf("doc[%d].statement[%d]: %w (%d > %d)",

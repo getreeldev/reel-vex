@@ -56,7 +56,7 @@ type repoToCPESchema struct {
 	} `json:"data"`
 }
 
-func (f *redHatRepoToCPE) Fetch(ctx context.Context, database *db.DB) error {
+func (f *redHatRepoToCPE) Fetch(ctx context.Context, database db.Store) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.url, nil)
 	if err != nil {
 		return err
@@ -78,7 +78,7 @@ func (f *redHatRepoToCPE) Fetch(ctx context.Context, database *db.DB) error {
 
 // parseAndUpsert is split out so tests can pass fixture bytes without an
 // HTTP server.
-func (f *redHatRepoToCPE) parseAndUpsert(ctx context.Context, database *db.DB, raw []byte) error {
+func (f *redHatRepoToCPE) parseAndUpsert(ctx context.Context, database db.Store, raw []byte) error {
 	var doc repoToCPESchema
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return fmt.Errorf("parse: %w", err)

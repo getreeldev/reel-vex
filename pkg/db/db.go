@@ -11,14 +11,21 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// queryTimeout is the hard ceiling on a single statement query. It bounds the
-// blast radius of an over-broad request (e.g. a large user-VEX analyze that
-// expands to thousands of CVEs) so no one request can pin the DB indefinitely.
-const queryTimeout = 20 * time.Second
+// defaultQueryTimeout is the out-of-the-box ceiling on a single statement
+// query. It bounds the blast radius of an over-broad request (e.g. a large
+// user-VEX analyze that expands to thousands of CVEs) so no one request can pin
+// the DB indefinitely. Override per-instance with SetQueryTimeout (wired from
+// the -query-timeout server flag); a self-hoster on dedicated hardware can
+// raise it freely.
+const defaultQueryTimeout = 20 * time.Second
 
 // DB wraps a SQLite database for VEX statement storage.
 type DB struct {
 	db *sql.DB
+
+	// queryTimeout caps a single QueryStatements call. Defaults to
+	// defaultQueryTimeout; SetQueryTimeout overrides it.
+	queryTimeout time.Duration
 
 	// statsMu guards cachedStats. statsCompute serialises the slow COUNT
 	// queries — without it, multiple concurrent Stats() / RefreshStats()
@@ -90,7 +97,7 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db := &DB{db: d}
+	db := &DB{db: d, queryTimeout: defaultQueryTimeout}
 	if err := db.migrate(); err != nil {
 		d.Close()
 		return nil, err
@@ -101,6 +108,15 @@ func Open(path string) (*DB, error) {
 // Close closes the database.
 func (db *DB) Close() error {
 	return db.db.Close()
+}
+
+// SetQueryTimeout overrides the per-query ceiling (default defaultQueryTimeout).
+// Production wires this from the -query-timeout server flag. d <= 0 is ignored,
+// preserving the default.
+func (db *DB) SetQueryTimeout(d time.Duration) {
+	if d > 0 {
+		db.queryTimeout = d
+	}
 }
 
 func (db *DB) migrate() error {
@@ -365,7 +381,7 @@ func (db *DB) QueryStatements(f QueryFilters) ([]Statement, error) {
 		args = append(args, f.Offset)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), db.queryTimeout)
 	defer cancel()
 	rows, err := db.db.QueryContext(ctx, query, args...)
 	if err != nil {
