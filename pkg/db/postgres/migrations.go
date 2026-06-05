@@ -58,16 +58,13 @@ var migrations = []migration{
 		`CREATE INDEX IF NOT EXISTS idx_statements_source ON statements (source_format)`,
 		`CREATE INDEX IF NOT EXISTS idx_aliases_source ON product_aliases (vendor, source_ns, source_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_aliases_target ON product_aliases (vendor, target_ns, target_id)`,
-		// The reason this backend exists: a COVERING index for broad mode. The
-		// key is the exact filter+order tuple; INCLUDE carries every other
-		// SELECTed column so the query is answered index-only — no per-row heap
-		// fetch. On a read-mostly table (writes only at ingest) the visibility map
-		// stays all-visible, so index-only scans actually fire. This is what
-		// SQLite cannot do cheaply (no INCLUDE) and the reason broad mode goes
-		// sub-second here instead of capping at ~2.5x.
-		`CREATE INDEX IF NOT EXISTS idx_statements_broad
-			ON statements (base_id, cve, product_id, source_format)
-			INCLUDE (vendor, version, id_type, status, justification, updated, scope)`,
+		// NOTE: the big covering index (idx_statements_broad) is deliberately NOT
+		// created here. It is built/ensured at the END of each ingest cycle by
+		// EnsureCoveringIndex (see ingest.Run). That way the cold first load runs
+		// index-free (fast bulk COPY) and the index is built once afterwards;
+		// later incremental cycles find it already present and just maintain it,
+		// and the create no-ops. Creating it on the empty table here would force
+		// the slow maintain-during-bulk-load path.
 	}},
 }
 

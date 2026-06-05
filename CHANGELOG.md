@@ -2,6 +2,12 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.9.1] — build the covering index after the cold load (fast first deploy)
+
+### Changed
+
+- **The broad-mode covering index (`idx_statements_broad`) is no longer created in the schema migration.** It's built at the end of each ingest cycle by `EnsureCoveringIndex` (`CREATE INDEX IF NOT EXISTS`, a new `db.Store` method). So the **cold first ingest loads index-free** (fast bulk `COPY`) and the index is built **once** afterwards; later incremental cycles find it already present (the create no-ops, the small deltas just maintain it). This removes the slow *maintain-during-bulk-load* path a plain `docker compose up` would otherwise hit on first boot — the cold deploy is now fast with no manual drop/rebuild step. Existing 0.9.0 databases keep their index (migration v1 already ran); the post-ingest ensure no-ops there.
+
 ## [0.9.0] — Postgres backend; SQLite removed (BREAKING)
 
 ### Changed

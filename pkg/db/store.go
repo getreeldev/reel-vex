@@ -23,6 +23,12 @@ type Store interface {
 	Stats() (Stats, error)
 	RefreshStats() (Stats, error)
 	LastIngestAt() (time.Time, error)
+	// EnsureCoveringIndex builds the broad-mode covering index if it is missing.
+	// Called at the end of each ingest cycle: on the cold first load it builds
+	// the index once (after the index-free bulk load — the fast path); on later
+	// cycles it no-ops because the index already exists. Backends that don't need
+	// it return nil.
+	EnsureCoveringIndex() error
 	Optimize() error
 	SetQueryTimeout(d time.Duration)
 	Close() error

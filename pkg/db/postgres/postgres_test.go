@@ -133,4 +133,21 @@ func TestPG(t *testing.T) {
 	if s.Statements < 2 || s.Vendors < 1 || s.Aliases != 1 {
 		t.Fatalf("Stats looks wrong: %+v", s)
 	}
+
+	// Covering index is built post-ingest (not in the migration). EnsureCoveringIndex
+	// creates it, and is idempotent on a second call.
+	if err := d.EnsureCoveringIndex(); err != nil {
+		t.Fatalf("EnsureCoveringIndex: %v", err)
+	}
+	var idxExists bool
+	if err := d.pool.QueryRow(t.Context(),
+		`SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE indexname = 'idx_statements_broad')`).Scan(&idxExists); err != nil {
+		t.Fatalf("index existence check: %v", err)
+	}
+	if !idxExists {
+		t.Fatal("EnsureCoveringIndex did not create idx_statements_broad")
+	}
+	if err := d.EnsureCoveringIndex(); err != nil {
+		t.Fatalf("EnsureCoveringIndex (idempotent): %v", err)
+	}
 }

@@ -363,6 +363,22 @@ func (p *DB) computeStats() (db.Stats, error) {
 	return s, nil
 }
 
+// EnsureCoveringIndex builds the broad-mode covering index if it is missing.
+// A plain (non-CONCURRENT) build is acceptable because real work only happens on
+// the cold first ingest, when the box has no traffic; on every later cycle the
+// index already exists and IF NOT EXISTS makes this an instant no-op. Building it
+// here (after the index-free bulk load) instead of in the migration keeps the
+// cold load fast. The key/INCLUDE columns must stay aligned with the broad-mode
+// query in QueryStatements (key = its WHERE/ORDER-BY tuple; INCLUDE = the rest
+// of the SELECTed columns) so the scan stays index-only.
+func (p *DB) EnsureCoveringIndex() error {
+	_, err := p.pool.Exec(context.Background(), `
+		CREATE INDEX IF NOT EXISTS idx_statements_broad
+			ON statements (base_id, cve, product_id, source_format)
+			INCLUDE (vendor, version, id_type, status, justification, updated, scope)`)
+	return err
+}
+
 // Optimize refreshes planner statistics (Postgres' autovacuum also does this in
 // the background; an explicit ANALYZE after ingest keeps plans current).
 func (p *DB) Optimize() error {

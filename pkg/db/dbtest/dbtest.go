@@ -39,6 +39,7 @@ var _ db.Store = (*Store)(nil)
 func (s *Store) SetQueryTimeout(time.Duration) {}
 func (s *Store) Close() error                  { return nil }
 func (s *Store) Optimize() error               { return nil }
+func (s *Store) EnsureCoveringIndex() error    { return nil }
 
 func (s *Store) UpsertVendor(id, name string) error {
 	s.mu.Lock()

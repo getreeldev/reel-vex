@@ -37,6 +37,15 @@ func Run(ctx context.Context, adapters []source.Adapter, fetchers []aliases.Fetc
 			continue
 		}
 	}
+	// Build the broad-mode covering index if it's missing. On the cold first
+	// ingest this runs once, after the index-free bulk load (the fast path), and
+	// can take minutes on a prod-size table; on later cycles the index already
+	// exists and this no-ops. Keeping it out of the schema migration is what lets
+	// the cold load avoid maintain-during.
+	slog.Info("ensuring broad-mode covering index (builds once on first ingest, may take minutes)")
+	if err := database.EnsureCoveringIndex(); err != nil {
+		slog.Warn("ensure covering index failed", "error", err)
+	}
 	// Refresh the /v1/stats cache after any ingest activity. The cache is
 	// the only thing that keeps that endpoint fast on a multi-GB DB; without
 	// this hook it would only refresh on first read after restart.
