@@ -144,6 +144,15 @@ func (p *DB) LastIngestAt() (time.Time, error) {
 // rewritten only when a verdict-bearing column actually changed (IS DISTINCT
 // FROM is null-safe, matching SQLite's IS NOT). `updated` is intentionally not
 // part of the change-test so a timestamp-only republish is a true no-op.
+//
+// At ingest scale per-row INSERTs are far too slow (one network round-trip
+// each). Instead the batch is bulk-loaded into a temp table via COPY (binary,
+// index-free), then merged into statements with the conditional upsert in a
+// single set-based statement. DISTINCT ON dedups rows that share a PK within
+// the same batch (keeping the last by ctid), since the set-based upsert — unlike
+// per-row — can't touch the same conflict target twice in one statement.
+var bulkCols = []string{"vendor", "cve", "product_id", "base_id", "version", "id_type", "status", "justification", "updated", "source_format", "scope"}
+
 func (p *DB) BulkInsert(stmts []db.Statement) error {
 	if len(stmts) == 0 {
 		return nil
@@ -155,9 +164,36 @@ func (p *DB) BulkInsert(stmts []db.Statement) error {
 	}
 	defer tx.Rollback(ctx)
 
-	const q = `
+	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE _ingest (LIKE statements) ON COMMIT DROP`); err != nil {
+		return err
+	}
+
+	rows := make([][]any, 0, len(stmts))
+	for _, s := range stmts {
+		base := s.BaseID
+		if base == "" {
+			base = s.ProductID
+		}
+		var version any // nil -> NULL
+		if s.Version != "" {
+			version = s.Version
+		}
+		sourceFormat := s.SourceFormat
+		if sourceFormat == "" {
+			sourceFormat = "csaf"
+		}
+		rows = append(rows, []any{s.Vendor, s.CVE, s.ProductID, base, version, s.IDType, s.Status, s.Justification, s.Updated, sourceFormat, s.Scope})
+	}
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"_ingest"}, bulkCols, pgx.CopyFromRows(rows)); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO statements (vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format, scope)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		SELECT DISTINCT ON (vendor, cve, product_id, source_format, scope)
+			vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format, scope
+		FROM _ingest
+		ORDER BY vendor, cve, product_id, source_format, scope, ctid DESC
 		ON CONFLICT (vendor, cve, product_id, source_format, scope) DO UPDATE SET
 			base_id = excluded.base_id,
 			version = excluded.version,
@@ -169,26 +205,8 @@ func (p *DB) BulkInsert(stmts []db.Statement) error {
 		   OR statements.justification IS DISTINCT FROM excluded.justification
 		   OR statements.base_id       IS DISTINCT FROM excluded.base_id
 		   OR statements.version       IS DISTINCT FROM excluded.version
-		   OR statements.id_type       IS DISTINCT FROM excluded.id_type`
-
-	for _, s := range stmts {
-		base := s.BaseID
-		if base == "" {
-			base = s.ProductID
-		}
-		var version any
-		if s.Version != "" {
-			version = s.Version
-		}
-		sourceFormat := s.SourceFormat
-		if sourceFormat == "" {
-			sourceFormat = "csaf"
-		}
-		if _, err := tx.Exec(ctx, q,
-			s.Vendor, s.CVE, s.ProductID, base, version, s.IDType,
-			s.Status, s.Justification, s.Updated, sourceFormat, s.Scope); err != nil {
-			return err
-		}
+		   OR statements.id_type       IS DISTINCT FROM excluded.id_type`); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }

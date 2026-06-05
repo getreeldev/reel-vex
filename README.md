@@ -33,12 +33,12 @@ Request and response shapes are in [`docs/api.md`](./docs/api.md).
    Vendor feeds                  reel-vex                  You
    ────────────            ┌──────────────────┐      ────────────
    Red Hat · SUSE          │ pull · normalize │       query a CVE,
-   Ubuntu · Debian   ────► │ one SQLite file  │ ────► a package, or
+   Ubuntu · Debian   ────► │ Postgres-backed  │ ────► a package, or
    CSAF·OVAL·OpenVEX       │ HTTP API         │       a full SBOM
                            └──────────────────┘
 ```
 
-One Go binary, one SQLite file, no runtime dependencies. The PURL ↔ CPE bridge means a query with a package identifier still matches statements a vendor filed against a platform identifier.
+A Go API service backed by PostgreSQL. The PURL ↔ CPE bridge means a query with a package identifier still matches statements a vendor filed against a platform identifier.
 
 Deeper detail: [`docs/architecture.md`](./docs/architecture.md) (pipeline + layout), [`docs/data-model.md`](./docs/data-model.md) (schema), [`docs/api.md`](./docs/api.md) (every endpoint).
 
@@ -60,32 +60,24 @@ Rancher's feed is **product-scoped**: each `not_affected` is about a specific im
 
 ## Run it yourself
 
-### Docker
+reel-vex stores its data in **PostgreSQL**. The simplest single-box setup is the bundled Docker Compose — the app plus its database:
 
 ```bash
-docker run -d \
-  --name vex-hub \
-  --restart unless-stopped \
-  -p 8080:8080 \
-  -v $(pwd)/data:/data \
-  -v $(pwd)/config.yaml:/config.yaml:ro \
-  getreel/vex-hub:latest \
-  -db /data/vex.db \
-  -config /config.yaml \
-  -admin-token your-secret-token \
-  serve
+cp .env.example .env          # set POSTGRES_PASSWORD
+cp /path/to/config.yaml .     # your adapter list (never baked into the image)
+docker compose up -d
 ```
 
-The database lives in the mounted `data/` directory, so it survives restarts. First boot ingests everything (Red Hat seeds from a bulk archive in minutes; Ubuntu and SUSE take longer). Scheduled runs after that fetch only what changed. Images: `getreel/vex-hub:latest`, `:v0`, or a pinned `:<version>`.
+The DB lives in the `pgdata` volume, so it survives restarts. First boot ingests everything (Red Hat seeds from a bulk archive; Ubuntu and SUSE take longer); scheduled runs after that fetch only what changed. For a **managed/cloud Postgres**, drop the `postgres` service from `docker-compose.yml` and point `-db` at the external DSN. For **Kubernetes** (N read-only API replicas + a single ingest worker), use the Helm chart.
 
 ### From source
 
 ```bash
 go build -o reel-vex ./cmd/server
-./reel-vex -config config.yaml -db vex.db serve
+./reel-vex -config config.yaml -db 'postgres://user:pass@host:5432/vex?sslmode=disable' serve
 ```
 
-Run `./reel-vex --help` for all flags. Query a local DB without the server: `./reel-vex -db vex.db query CVE-2021-44228`, `./reel-vex -db vex.db stats`.
+`-db` takes a Postgres connection URL. Run `./reel-vex --help` for all flags. Local one-off queries against a running DB: `./reel-vex -db '<dsn>' query CVE-2021-44228`, `./reel-vex -db '<dsn>' stats`.
 
 ### Limits
 

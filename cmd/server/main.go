@@ -70,6 +70,7 @@ func run() error {
 	maxSBOMVulns := flag.Int("max-sbom-vulns", 10000, "max vulnerabilities in an inbound SBOM before a 400")
 	maxStatementsItems := flag.Int("max-statements-items", 10000, "max items in the cves/products arrays on /v1/statements before a 400")
 	maxUserVEXStatements := flag.Int("max-user-vex-statements", 25000, "max flattened user-VEX statements per /v1/analyze request before a 400")
+	noScheduler := flag.Bool("no-scheduler", false, "serve without the in-process ingest scheduler — for read-only API replicas behind a load balancer; run ingest separately (e.g. a CronJob invoking the `ingest` subcommand)")
 	flag.Parse()
 
 	registerAdapters()
@@ -91,6 +92,7 @@ func run() error {
 			maxSBOMVulns:         *maxSBOMVulns,
 			maxStatementsItems:   *maxStatementsItems,
 			maxUserVEXStatements: *maxUserVEXStatements,
+			noScheduler:          *noScheduler,
 		})
 	case "ingest":
 		return runIngest(*configPath, *dbPath, *limit)
@@ -205,6 +207,7 @@ type serveOptions struct {
 	maxSBOMVulns             int
 	maxStatementsItems       int
 	maxUserVEXStatements     int
+	noScheduler              bool
 }
 
 func runServe(opts serveOptions) error {
@@ -254,15 +257,23 @@ func runServe(opts serveOptions) error {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Gate the boot ingest on data freshness: a restart within the ingest
-	// interval shouldn't re-run a full (contention-heavy) ingest. Best-effort —
-	// a lookup error yields the zero time, which StartScheduler treats as stale
-	// and ingests, preserving the old always-ingest-on-boot behaviour on doubt.
-	lastIngest, err := database.LastIngestAt()
-	if err != nil {
-		slog.Warn("could not read last ingest time; will ingest on boot", "error", err)
+	// Scheduled ingest runs in-process unless -no-scheduler is set. Read-only
+	// API replicas behind a load balancer set it so they only serve; a single
+	// separate worker (e.g. a CronJob running the `ingest` subcommand) owns
+	// writes. With one app on a box (the default), leave it on.
+	if opts.noScheduler {
+		slog.Info("ingest scheduler disabled (-no-scheduler); this instance serves reads only")
+	} else {
+		// Gate the boot ingest on data freshness: a restart within the ingest
+		// interval shouldn't re-run a full (contention-heavy) ingest. Best-effort —
+		// a lookup error yields the zero time, which StartScheduler treats as stale
+		// and ingests, preserving the old always-ingest-on-boot behaviour on doubt.
+		lastIngest, err := database.LastIngestAt()
+		if err != nil {
+			slog.Warn("could not read last ingest time; will ingest on boot", "error", err)
+		}
+		go runner.StartScheduler(ctx, lastIngest)
 	}
-	go runner.StartScheduler(ctx, lastIngest)
 
 	// Warm the /v1/stats cache in the background. The first call after restart
 	// would otherwise hit a 30-60s SQL scan on a multi-GB DB before the

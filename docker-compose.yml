@@ -1,0 +1,71 @@
+# Single-box reel-vex: the API/ingest app + its Postgres database.
+#
+# This is the deployment shape for one host (a self-hoster, or our own prod):
+# two containers, the DB split out from the app. For a managed/cloud Postgres,
+# delete the `postgres` service and point `-db` at the external DSN instead.
+#
+#   1. cp .env.example .env   # set POSTGRES_PASSWORD
+#   2. put your config.yaml next to this file (adapter list; never baked into the image)
+#   3. docker compose up -d
+#
+# The app's in-process scheduler runs ingest on -ingest-interval; for a
+# horizontally-scaled deployment (N read-only API replicas + a single ingest
+# writer) use the Helm chart instead — that split isn't needed on one box.
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: reelvex
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: vex
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Tuning for a ~16–32 GB box; scale shared_buffers/effective_cache_size to
+    # roughly 25% / 75% of available RAM. maintenance_work_mem speeds the
+    # covering-index build; max_wal_size smooths the bulk ingest.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=4GB
+      - -c
+      - effective_cache_size=12GB
+      - -c
+      - work_mem=128MB
+      - -c
+      - maintenance_work_mem=2GB
+      - -c
+      - max_wal_size=8GB
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reelvex -d vex"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Not published to the host — only the app reaches it over the compose network.
+
+  reel-vex:
+    image: getreel/vex-hub:latest # needs the 0.9.0+ (Postgres) image
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./config.yaml:/config.yaml:ro
+    # Bind to localhost only; front with Caddy/nginx for TLS + rate limiting
+    # (matches prod, where Caddy terminates TLS and the app never faces the
+    # public IP directly).
+    ports:
+      - "127.0.0.1:8080:8080"
+    command:
+      - -db
+      - postgres://reelvex:${POSTGRES_PASSWORD}@postgres:5432/vex?sslmode=disable
+      - -config
+      - /config.yaml
+      - -addr
+      - :8080
+      - -ingest-interval
+      - 24h
+      - serve
+
+volumes:
+  pgdata:

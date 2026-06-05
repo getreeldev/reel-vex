@@ -5,6 +5,7 @@ package integration
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,7 +18,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/getreeldev/reel-vex/pkg/db"
+	"github.com/getreeldev/reel-vex/pkg/db/postgres"
 )
 
 var serverURL string
@@ -31,6 +35,16 @@ func TestMain(m *testing.M) {
 // runner blocks ~60s waiting for the child's stdout to drain before
 // reporting a spurious non-zero exit.
 func runTests(m *testing.M) int {
+	// reel-vex is Postgres-only; the integration test needs a real database.
+	// In CI a `postgres` service supplies it; locally set REEL_VEX_TEST_PG_DSN.
+	// Absent, skip the whole suite (so `go test -tags integration` stays green
+	// without a DB).
+	dsn := os.Getenv("REEL_VEX_TEST_PG_DSN")
+	if dsn == "" {
+		fmt.Fprintln(os.Stderr, "REEL_VEX_TEST_PG_DSN not set; skipping integration tests")
+		return 0
+	}
+
 	binPath := filepath.Join(os.TempDir(), "reel-vex-test")
 	build := exec.Command("go", "build", "-o", binPath, "./cmd/server")
 	build.Dir = findRepoRoot()
@@ -40,12 +54,10 @@ func runTests(m *testing.M) int {
 	}
 	defer os.Remove(binPath)
 
-	dbPath := filepath.Join(os.TempDir(), "reel-vex-test.db")
-	if err := seedDB(dbPath); err != nil {
+	if err := seedDB(dsn); err != nil {
 		fmt.Fprintf(os.Stderr, "seed db: %s\n", err)
 		os.Exit(1)
 	}
-	defer os.Remove(dbPath)
 
 	port := freePort()
 	serverURL = fmt.Sprintf("http://127.0.0.1:%d", port)
@@ -59,7 +71,7 @@ func runTests(m *testing.M) int {
 	defer os.Remove(configPath)
 
 	cmd := exec.Command(binPath,
-		"-db", dbPath,
+		"-db", dsn,
 		"-addr", fmt.Sprintf(":%d", port),
 		"-config", configPath,
 		"-ingest-interval", "999h",
@@ -99,12 +111,25 @@ func runTests(m *testing.M) int {
 	return m.Run()
 }
 
-func seedDB(path string) error {
-	database, err := db.Open(path)
+func seedDB(dsn string) error {
+	database, err := postgres.Open(dsn)
 	if err != nil {
 		return err
 	}
 	defer database.Close()
+
+	// Clean slate — the CI Postgres service (and a local dev DB) can be reused
+	// across reruns. TRUNCATE after Open so the schema exists.
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	_, truncErr := pool.Exec(ctx, "TRUNCATE statements, vendors, product_aliases, adapter_state")
+	pool.Close()
+	if truncErr != nil {
+		return truncErr
+	}
 
 	if err := database.UpsertVendor("redhat", "Red Hat"); err != nil {
 		return err

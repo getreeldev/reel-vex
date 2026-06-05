@@ -8,7 +8,13 @@ All notable changes to reel-vex are documented here. Format loosely follows [Kee
 
 - **reel-vex is now Postgres-only.** The single-file SQLite backend (`modernc.org/sqlite`) is gone; persistence is PostgreSQL via `pgx/v5` (`pkg/db/postgres`), behind the `db.Store` interface introduced in 0.8.5. **Breaking:** `-db` now requires a `postgres://` connection URL (no more file path). This is the scalability foundation — real concurrent connections, autovacuum (no upsert bloat / cattle-rebuild), and a **covering index** (`idx_statements_broad … INCLUDE (…)`) that makes broad-mode an index-only scan, which SQLite couldn't do (no `INCLUDE`).
 - The Postgres schema declares the final shape directly (no v1→v4 evolution dance); migrations are tracked in `schema_version`. Query/upsert semantics are identical to the old backend — same conditional upsert (`IS DISTINCT FROM`), scope gate, deterministic order, and RFC3339-TEXT `updated` comparison. Validated end-to-end against a real Postgres (`TestPG`, gated on `REEL_VEX_TEST_PG_DSN`).
-- Consumer tests use an in-memory `db.Store` fake (`pkg/db/dbtest`), so `go test ./...` needs no database.
+- Consumer tests use an in-memory `db.Store` fake (`pkg/db/dbtest`), so `go test ./...` needs no database. The integration suite (`-tags integration`) runs against a real Postgres (a `postgres` service in CI; locally via `REEL_VEX_TEST_PG_DSN`) and skips when none is set.
+- **Ingest bulk-load via `COPY`.** `BulkInsert` stages each batch in a temp table via `COPY` then merges with one set-based conditional upsert, instead of per-row `INSERT`s. Measured ~9× faster at ingest scale (≈7,150 vs ≈780 rows/s) — the DB is no longer the ingest bottleneck.
+
+### Added
+
+- **`-no-scheduler` flag** to run `serve` without the in-process ingest scheduler — for read-only API replicas behind a load balancer, with a single separate worker (e.g. a CronJob running `ingest`) owning all writes. The basis for horizontal scaling.
+- **`docker-compose.yml`** (+ `.env.example`) — single-box deployment: the app plus its Postgres, with `config.yaml` host-mounted (never baked into the image). Drop the `postgres` service to use a managed/external database.
 
 ## [0.8.5] — every bounding limit is now a host flag
 
