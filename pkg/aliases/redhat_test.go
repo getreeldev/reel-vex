@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/getreeldev/reel-vex/pkg/db"
+	"github.com/getreeldev/reel-vex/pkg/db/dbtest"
 )
 
 func fixturePath(t *testing.T, name string) string {
@@ -16,12 +17,9 @@ func fixturePath(t *testing.T, name string) string {
 	return filepath.Join("..", "..", "testdata", name)
 }
 
-func openTestDB(t *testing.T) *db.DB {
+func openTestDB(t *testing.T) db.Store {
 	t.Helper()
-	d, err := db.Open(t.TempDir() + "/test.db")
-	if err != nil {
-		t.Fatal(err)
-	}
+	d := dbtest.New()
 	t.Cleanup(func() { d.Close() })
 	return d
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -15,6 +16,7 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/aliases"
 	"github.com/getreeldev/reel-vex/pkg/api"
 	"github.com/getreeldev/reel-vex/pkg/db"
+	"github.com/getreeldev/reel-vex/pkg/db/postgres"
 	"github.com/getreeldev/reel-vex/pkg/ingest"
 	"github.com/getreeldev/reel-vex/pkg/source"
 	"github.com/getreeldev/reel-vex/pkg/source/csafadapter"
@@ -55,7 +57,7 @@ func main() {
 
 func run() error {
 	configPath := flag.String("config", "config.yaml", "path to config file")
-	dbPath := flag.String("db", "vex.db", "path to SQLite database")
+	dbPath := flag.String("db", "", "Postgres connection URL (postgres://user:pass@host:5432/db?sslmode=...) — required")
 	limit := flag.Int("limit", 0, "max statements per adapter (0 = unlimited)")
 	addr := flag.String("addr", ":8080", "listen address for serve command")
 	ingestInterval := flag.Duration("ingest-interval", 24*time.Hour, "interval between scheduled ingests")
@@ -113,13 +115,23 @@ func run() error {
 	}
 }
 
+// openStore opens the storage backend. reel-vex is Postgres-only; -db must be a
+// postgres:// (or postgresql://) connection URL. The composition root owns this
+// so pkg/db stays free of any driver import (no cycle).
+func openStore(dbPath string) (db.Store, error) {
+	if !strings.HasPrefix(dbPath, "postgres://") && !strings.HasPrefix(dbPath, "postgresql://") {
+		return nil, fmt.Errorf("-db must be a postgres:// connection URL, got %q", dbPath)
+	}
+	return postgres.Open(dbPath)
+}
+
 func runIngest(configPath, dbPath string, limit int) error {
 	adapters, fetchers, err := loadPipeline(configPath)
 	if err != nil {
 		return err
 	}
 
-	database, err := db.Open(dbPath)
+	database, err := openStore(dbPath)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
@@ -157,7 +169,7 @@ func loadPipeline(configPath string) ([]source.Adapter, []aliases.Fetcher, error
 }
 
 func runStats(dbPath string) error {
-	database, err := db.Open(dbPath)
+	database, err := openStore(dbPath)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
@@ -201,7 +213,7 @@ func runServe(opts serveOptions) error {
 		return err
 	}
 
-	database, err := db.Open(opts.dbPath)
+	database, err := openStore(opts.dbPath)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
@@ -280,7 +292,7 @@ func runServe(opts serveOptions) error {
 }
 
 func runQuery(dbPath, cve string) error {
-	database, err := db.Open(dbPath)
+	database, err := openStore(dbPath)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}

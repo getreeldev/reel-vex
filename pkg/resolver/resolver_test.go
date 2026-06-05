@@ -4,16 +4,14 @@ import (
 	"testing"
 
 	"github.com/getreeldev/reel-vex/pkg/db"
+	"github.com/getreeldev/reel-vex/pkg/db/dbtest"
 )
 
-// resolverTestDB opens a temp DB and seeds the product_aliases table with
-// one representative Red Hat mapping.
-func resolverTestDB(t *testing.T) *db.DB {
+// resolverTestDB returns an in-memory store seeded with one representative
+// Red Hat repository→CPE mapping.
+func resolverTestDB(t *testing.T) db.Store {
 	t.Helper()
-	d, err := db.Open(t.TempDir() + "/resolver-test.db")
-	if err != nil {
-		t.Fatal(err)
-	}
+	d := dbtest.New()
 	t.Cleanup(func() { d.Close() })
 	if err := d.BulkUpsertAliases([]db.Alias{
 		{Vendor: "redhat", SourceNS: "repository_id", SourceID: "rhel-8-for-x86_64-appstream-rpms", TargetNS: "cpe", TargetID: "cpe:/a:redhat:enterprise_linux:8::appstream", Updated: "2024-01-01T00:00:00Z"},

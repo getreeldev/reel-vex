@@ -3,14 +3,9 @@ package db
 import "time"
 
 // Store is the persistence contract the rest of reel-vex depends on. The
-// concrete *DB (SQLite via modernc) is the only implementation today; defining
-// the surface as an interface lets a second backend (e.g. Postgres) drop in
-// without touching the API, ingest, resolver, or alias layers. Consumers should
-// depend on Store, not *DB.
-//
-// The method set is exactly the connection surface those consumers call — the
-// data types (Statement, QueryFilters, Stats, Alias) stay package-level and are
-// shared across implementations.
+// production implementation is the Postgres backend (pkg/db/postgres); tests
+// use an in-memory fake (pkg/db/dbtest). Consumers depend only on this
+// interface and the package-level data types — pkg/db pulls in no driver.
 type Store interface {
 	// Ingest write path.
 	UpsertVendor(id, name string) error
@@ -32,6 +27,3 @@ type Store interface {
 	SetQueryTimeout(d time.Duration)
 	Close() error
 }
-
-// Compile-time assertion that the SQLite implementation satisfies Store.
-var _ Store = (*DB)(nil)

@@ -14,16 +14,13 @@ import (
 
 	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
+	"github.com/getreeldev/reel-vex/pkg/db/dbtest"
 	"github.com/getreeldev/reel-vex/pkg/openvex"
 )
 
-func setupTestDB(t *testing.T) *db.DB {
+func setupTestDB(t *testing.T) db.Store {
 	t.Helper()
-	path := t.TempDir() + "/test.db"
-	database, err := db.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	database := dbtest.New()
 	t.Cleanup(func() { database.Close() })
 
 	if err := database.UpsertVendor("testvendor", "Test Vendor"); err != nil {
@@ -842,11 +839,7 @@ func TestHandleAnalyze_UserVEXOnly(t *testing.T) {
 // priority would beat the user in the per-CVE rollup. With the gate,
 // only the user's status is reflected.
 func TestHandleAnalyze_UserOverrideInSBOM(t *testing.T) {
-	dbPath := t.TempDir() + "/override.db"
-	database, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	database := dbtest.New()
 	t.Cleanup(func() { database.Close() })
 	if err := database.UpsertVendor("redhat", "Red Hat"); err != nil {
 		t.Fatal(err)
@@ -1278,11 +1271,7 @@ func TestHandleStatements_SECDATA1220(t *testing.T) {
 		t.Fatalf("fixture unexpectedly contains variant CPE %q — SECDATA-1220 may have been fixed upstream; revisit", variantCPE)
 	}
 
-	dbPath := t.TempDir() + "/test.db"
-	database, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	database := dbtest.New()
 	t.Cleanup(func() { database.Close() })
 	if err := database.UpsertVendor("redhat", "Red Hat"); err != nil {
 		t.Fatal(err)
@@ -1348,11 +1337,7 @@ func TestHandleStatements_SECDATA1220(t *testing.T) {
 // normalised to `pkg:deb/ubuntu/openssl` and failed to match the stored
 // distro-qualified base_id.
 func TestHandleStatements_DebDistroIdentity(t *testing.T) {
-	dbPath := t.TempDir() + "/test.db"
-	database, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	database := dbtest.New()
 	t.Cleanup(func() { database.Close() })
 	if err := database.UpsertVendor("ubuntu", "Ubuntu"); err != nil {
 		t.Fatal(err)
@@ -1442,11 +1427,7 @@ func TestHandleStatements_DebDistroIdentity(t *testing.T) {
 // `cpe:/a:redhat:enterprise_linux:8::appstream`. The resolver must consult
 // product_aliases to translate the repository_id into the CPE, then match.
 func TestHandleStatements_AliasExpansion(t *testing.T) {
-	dbPath := t.TempDir() + "/alias-test.db"
-	database, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	database := dbtest.New()
 	t.Cleanup(func() { database.Close() })
 	if err := database.UpsertVendor("redhat", "Red Hat"); err != nil {
 		t.Fatal(err)

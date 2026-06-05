@@ -2,6 +2,14 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.9.0] — Postgres backend; SQLite removed (BREAKING)
+
+### Changed
+
+- **reel-vex is now Postgres-only.** The single-file SQLite backend (`modernc.org/sqlite`) is gone; persistence is PostgreSQL via `pgx/v5` (`pkg/db/postgres`), behind the `db.Store` interface introduced in 0.8.5. **Breaking:** `-db` now requires a `postgres://` connection URL (no more file path). This is the scalability foundation — real concurrent connections, autovacuum (no upsert bloat / cattle-rebuild), and a **covering index** (`idx_statements_broad … INCLUDE (…)`) that makes broad-mode an index-only scan, which SQLite couldn't do (no `INCLUDE`).
+- The Postgres schema declares the final shape directly (no v1→v4 evolution dance); migrations are tracked in `schema_version`. Query/upsert semantics are identical to the old backend — same conditional upsert (`IS DISTINCT FROM`), scope gate, deterministic order, and RFC3339-TEXT `updated` comparison. Validated end-to-end against a real Postgres (`TestPG`, gated on `REEL_VEX_TEST_PG_DSN`).
+- Consumer tests use an in-memory `db.Store` fake (`pkg/db/dbtest`), so `go test ./...` needs no database.
+
 ## [0.8.5] — every bounding limit is now a host flag
 
 ### Added

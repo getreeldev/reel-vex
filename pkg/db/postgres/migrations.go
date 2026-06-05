@@ -1,0 +1,118 @@
+package postgres
+
+import (
+	"context"
+	"fmt"
+)
+
+// migration is one forward-only schema step. Unlike the SQLite backend (which
+// carries v1→v4 because it evolved in place), the Postgres backend is greenfield
+// and declares the final v4-equivalent shape directly in v1 — no table-rebuild
+// dance was ever needed here. schema_version tracks applied steps so future
+// migrations append cleanly.
+type migration struct {
+	version    int
+	statements []string
+}
+
+var migrations = []migration{
+	{version: 1, statements: []string{
+		`CREATE TABLE IF NOT EXISTS vendors (
+			id   TEXT PRIMARY KEY,
+			name TEXT NOT NULL
+		)`,
+		// statements: all columns TEXT (version/justification nullable) to match
+		// the SQLite backend's semantics exactly — notably `updated` stays TEXT so
+		// RFC3339 lexicographic comparison is byte-identical across backends.
+		`CREATE TABLE IF NOT EXISTS statements (
+			vendor         TEXT NOT NULL,
+			cve            TEXT NOT NULL,
+			product_id     TEXT NOT NULL,
+			base_id        TEXT NOT NULL,
+			version        TEXT,
+			id_type        TEXT NOT NULL,
+			status         TEXT NOT NULL,
+			justification  TEXT,
+			updated        TEXT NOT NULL,
+			source_format  TEXT NOT NULL DEFAULT 'csaf',
+			scope          TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (vendor, cve, product_id, source_format, scope)
+		)`,
+		`CREATE TABLE IF NOT EXISTS product_aliases (
+			vendor     TEXT NOT NULL,
+			source_ns  TEXT NOT NULL,
+			source_id  TEXT NOT NULL,
+			target_ns  TEXT NOT NULL,
+			target_id  TEXT NOT NULL,
+			confidence REAL NOT NULL DEFAULT 1.0,
+			updated    TEXT NOT NULL,
+			PRIMARY KEY (vendor, source_ns, source_id, target_ns, target_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS adapter_state (
+			adapter_id  TEXT PRIMARY KEY,
+			feed_url    TEXT,
+			last_synced TEXT,
+			updated     TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_statements_cve ON statements (cve)`,
+		`CREATE INDEX IF NOT EXISTS idx_statements_source ON statements (source_format)`,
+		`CREATE INDEX IF NOT EXISTS idx_aliases_source ON product_aliases (vendor, source_ns, source_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_aliases_target ON product_aliases (vendor, target_ns, target_id)`,
+		// The reason this backend exists: a COVERING index for broad mode. The
+		// key is the exact filter+order tuple; INCLUDE carries every other
+		// SELECTed column so the query is answered index-only — no per-row heap
+		// fetch. On a read-mostly table (writes only at ingest) the visibility map
+		// stays all-visible, so index-only scans actually fire. This is what
+		// SQLite cannot do cheaply (no INCLUDE) and the reason broad mode goes
+		// sub-second here instead of capping at ~2.5x.
+		`CREATE INDEX IF NOT EXISTS idx_statements_broad
+			ON statements (base_id, cve, product_id, source_format)
+			INCLUDE (vendor, version, id_type, status, justification, updated, scope)`,
+	}},
+}
+
+// migrate ensures schema_version exists, then applies each pending migration in
+// its own transaction, bumping schema_version as the last statement.
+func (p *DB) migrate(ctx context.Context) error {
+	if _, err := p.pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
+		return fmt.Errorf("create schema_version: %w", err)
+	}
+	var count int
+	if err := p.pool.QueryRow(ctx, `SELECT COUNT(*) FROM schema_version`).Scan(&count); err != nil {
+		return fmt.Errorf("count schema_version: %w", err)
+	}
+	if count == 0 {
+		if _, err := p.pool.Exec(ctx, `INSERT INTO schema_version (version) VALUES (0)`); err != nil {
+			return fmt.Errorf("seed schema_version: %w", err)
+		}
+	}
+	var current int
+	if err := p.pool.QueryRow(ctx, `SELECT version FROM schema_version`).Scan(&current); err != nil {
+		return fmt.Errorf("read schema_version: %w", err)
+	}
+
+	for _, m := range migrations {
+		if current >= m.version {
+			continue
+		}
+		tx, err := p.pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin migration v%d: %w", m.version, err)
+		}
+		for _, stmt := range m.statements {
+			if _, err := tx.Exec(ctx, stmt); err != nil {
+				tx.Rollback(ctx)
+				return fmt.Errorf("apply migration v%d: %w", m.version, err)
+			}
+		}
+		if _, err := tx.Exec(ctx, `UPDATE schema_version SET version = $1`, m.version); err != nil {
+			tx.Rollback(ctx)
+			return fmt.Errorf("bump schema_version to %d: %w", m.version, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit migration v%d: %w", m.version, err)
+		}
+		current = m.version
+	}
+	return nil
+}
