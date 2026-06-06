@@ -6,3 +6,4 @@
 testdata/batch/
 .DS_Store
 /CLAUDE.md
+.claude/
