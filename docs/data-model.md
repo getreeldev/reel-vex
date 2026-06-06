@@ -1,6 +1,6 @@
 # reel-vex data model
 
-Schema for the SQLite database that backs reel-vex. Migrations are applied automatically on every binary boot via `pkg/db/migrations.go`; a `schema_version` table tracks the current revision.
+Schema for the PostgreSQL database that backs reel-vex. Migrations are applied automatically on every binary boot via `pkg/db/postgres/migrations.go`; a `schema_version` table tracks the current revision. The Postgres backend is greenfield — schema v1 declares the shape below directly.
 
 ## Tables
 
@@ -47,7 +47,8 @@ CREATE TABLE product_aliases (
 ## Notes
 
 - `statements` PK is `(vendor, cve, product_id, source_format, scope)` — the same vendor + CVE + product combo can appear under different upstream feeds (CSAF and OVAL for Red Hat) and, for product-scoped sources, under different products; all such rows are preserved.
-- `scope` (added in schema v4) restricts a statement to one product context — an OpenVEX product `@id` such as a container image or Go module. It is `''` for every package-level feed (CSAF, OVAL, Canonical OpenVEX), leaving their storage and query behaviour unchanged. Subcomponent-scoped sources (the Rancher VEX hub) set it: the matchable package is stored in `product_id`/`base_id` while `scope` records *which image/module the verdict was made about*. The query layer only surfaces a scoped row when the caller names a matching scope (see [`api.md`](./api.md)), so a verdict scoped to one image never suppresses the same package elsewhere. Normalised via `pkg/csaf.NormalizeScope` (keeps `repository_url`, strips version/digest).
+- `scope` restricts a statement to one product context — an OpenVEX product `@id` such as a container image or Go module. It is `''` for every package-level feed (CSAF, OVAL, Canonical OpenVEX), leaving their storage and query behaviour unchanged. Subcomponent-scoped sources (the Rancher VEX hub) set it: the matchable package is stored in `product_id`/`base_id` while `scope` records *which image/module the verdict was made about*. The query layer only surfaces a scoped row when the caller names a matching scope (see [`api.md`](./api.md)), so a verdict scoped to one image never suppresses the same package elsewhere. Normalised via `pkg/csaf.NormalizeScope` (keeps `repository_url`, strips version/digest).
 - `base_id` is the normalized form of `product_id` used by the resolver: PURLs stripped of `@version` and most qualifiers (but `distro` preserved for deb-shaped identity); CPEs as-is. Indexed for `/v1/statements` lookups.
 - `vendors` is display metadata only; runtime data (feed URLs, watermarks) lives in `adapter_state` so multiple adapters under one vendor (e.g., several Red Hat OVAL streams) don't stomp on each other.
-- A `schema_version` table tracks migration state. Forward-migration is automatic on every binary boot; rollback is manual (restore from a pre-upgrade backup).
+- A `schema_version` table tracks migration state. Forward-migration is automatic on every binary boot; the Postgres backend is forward-only (v1 declares the current shape), and rollback is manual (restore from a pre-upgrade backup/snapshot).
+- The broad-mode covering index (`idx_statements_broad`) is **not** part of the schema — it's built once after the cold bulk load by `EnsureCoveringIndex` (end of each ingest), so the first load stays index-free; later cycles find it present and just maintain it.
