@@ -2,6 +2,13 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.9.2] — analyze CVE cap raised to the SBOM limit (covering index made it cheap)
+
+### Changed
+
+- **`-analyze-max-cves` default 500 → 10000**, aligned with `-max-sbom-vulns` so a document the API accepts at the door is one it will analyze. The old cap predated the 0.9.0 covering index: in 0.8.x the CVE-mode query (`cve = ANY(...) AND base_id = ANY(...)`) was ~linear at ~18 ms/CVE, which is what the 500/800 caps were sized for. Re-measured on the prod-size DB (185M rows) it now plans as an **index-only scan on `idx_statements_broad`** driven by `base_id`, so cost tracks matched rows, not CVE count — a real 3509-CVE × 464-base user-VEX merge runs in **~0.9 s** (previously rejected with a 400). The cap stays a cheap up-front reject; `-query-timeout` (20 s) is the hard backstop.
+- **`docker-compose.yml` reconciled to the prod runtime** (it had drifted): explicit `-analyze-max-cves`, `-ingest-interval 4h` (was 24h), `-admin-token ${ADMIN_TOKEN}` (gates `POST /v1/ingest`), and a pinned image tag instead of `:latest`. `.env.example` gains `ADMIN_TOKEN`.
+
 ## [0.9.1] — build the covering index after the cold load (fast first deploy)
 
 ### Changed

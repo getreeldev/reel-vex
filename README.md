@@ -86,7 +86,7 @@ The public hub at `vex.getreel.dev` is breadth- and size-limited because it's a 
 | Flag | Default | Bounds |
 |------|---------|--------|
 | `-sbom-max-mb` | 10 | request body size (MB) for `/v1/analyze` and `/v1/statements` |
-| `-analyze-max-cves` | 500 | distinct CVEs one `/v1/analyze` may query before a 400 |
+| `-analyze-max-cves` | 10000 | distinct CVEs one `/v1/analyze` may query before a 400 |
 | `-statements-max` | 50000 | rows `/v1/statements` returns (0 = unlimited) |
 | `-query-timeout` | 20s | hard ceiling on a single DB query (over-broad request → 503) |
 | `-max-sbom-components` | 50000 | components in an inbound SBOM |

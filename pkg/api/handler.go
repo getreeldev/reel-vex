@@ -57,9 +57,13 @@ type Server struct {
 	// SetVersion (wired from a build-time -ldflags var); empty in dev/CI.
 	version string
 	// analyzeMaxCVEs caps the distinct CVEs a /v1/analyze request may query
-	// before a 400. The CVE-mode query cost is ~linear in CVEs against the full
-	// table, so this keeps an accepted analyze under the DB query timeout.
-	// Default 500; wired from the -analyze-max-cves flag.
+	// before a 400 — a cheap up-front reject so a pathological input can't tie up
+	// a pooled connection for the whole query timeout. The CVE-mode query is
+	// served by the covering index (base_id, cve), and base_id is always
+	// constrained on this path, so cost tracks matched rows, not raw CVE count;
+	// -query-timeout is the hard backstop. Default 10000, aligned with
+	// -max-sbom-vulns so an SBOM we accept at the door is one we'll analyze.
+	// Wired from the -analyze-max-cves flag.
 	analyzeMaxCVEs int
 	// maxSBOMComponents / maxSBOMVulns cap how large an inbound SBOM may be on
 	// the SBOM-accepting endpoints. maxStatementsItems caps the cves/products
@@ -82,7 +86,7 @@ func NewServer(database db.Store, ingest *IngestRunner) *Server {
 		ingest:               ingest,
 		sbomMaxBytes:         10 << 20,                   // 10MB default
 		statementsMax:        50000,                      // broad-mode safety ceiling; -statements-max overrides
-		analyzeMaxCVEs:       500,                        // analyze CVE-query ceiling; -analyze-max-cves overrides
+		analyzeMaxCVEs:       10000,                      // analyze CVE-query ceiling (aligned with maxSBOMVulns); -analyze-max-cves overrides
 		maxSBOMComponents:    50000,                      // -max-sbom-components overrides
 		maxSBOMVulns:         10000,                      // -max-sbom-vulns overrides
 		maxStatementsItems:   10000,                      // -max-statements-items overrides
@@ -119,7 +123,7 @@ func (s *Server) SetStatementsMax(n int) {
 	}
 }
 
-// SetAnalyzeMaxCVEs overrides the default 500 cap on distinct CVEs a
+// SetAnalyzeMaxCVEs overrides the default 10000 cap on distinct CVEs a
 // /v1/analyze request may query. Production wires this from -analyze-max-cves.
 // n <= 0 is ignored, preserving the default.
 func (s *Server) SetAnalyzeMaxCVEs(n int) {

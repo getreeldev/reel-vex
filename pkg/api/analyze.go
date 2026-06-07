@@ -146,8 +146,9 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		queryBases[c.BaseID] = true
 	}
 
-	// Bound the CVE-mode query breadth (see analyzeMaxCVEs). Reject up front
-	// rather than build a query that scans the table for thousands of CVEs.
+	// Bound the CVE-mode query breadth (see analyzeMaxCVEs) — a cheap up-front
+	// reject before tying up a connection. The covering index (base_id, cve)
+	// keeps the query base-bound; -query-timeout is the hard backstop below.
 	if len(queryCVEs) > s.analyzeMaxCVEs {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf(
 			"analyze input matches too many CVEs (%d > %d) — narrow the products/CVEs or split the document into smaller uploads",

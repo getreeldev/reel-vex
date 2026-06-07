@@ -64,7 +64,7 @@ func run() error {
 	adminToken := flag.String("admin-token", "", "bearer token for admin endpoints (empty = no auth)")
 	sbomMaxMB := flag.Int("sbom-max-mb", 10, "max body size in MB for SBOM-accepting endpoints (/v1/analyze, /v1/statements)")
 	statementsMax := flag.Int("statements-max", 50000, "max statements returned by /v1/statements (0 = unlimited); broad mode is truncated with HTTP 200 + X-Reel-Truncated header when hit")
-	analyzeMaxCVEs := flag.Int("analyze-max-cves", 500, "max distinct CVEs a /v1/analyze request may query before a 400; cost is ~linear in CVEs against the full table, so keep it under the DB query timeout. Host-tunable.")
+	analyzeMaxCVEs := flag.Int("analyze-max-cves", 10000, "max distinct CVEs a /v1/analyze request may query before a 400; a cheap up-front reject (the covering index keeps the query base-bound; -query-timeout is the real backstop). Aligned with -max-sbom-vulns. Host-tunable.")
 	queryTimeout := flag.Duration("query-timeout", 20*time.Second, "hard ceiling on a single DB statement query; an over-broad request returns 503 when hit. Raise on dedicated hardware.")
 	maxSBOMComponents := flag.Int("max-sbom-components", 50000, "max components in an inbound SBOM before a 400")
 	maxSBOMVulns := flag.Int("max-sbom-vulns", 10000, "max vulnerabilities in an inbound SBOM before a 400")

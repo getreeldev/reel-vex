@@ -4,7 +4,7 @@
 # two containers, the DB split out from the app. For a managed/cloud Postgres,
 # delete the `postgres` service and point `-db` at the external DSN instead.
 #
-#   1. cp .env.example .env   # set POSTGRES_PASSWORD
+#   1. cp .env.example .env   # set POSTGRES_PASSWORD and ADMIN_TOKEN
 #   2. put your config.yaml next to this file (adapter list; never baked into the image)
 #   3. docker compose up -d
 #
@@ -44,7 +44,7 @@ services:
     # Not published to the host — only the app reaches it over the compose network.
 
   reel-vex:
-    image: getreel/vex-hub:latest # needs the 0.9.0+ (Postgres) image
+    image: getreel/vex-hub:v0.9.2 # pinned per release; bump on each version
     restart: unless-stopped
     depends_on:
       postgres:
@@ -64,7 +64,15 @@ services:
       - -addr
       - :8080
       - -ingest-interval
-      - 24h
+      - 4h
+      - -admin-token
+      - ${ADMIN_TOKEN:?set ADMIN_TOKEN in .env}
+      # Confirmed cheap on the prod-size DB (185M rows): the CVE-mode query is an
+      # index-only scan on idx_statements_broad, ~0.9s for a 3509-CVE user-VEX
+      # merge. Set explicitly (matches the image default) so a rollback is a
+      # one-line edit + `docker compose up -d`, no rebuild.
+      - -analyze-max-cves
+      - "10000"
       - serve
 
 volumes:
