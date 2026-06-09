@@ -62,6 +62,10 @@ Ubuntu has two feeds on purpose: the OpenVEX feed is broad, the OVAL feed covers
 
 Rancher's feed is **product-scoped**: each `not_affected` is about a specific image or Go module (the *scope*), with the affected package in an OpenVEX subcomponent. reel-vex stores the package as the queryable identifier and the image/module as the row's scope, and only applies a scoped verdict when the caller names that product (the `scopes` field on `/v1/statements`, or an SBOM's root component on `/v1/analyze`) — so a suppression scoped to one image never hides the same package elsewhere.
 
+### Attribution & data licensing
+
+reel-vex redistributes each vendor's published data, transformed into OpenVEX (the *mirror model*); every statement carries its origin (`vendor` + `source_format` + `status_notes` provenance). Sources and their licenses are listed in [`NOTICE.md`](./NOTICE.md). In particular, **Alpine's secdb is licensed [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)** — reel-vex's Alpine-derived statements are a transformed adaptation, attributed to [Alpine Linux](https://secdb.alpinelinux.org/) and redistributed under the same CC BY-SA 4.0 license; **AlmaLinux** errata data is MIT-licensed; the remaining feeds are redistributed under their respective vendors' terms.
+
 ## Run it yourself
 
 reel-vex stores its data in **PostgreSQL**. The simplest single-box setup is the bundled Docker Compose — the app plus its database:
