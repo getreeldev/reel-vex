@@ -2,6 +2,19 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.10.0] — four new OS feeds: Alpine, Amazon Linux, AlmaLinux, Oracle Linux
+
+### Added
+
+- **Alpine Linux secdb adapter** (`alpine-secdb`, vendor `alpine`, new `source_format` `secdb`). Ingests Alpine's per-branch `main.json`/`community.json` from `secdb.alpinelinux.org`. Fix-version statements; the `secfixes` `"0"` sentinel maps to `affected`, all other keys to `fixed`. CVE ids are split from glued non-CVE advisory refs (e.g. `"CVE-… GHSL-…"`). Statements are branch-scoped — `pkg:apk/alpine/<name>?distro=alpine-<major.minor>` — so a package fixed at different versions across branches stays distinct.
+- **Amazon Linux adapter** (`amazon-alas`, vendor `amazon`, new `source_format` `updateinfo`). Amazon ships no OVAL/CSAF; the adapter crawls each core repo's `mirror.list → repomd.xml → updateinfo.xml.gz` for amzn2 + al2023, emitting `pkg:rpm/amazon/<name>?distro=amazon-<major>` fixed statements. v1 covers core repos only (AL2 "Extras" + EOL AL1 are out of scope).
+- **AlmaLinux + Oracle Linux OVAL adapters** (`almalinux-oval` / `oracle-oval`, vendors `almalinux` / `oracle`). Both delegate to `oval-to-vex` v0.3.0's new RPM-level parsers (`FromAlmaLinuxOVAL`, `FromOracleOVAL`), which walk the rpminfo criteria tree to emit `pkg:rpm/<vendor>/<name>` fixed statements (unlike the CPE-only `FromRedHatOVAL`). AlmaLinux is emitted under both `pkg:rpm/almalinux/` and `pkg:rpm/alma/` (scanner namespace drift); Oracle reads its target release(s) per-definition from the `<platform>` tag and skips Ksplice variants in v1.
+- **Resolver distro normalization** (`pkg/resolver`). A scanner's distro qualifier is more granular than the stored identity for these feeds, so the resolver now normalizes apk (`3.21.3` / `alpine-3.21.2` → `alpine-3.21`), Amazon (`amazon-2023.7.x` → `amazon-2023`), and AlmaLinux (`alma-9.1` / `almalinux-9.1` → `almalinux-9`) query distros to the stored major(.minor). Additive and ecosystem-gated — other feeds are untouched, and distro stays identity, so one major/branch's fix can't leak into another's scan.
+
+### Changed
+
+- **`oval-to-vex` dependency bumped to v0.3.0** (adds the RPM-level OVAL parsers above; `FromRedHatOVAL` is unchanged).
+
 ## [0.9.2] — analyze CVE cap raised to the SBOM limit (covering index made it cheap)
 
 ### Changed

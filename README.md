@@ -17,7 +17,7 @@
 
 Scanners report many CVEs that don't actually affect you — the vendor has often already assessed them and published a **VEX** statement: `not_affected`, `fixed`, `affected`, or `under_investigation`. But every vendor uses a different format, location, and identifier scheme.
 
-reel-vex pulls those statements from Red Hat, SUSE, Rancher, Ubuntu, and Debian into one database, bridges identifier schemes (PURL ↔ CPE), and serves the result over HTTP. We mirror what the vendor said and let you decide what to do with it — no pre-filtering.
+reel-vex pulls those statements from Red Hat, SUSE, Rancher, Ubuntu, Debian, Alpine, Amazon Linux, AlmaLinux, and Oracle Linux into one database, bridges identifier schemes (PURL ↔ CPE), and serves the result over HTTP. We mirror what the vendor said and let you decide what to do with it — no pre-filtering.
 
 ## What you can ask it
 
@@ -53,6 +53,10 @@ Deeper detail: [`docs/architecture.md`](./docs/architecture.md) (pipeline + layo
 | Ubuntu | OpenVEX 0.2.0 | [security-metadata.canonical.com/vex/](https://security-metadata.canonical.com/vex/) | PURL (`pkg:deb/ubuntu/…?distro=…`) |
 | Ubuntu | OVAL | [security-metadata.canonical.com/oval/](https://security-metadata.canonical.com/oval/) | PURL (`pkg:deb/ubuntu/…?distro=…`) |
 | Debian | OVAL | [www.debian.org/security/oval/](https://www.debian.org/security/oval/) | PURL (`pkg:deb/debian/…?distro=…`) |
+| Alpine | secdb | [secdb.alpinelinux.org](https://secdb.alpinelinux.org/) | PURL (`pkg:apk/alpine/…?distro=alpine-<major.minor>`) |
+| Amazon Linux | updateinfo | [alas.aws.amazon.com](https://alas.aws.amazon.com/) (repo `updateinfo.xml`) | PURL (`pkg:rpm/amazon/…?distro=amazon-<major>`) |
+| AlmaLinux | OVAL | [security.almalinux.org/oval/](https://security.almalinux.org/oval/) | PURL (`pkg:rpm/almalinux\|alma/…?distro=almalinux-<major>`) |
+| Oracle Linux | OVAL | [linux.oracle.com/security/oval/](https://linux.oracle.com/security/oval/) | PURL (`pkg:rpm/oracle/…?distro=oracle-<major>`) |
 
 Ubuntu has two feeds on purpose: the OpenVEX feed is broad, the OVAL feed covers ~10% of package-name shapes the OpenVEX feed spells differently. They aren't strict supersets, so we keep both.
 
@@ -99,7 +103,7 @@ The HTTP write timeout auto-tracks `-query-timeout`, so raising the query ceilin
 
 ## Adding a source
 
-`config.yaml` lists `adapters:` (data sources) and `aliases:` (identifier-translation files). Registered adapter types: `csaf`, `redhat-oval`, `ubuntu-oval`, `debian-oval`, `ubuntu-vex`, `rancher-vex`. The adapter-author guide and per-source quirks are in [`docs/architecture.md`](./docs/architecture.md).
+`config.yaml` lists `adapters:` (data sources) and `aliases:` (identifier-translation files). Registered adapter types: `csaf`, `redhat-oval`, `ubuntu-oval`, `debian-oval`, `ubuntu-vex`, `rancher-vex`, `alpine-secdb`, `amazon-alas`, `almalinux-oval`, `oracle-oval`. The adapter-author guide and per-source quirks are in [`docs/architecture.md`](./docs/architecture.md).
 
 ## Tests
 

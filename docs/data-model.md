@@ -27,7 +27,7 @@ CREATE TABLE statements (
     status        TEXT NOT NULL,   -- not_affected, fixed, affected, under_investigation
     justification TEXT,            -- for not_affected only
     updated       TEXT NOT NULL,   -- RFC3339 from the upstream advisory
-    source_format TEXT NOT NULL DEFAULT 'csaf',  -- "csaf" | "oval" | "openvex"
+    source_format TEXT NOT NULL DEFAULT 'csaf',  -- "csaf" | "oval" | "openvex" | "secdb" | "updateinfo"
     scope         TEXT NOT NULL DEFAULT '',      -- product the verdict is scoped to ('' = unscoped/package-level)
     PRIMARY KEY (vendor, cve, product_id, source_format, scope)
 );
