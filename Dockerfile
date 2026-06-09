@@ -2,7 +2,9 @@ FROM golang:1.26-alpine AS build
 WORKDIR /src
 ARG VERSION=dev
 COPY go.mod go.sum ./
-RUN go mod download
+# Retry: proxy.golang.org occasionally returns a transient HTTP/2 stream error
+# mid-download (hit on the v0.10.0 release build); a couple of retries clears it.
+RUN for i in 1 2 3; do go mod download && break || { echo "go mod download attempt $i failed; retrying"; sleep 3; }; done
 COPY . .
 RUN go build -ldflags="-X main.version=${VERSION}" -o /reel-vex ./cmd/server
 
