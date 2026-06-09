@@ -155,3 +155,44 @@ func TestExtractRepositoryID(t *testing.T) {
 		}
 	}
 }
+
+func TestExpand_AlpineDistroNormalization(t *testing.T) {
+	// Alpine statements are stored branch-scoped as ?distro=alpine-<major.minor>.
+	// A scanner's apk distro qualifier — Trivy's raw release "3.21.3" or syft's
+	// "alpine-3.21.2" — must normalize to alpine-3.21 so it matches the stored
+	// branch identity (and only that branch).
+	r := New(resolverTestDB(t))
+	for _, in := range []string{
+		"pkg:apk/alpine/openssl@3.3.2-r0?arch=x86_64&distro=3.21.3",        // Trivy shape
+		"pkg:apk/alpine/openssl@3.3.2-r0?arch=x86_64&distro=alpine-3.21.2", // syft shape
+		"pkg:apk/alpine/openssl@3.3.2-r0?distro=3.21",                      // already minor
+	} {
+		ids := make(map[string]string)
+		for _, c := range r.Expand(in) {
+			ids[c.ID] = c.MatchReason
+		}
+		if ids["pkg:apk/alpine/openssl?distro=alpine-3.21"] != "direct" {
+			t.Errorf("%s: missing normalized candidate ?distro=alpine-3.21 in %v", in, ids)
+		}
+		// The distro-stripped candidate is still produced (additive, harmless).
+		if ids["pkg:apk/alpine/openssl"] != "direct" {
+			t.Errorf("%s: missing distro-stripped candidate in %v", in, ids)
+		}
+	}
+}
+
+func TestNormalizeAlpineDistro(t *testing.T) {
+	cases := map[string]string{
+		"3.21.3":        "alpine-3.21",
+		"alpine-3.21.2": "alpine-3.21",
+		"3.21":          "alpine-3.21",
+		"v3.21":         "alpine-3.21",
+		"edge":          "", // no major.minor → no candidate
+		"":              "",
+	}
+	for in, want := range cases {
+		if got := normalizeAlpineDistro(in); got != want {
+			t.Errorf("normalizeAlpineDistro(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

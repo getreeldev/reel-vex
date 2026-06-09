@@ -79,6 +79,56 @@ adapters:
     id: rancher-vex
     name: SUSE Rancher (OpenVEX)
     url: https://raw.githubusercontent.com/rancher/vexhub/refs/heads/main/index.json
+  # Alpine Linux secdb: Alpine's own security database, one tiny uncompressed
+  # JSON per (branch × repository). secfixes maps fixed apk versions to advisory
+  # ids (version key "0" = known-affected/no-fix). Only CVE-prefixed ids are
+  # ingested; Alpine's non-CVE advisories (XSA-/ALPINE-/DW-) are skipped (we key
+  # by CVE). Statements are stored branch-scoped as
+  # pkg:apk/alpine/<name>?distro=alpine-<major.minor>, so the same package+CVE on
+  # different branches stays distinct; the resolver normalizes a scanner's apk
+  # distro qualifier to match. One adapter per branch×repo; there is no
+  # latest-stable alias, so name each branch. Add new entries as Alpine ships new
+  # releases / retires old branches.
+  - type: alpine-secdb
+    id: alpine-secdb-v3.23-main
+    name: Alpine Linux 3.23
+    url: https://secdb.alpinelinux.org/v3.23/main.json
+  - type: alpine-secdb
+    id: alpine-secdb-v3.23-community
+    name: Alpine Linux 3.23
+    url: https://secdb.alpinelinux.org/v3.23/community.json
+  - type: alpine-secdb
+    id: alpine-secdb-v3.22-main
+    name: Alpine Linux 3.22
+    url: https://secdb.alpinelinux.org/v3.22/main.json
+  - type: alpine-secdb
+    id: alpine-secdb-v3.22-community
+    name: Alpine Linux 3.22
+    url: https://secdb.alpinelinux.org/v3.22/community.json
+  - type: alpine-secdb
+    id: alpine-secdb-v3.21-main
+    name: Alpine Linux 3.21
+    url: https://secdb.alpinelinux.org/v3.21/main.json
+  - type: alpine-secdb
+    id: alpine-secdb-v3.21-community
+    name: Alpine Linux 3.21
+    url: https://secdb.alpinelinux.org/v3.21/community.json
+  - type: alpine-secdb
+    id: alpine-secdb-v3.20-main
+    name: Alpine Linux 3.20
+    url: https://secdb.alpinelinux.org/v3.20/main.json
+  - type: alpine-secdb
+    id: alpine-secdb-v3.20-community
+    name: Alpine Linux 3.20
+    url: https://secdb.alpinelinux.org/v3.20/community.json
+  - type: alpine-secdb
+    id: alpine-secdb-v3.19-main
+    name: Alpine Linux 3.19
+    url: https://secdb.alpinelinux.org/v3.19/main.json
+  - type: alpine-secdb
+    id: alpine-secdb-v3.19-community
+    name: Alpine Linux 3.19
+    url: https://secdb.alpinelinux.org/v3.19/community.json
 
 aliases:
   - type: redhat-repository-to-cpe

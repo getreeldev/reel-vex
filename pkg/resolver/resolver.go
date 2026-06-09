@@ -69,7 +69,19 @@ func (r *Resolver) Expand(id string) []Candidate {
 	// candidate, scanner queries miss the most common stored shape.
 	// Additive only — never removes a match.
 	if i := strings.Index(base, "?distro="); i >= 0 {
-		add(base[:i], "direct")
+		bare := base[:i]
+		add(bare, "direct")
+		// apk (Alpine): statements are stored branch-scoped as
+		// ?distro=alpine-<major.minor>, but scanners emit the apk distro as a raw
+		// release (Trivy: "3.21.3") or an alpine-prefixed release (syft:
+		// "alpine-3.21.2"). Normalize to alpine-<major.minor> so a query matches
+		// the stored branch identity. Additive and apk-only — other ecosystems
+		// are untouched.
+		if strings.HasPrefix(bare, "pkg:apk/") {
+			if norm := normalizeAlpineDistro(base[i+len("?distro="):]); norm != "" {
+				add(bare+"?distro="+norm, "direct")
+			}
+		}
 	}
 
 	// via_alias: repository_id qualifier on a PURL → CPEs in the alias table.
@@ -121,4 +133,19 @@ func extractRepositoryID(id string) string {
 		return ""
 	}
 	return values.Get("repository_id")
+}
+
+// normalizeAlpineDistro maps a scanner-supplied apk distro qualifier to the
+// alpine-<major.minor> form reel-vex stores Alpine statements under. Trivy emits
+// the raw release ("3.21.3"), syft an alpine-prefixed release ("alpine-3.21.2");
+// both collapse to "alpine-3.21". Returns "" when a major.minor can't be
+// determined (e.g. "edge"), so no spurious candidate is added.
+func normalizeAlpineDistro(d string) string {
+	d = strings.TrimPrefix(d, "alpine-")
+	d = strings.TrimPrefix(d, "v")
+	parts := strings.SplitN(d, ".", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	return "alpine-" + parts[0] + "." + parts[1]
 }

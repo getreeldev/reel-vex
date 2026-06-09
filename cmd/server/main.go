@@ -19,6 +19,7 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/db/postgres"
 	"github.com/getreeldev/reel-vex/pkg/ingest"
 	"github.com/getreeldev/reel-vex/pkg/source"
+	"github.com/getreeldev/reel-vex/pkg/source/alpinesecdb"
 	"github.com/getreeldev/reel-vex/pkg/source/csafadapter"
 	"github.com/getreeldev/reel-vex/pkg/source/debianoval"
 	"github.com/getreeldev/reel-vex/pkg/source/ranchervex"
@@ -37,6 +38,7 @@ func registerAdapters() {
 	source.Register(ubuntuvex.Type, ubuntuvex.New)
 	source.Register(debianoval.Type, debianoval.New)
 	source.Register(ranchervex.Type, ranchervex.New)
+	source.Register(alpinesecdb.Type, alpinesecdb.New)
 	aliases.Register(aliases.RedHatRepoToCPEType, aliases.NewRedHatRepoToCPE)
 }
 
