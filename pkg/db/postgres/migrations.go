@@ -5,11 +5,9 @@ import (
 	"fmt"
 )
 
-// migration is one forward-only schema step. Unlike the SQLite backend (which
-// carries v1→v4 because it evolved in place), the Postgres backend is greenfield
-// and declares the final v4-equivalent shape directly in v1 — no table-rebuild
-// dance was ever needed here. schema_version tracks applied steps so future
-// migrations append cleanly.
+// migration is one forward-only schema step. The schema is greenfield: v1
+// declares the current shape directly, so there's no historical table-rebuild
+// dance. schema_version tracks applied steps so future migrations append cleanly.
 type migration struct {
 	version    int
 	statements []string
@@ -22,8 +20,8 @@ var migrations = []migration{
 			name TEXT NOT NULL
 		)`,
 		// statements: all columns TEXT (version/justification nullable) to match
-		// the SQLite backend's semantics exactly — notably `updated` stays TEXT so
-		// RFC3339 lexicographic comparison is byte-identical across backends.
+		// the query layer's ordering requirement — notably `updated` stays TEXT so
+		// RFC3339 lexicographic comparison equals time order (ingest stores UTC).
 		`CREATE TABLE IF NOT EXISTS statements (
 			vendor         TEXT NOT NULL,
 			cve            TEXT NOT NULL,

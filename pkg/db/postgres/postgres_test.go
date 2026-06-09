@@ -114,15 +114,33 @@ func TestPG(t *testing.T) {
 		t.Fatalf("verdict change not applied: %+v", got[0])
 	}
 
-	// Aliases.
-	if err := d.BulkUpsertAliases([]db.Alias{{Vendor: "redhat", SourceNS: "repo", SourceID: "rhel-9", TargetNS: "cpe", TargetID: "cpe:/o:redhat:9", Updated: "2026-06-01T00:00:00Z"}}); err != nil {
-		t.Fatalf("BulkUpsertAliases: %v", err)
+	// Aliases. The bulk load goes through COPY + a set-based upsert (like
+	// BulkInsert), so exercise the multi-row path, within-batch duplicate-PK
+	// dedup (DISTINCT ON — a single statement can't touch the same conflict
+	// target twice), and the re-upsert (ON CONFLICT) path — not just one row.
+	if err := d.BulkUpsertAliases([]db.Alias{
+		{Vendor: "redhat", SourceNS: "repo", SourceID: "rhel-9", TargetNS: "cpe", TargetID: "cpe:/o:redhat:9", Updated: "2026-06-01T00:00:00Z"},
+		{Vendor: "redhat", SourceNS: "repo", SourceID: "rhel-8", TargetNS: "cpe", TargetID: "cpe:/o:redhat:8", Updated: "2026-06-01T00:00:00Z"},
+		// Duplicate PK within the same batch (later updated value should win via ctid DESC).
+		{Vendor: "redhat", SourceNS: "repo", SourceID: "rhel-9", TargetNS: "cpe", TargetID: "cpe:/o:redhat:9", Updated: "2026-06-02T00:00:00Z"},
+	}); err != nil {
+		t.Fatalf("BulkUpsertAliases (multi/dup): %v", err)
 	}
 	if tgts, err := d.LookupAliases("repo", "rhel-9", "cpe"); err != nil || len(tgts) != 1 {
-		t.Fatalf("LookupAliases = %v, %v", tgts, err)
+		t.Fatalf("LookupAliases rhel-9 = %v, %v", tgts, err)
 	}
-	if n, err := d.AliasCount(); err != nil || n != 1 {
-		t.Fatalf("AliasCount = %d, %v", n, err)
+	if n, err := d.AliasCount(); err != nil || n != 2 {
+		t.Fatalf("AliasCount = %d, %v; want 2 (the within-batch duplicate must collapse)", n, err)
+	}
+
+	// Re-upsert an existing PK: row count is unchanged, updated is refreshed.
+	if err := d.BulkUpsertAliases([]db.Alias{
+		{Vendor: "redhat", SourceNS: "repo", SourceID: "rhel-9", TargetNS: "cpe", TargetID: "cpe:/o:redhat:9", Updated: "2026-07-01T00:00:00Z"},
+	}); err != nil {
+		t.Fatalf("BulkUpsertAliases (re-upsert): %v", err)
+	}
+	if n, err := d.AliasCount(); err != nil || n != 2 {
+		t.Fatalf("AliasCount after re-upsert = %d, %v; want 2 (no new row on conflict)", n, err)
 	}
 
 	// Stats.
@@ -130,7 +148,7 @@ func TestPG(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RefreshStats: %v", err)
 	}
-	if s.Statements < 2 || s.Vendors < 1 || s.Aliases != 1 {
+	if s.Statements < 2 || s.Vendors < 1 || s.Aliases != 2 {
 		t.Fatalf("Stats looks wrong: %+v", s)
 	}
 

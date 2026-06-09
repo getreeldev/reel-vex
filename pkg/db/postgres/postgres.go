@@ -1,18 +1,17 @@
-// Package postgres is the PostgreSQL implementation of db.Store. It mirrors the
-// SQLite backend's behaviour exactly — same query shapes, same conditional
-// upsert, same stats caching — with three deliberate dialect changes that the
-// Phase-2 dry-run identified:
+// Package postgres is the PostgreSQL implementation of db.Store — the only
+// backend reel-vex ships. Notable design points:
 //
-//   - IN-lists bind as `= ANY($n::text[])` (pgx binds a Go slice directly)
-//     instead of an expanded `?,?,…` placeholder list.
+//   - IN-lists bind as `= ANY($n::text[])` — pgx binds a Go slice directly, so
+//     there's no expanded `?,?,…` placeholder list to build.
 //   - The upsert skip-test uses `IS DISTINCT FROM` (Postgres' null-safe
-//     comparison) where SQLite uses `IS NOT`.
-//   - `updated` stays a TEXT column so RFC3339 lexicographic comparison keeps
-//     identical semantics to SQLite — no behaviour change.
+//     comparison) so a NULL↔value change on a nullable column still counts.
+//   - `updated` is a TEXT column holding RFC3339 strings; the query layer
+//     compares it lexicographically, which equals chronological order because
+//     ingest always stores UTC (see pkg/ingest).
 //
-// The covering index (see migrations.go) is the reason this backend exists:
-// broad-mode queries become index-only scans, eliminating the per-row heap
-// fetches that capped the SQLite backend's broad-mode speedup.
+// The covering index (see migrations.go) is what makes broad-mode queries
+// index-only scans, eliminating the per-row heap fetches that would otherwise
+// dominate broad-mode at production scale.
 package postgres
 
 import (
@@ -29,7 +28,7 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/db"
 )
 
-// defaultQueryTimeout matches the SQLite backend's default; overridable via
+// defaultQueryTimeout is the per-query ceiling; overridable via
 // SetQueryTimeout (wired from the -query-timeout server flag).
 const defaultQueryTimeout = 20 * time.Second
 
@@ -38,9 +37,9 @@ type DB struct {
 	pool         *pgxpool.Pool
 	queryTimeout time.Duration
 
-	// Stats caching mirrors the SQLite backend: a cached struct refreshed at
-	// the end of each ingest cycle, since the COUNT(DISTINCT) scans are slow on
-	// the production-size table. statsCompute serialises the slow path.
+	// Stats caching: a cached struct refreshed at the end of each ingest cycle,
+	// since the COUNT(DISTINCT) scans are slow on the production-size table.
+	// statsCompute serialises the slow path.
 	statsMu      sync.RWMutex
 	cachedStats  *db.Stats
 	statsCompute sync.Mutex
@@ -142,8 +141,9 @@ func (p *DB) LastIngestAt() (time.Time, error) {
 
 // BulkInsert applies the conditional upsert in one transaction: a row is
 // rewritten only when a verdict-bearing column actually changed (IS DISTINCT
-// FROM is null-safe, matching SQLite's IS NOT). `updated` is intentionally not
-// part of the change-test so a timestamp-only republish is a true no-op.
+// FROM is null-safe, so a NULL↔value change still counts). `updated` is
+// intentionally not part of the change-test so a timestamp-only republish is a
+// true no-op.
 //
 // At ingest scale per-row INSERTs are far too slow (one network round-trip
 // each). Instead the batch is bulk-loaded into a temp table via COPY (binary,
@@ -211,8 +211,9 @@ func (p *DB) BulkInsert(stmts []db.Statement) error {
 	return tx.Commit(ctx)
 }
 
-// QueryStatements is the unified query primitive — same filter/scope/order/
-// limit semantics as the SQLite backend. IN-lists bind as text arrays.
+// QueryStatements is the unified query primitive: AND across populated
+// dimensions, IN within each, the scope gate, then order/limit/offset. IN-lists
+// bind as text arrays.
 func (p *DB) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 	if len(f.CVEs) == 0 && len(f.ProductBaseIDs) == 0 {
 		return nil, nil
@@ -296,8 +297,8 @@ func scanStatements(rows pgx.Rows) ([]db.Statement, error) {
 	return out, rows.Err()
 }
 
-// Stats returns cached coverage stats, computing on first call. See SQLite
-// backend for the caching rationale (slow COUNT(DISTINCT) on the big table).
+// Stats returns cached coverage stats, computing on first call. Cached because
+// the COUNT(DISTINCT) scans are slow on the big table (see the statsMu fields).
 func (p *DB) Stats() (db.Stats, error) {
 	p.statsMu.RLock()
 	cached := p.cachedStats
@@ -386,7 +387,17 @@ func (p *DB) Optimize() error {
 	return err
 }
 
-// BulkUpsertAliases inserts or refreshes alias rows in one transaction.
+// aliasCols is the COPY column order for the alias bulk load. confidence is
+// always 1.0 (we only store confirmed vendor mappings), supplied per row so the
+// temp table's NOT NULL is satisfied without relying on a copied default.
+var aliasCols = []string{"vendor", "source_ns", "source_id", "target_ns", "target_id", "confidence", "updated"}
+
+// BulkUpsertAliases inserts or refreshes alias rows in one transaction. Like
+// BulkInsert it bulk-loads via COPY into a temp table, then merges with a single
+// set-based upsert — one round-trip instead of one per row, which matters for
+// the Red Hat repository-to-cpe feed (thousands of rows). DISTINCT ON dedups
+// rows that share the alias PK within the same batch (keeping the last by ctid),
+// since the set-based upsert can't touch the same conflict target twice.
 func (p *DB) BulkUpsertAliases(aliases []db.Alias) error {
 	if len(aliases) == 0 {
 		return nil
@@ -398,16 +409,28 @@ func (p *DB) BulkUpsertAliases(aliases []db.Alias) error {
 	}
 	defer tx.Rollback(ctx)
 
-	const q = `
+	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE _ingest_aliases (LIKE product_aliases) ON COMMIT DROP`); err != nil {
+		return err
+	}
+
+	rows := make([][]any, 0, len(aliases))
+	for _, a := range aliases {
+		rows = append(rows, []any{a.Vendor, a.SourceNS, a.SourceID, a.TargetNS, a.TargetID, 1.0, a.Updated})
+	}
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"_ingest_aliases"}, aliasCols, pgx.CopyFromRows(rows)); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO product_aliases (vendor, source_ns, source_id, target_ns, target_id, confidence, updated)
-		VALUES ($1,$2,$3,$4,$5,1.0,$6)
+		SELECT DISTINCT ON (vendor, source_ns, source_id, target_ns, target_id)
+			vendor, source_ns, source_id, target_ns, target_id, confidence, updated
+		FROM _ingest_aliases
+		ORDER BY vendor, source_ns, source_id, target_ns, target_id, ctid DESC
 		ON CONFLICT (vendor, source_ns, source_id, target_ns, target_id) DO UPDATE SET
 			confidence = 1.0,
-			updated = excluded.updated`
-	for _, a := range aliases {
-		if _, err := tx.Exec(ctx, q, a.Vendor, a.SourceNS, a.SourceID, a.TargetNS, a.TargetID, a.Updated); err != nil {
-			return err
-		}
+			updated = excluded.updated`); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }

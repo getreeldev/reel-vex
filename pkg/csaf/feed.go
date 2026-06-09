@@ -17,9 +17,16 @@ type FeedEntry struct {
 // FetchFeedEntries fetches and parses changes.csv from a VEX distribution.
 // If since is non-zero, only entries newer than since are returned.
 // Returns entries in the order they appear in the file (vendor-dependent sorting).
-func FetchFeedEntries(feedURL string, since time.Time) ([]FeedEntry, error) {
+//
+// client carries the caller's timeout + retry transport (a hung or flaky feed
+// host must not stall the whole ingest cycle); a nil client falls back to
+// http.DefaultClient.
+func FetchFeedEntries(client *http.Client, feedURL string, since time.Time) ([]FeedEntry, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
 	csvURL := feedURL + "changes.csv"
-	resp, err := http.Get(csvURL)
+	resp, err := client.Get(csvURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch changes.csv: %w", err)
 	}

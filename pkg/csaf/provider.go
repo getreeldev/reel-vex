@@ -25,9 +25,15 @@ type distribution struct {
 	DirectoryURL string `json:"directory_url"`
 }
 
-// DiscoverProvider fetches a CSAF provider-metadata.json and returns the VEX feed URL.
-func DiscoverProvider(metadataURL string) (*Provider, error) {
-	resp, err := http.Get(metadataURL)
+// DiscoverProvider fetches a CSAF provider-metadata.json and returns the VEX
+// feed URL. client carries the caller's timeout + retry transport so a hung or
+// flaky metadata host can't stall ingest; a nil client falls back to
+// http.DefaultClient.
+func DiscoverProvider(client *http.Client, metadataURL string) (*Provider, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Get(metadataURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch provider metadata: %w", err)
 	}

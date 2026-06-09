@@ -62,7 +62,7 @@ func (a *Adapter) SourceFormat() string { return "csaf" }
 // and — if the config left Name empty — picks up the publisher name from
 // the metadata.
 func (a *Adapter) Discover(ctx context.Context) (*source.FeedInfo, error) {
-	p, err := csaf.DiscoverProvider(a.metadataURL)
+	p, err := csaf.DiscoverProvider(a.http, a.metadataURL)
 	if err != nil {
 		return nil, fmt.Errorf("discover %s: %w", a.id, err)
 	}
@@ -105,7 +105,7 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 		}
 	}
 
-	entries, err := csaf.FetchFeedEntries(a.feedURL, effectiveSince)
+	entries, err := csaf.FetchFeedEntries(a.http, a.feedURL, effectiveSince)
 	if err != nil {
 		return fmt.Errorf("fetch changes.csv: %w", err)
 	}
