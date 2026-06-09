@@ -242,3 +242,40 @@ func TestNormalizeAmazonDistro(t *testing.T) {
 		}
 	}
 }
+
+func TestExpand_AlmaLinuxDistroNormalization(t *testing.T) {
+	// AlmaLinux statements are stored major-scoped as ?distro=almalinux-<major>
+	// under both the "almalinux" and "alma" namespaces. A scanner's minor-grained
+	// distro under either prefix must normalize to almalinux-<major> so the query
+	// matches the stored row in that same namespace.
+	r := New(resolverTestDB(t))
+	cases := []struct{ in, wantBase string }{
+		{"pkg:rpm/almalinux/openssl@3.2.2-6.el9_5?distro=almalinux-9.5", "pkg:rpm/almalinux/openssl?distro=almalinux-9"},
+		{"pkg:rpm/alma/openssl@3.2.2-6.el9_5?arch=x86_64&distro=alma-9.5", "pkg:rpm/alma/openssl?distro=almalinux-9"},
+	}
+	for _, c := range cases {
+		ids := make(map[string]string)
+		for _, cand := range r.Expand(c.in) {
+			ids[cand.ID] = cand.MatchReason
+		}
+		if ids[c.wantBase] != "direct" {
+			t.Errorf("%s: missing normalized candidate %q in %v", c.in, c.wantBase, ids)
+		}
+	}
+}
+
+func TestNormalizeAlmaLinuxDistro(t *testing.T) {
+	cases := map[string]string{
+		"almalinux-9.5": "almalinux-9",
+		"alma-9.5":      "almalinux-9",
+		"almalinux-9":   "almalinux-9",
+		"alma-9":        "almalinux-9",
+		"redhat-9.3":    "", // not almalinux → no normalization
+		"":              "",
+	}
+	for in, want := range cases {
+		if got := normalizeAlmaLinuxDistro(in); got != want {
+			t.Errorf("normalizeAlmaLinuxDistro(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

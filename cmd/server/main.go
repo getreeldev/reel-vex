@@ -19,10 +19,12 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/db/postgres"
 	"github.com/getreeldev/reel-vex/pkg/ingest"
 	"github.com/getreeldev/reel-vex/pkg/source"
+	"github.com/getreeldev/reel-vex/pkg/source/almalinuxoval"
 	"github.com/getreeldev/reel-vex/pkg/source/alpinesecdb"
 	"github.com/getreeldev/reel-vex/pkg/source/amazonalas"
 	"github.com/getreeldev/reel-vex/pkg/source/csafadapter"
 	"github.com/getreeldev/reel-vex/pkg/source/debianoval"
+	"github.com/getreeldev/reel-vex/pkg/source/oracleoval"
 	"github.com/getreeldev/reel-vex/pkg/source/ranchervex"
 	"github.com/getreeldev/reel-vex/pkg/source/redhatoval"
 	"github.com/getreeldev/reel-vex/pkg/source/ubuntuoval"
@@ -41,6 +43,8 @@ func registerAdapters() {
 	source.Register(ranchervex.Type, ranchervex.New)
 	source.Register(alpinesecdb.Type, alpinesecdb.New)
 	source.Register(amazonalas.Type, amazonalas.New)
+	source.Register(almalinuxoval.Type, almalinuxoval.New)
+	source.Register(oracleoval.Type, oracleoval.New)
 	aliases.Register(aliases.RedHatRepoToCPEType, aliases.NewRedHatRepoToCPE)
 }
 

@@ -26,7 +26,7 @@ require (
 
 require (
 	github.com/getreeldev/cyclonedx-to-openvex v0.1.0
-	github.com/getreeldev/oval-to-vex v0.2.2
+	github.com/getreeldev/oval-to-vex v0.3.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/klauspost/compress v1.18.6
 	github.com/ulikunitz/xz v0.5.15

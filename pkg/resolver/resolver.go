@@ -93,6 +93,15 @@ func (r *Resolver) Expand(id string) []Candidate {
 				add(bare+"?distro="+norm, "direct")
 			}
 		}
+		// rpm (AlmaLinux): stored major-scoped as ?distro=almalinux-<major>, under
+		// both the canonical "almalinux" and Trivy's short "alma" namespace. A
+		// scanner's distro is minor-grained under either prefix (alma-9.1 /
+		// almalinux-9.1); normalize to almalinux-<major> so it matches. Additive.
+		if strings.HasPrefix(bare, "pkg:rpm/almalinux/") || strings.HasPrefix(bare, "pkg:rpm/alma/") {
+			if norm := normalizeAlmaLinuxDistro(base[i+len("?distro="):]); norm != "" {
+				add(bare+"?distro="+norm, "direct")
+			}
+		}
 	}
 
 	// via_alias: repository_id qualifier on a PURL → CPEs in the alias table.
@@ -181,4 +190,32 @@ func normalizeAmazonDistro(d string) string {
 		return ""
 	}
 	return "amazon-" + major
+}
+
+// normalizeAlmaLinuxDistro maps a scanner-supplied AlmaLinux distro qualifier to
+// the almalinux-<major> form reel-vex stores AlmaLinux statements under (the
+// parser keys both the "almalinux" and "alma" namespaces under an
+// almalinux-<major> distro). Trivy emits a minor-grained release under either
+// the "alma-" or "almalinux-" prefix (alma-9.1, almalinux-9.1); both collapse to
+// "almalinux-9". Returns "" for any other distro.
+func normalizeAlmaLinuxDistro(d string) string {
+	var rest string
+	switch {
+	case strings.HasPrefix(d, "almalinux-"):
+		rest = strings.TrimPrefix(d, "almalinux-")
+	case strings.HasPrefix(d, "alma-"):
+		rest = strings.TrimPrefix(d, "alma-")
+	default:
+		return ""
+	}
+	major := strings.SplitN(rest, ".", 2)[0]
+	if f := strings.Fields(major); len(f) > 0 {
+		major = f[0]
+	} else {
+		major = ""
+	}
+	if major == "" {
+		return ""
+	}
+	return "almalinux-" + major
 }

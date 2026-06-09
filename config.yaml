@@ -146,6 +146,35 @@ adapters:
     id: amazon-alas-2023
     name: Amazon Linux 2023
     url: https://cdn.amazonlinux.com/al2023/core/mirrors/latest/x86_64/mirror.list
+  # AlmaLinux errata OVAL: one bz2 per major (RHEL rebuild; ALSA errata). Parsed
+  # by oval-to-vex FromAlmaLinuxOVAL into package-level "fixed" statements; the
+  # release major is read from the alsa-<N> filename and becomes
+  # ?distro=almalinux-<N>. Emitted under both pkg:rpm/almalinux/ and
+  # pkg:rpm/alma/ (scanner namespace drift); the resolver normalizes a scanner's
+  # alma-<N>.<m> / almalinux-<N>.<m> query distro to almalinux-<N>.
+  - type: almalinux-oval
+    id: almalinux-oval-9
+    url: https://security.almalinux.org/oval/org.almalinux.alsa-9.xml.bz2
+  - type: almalinux-oval
+    id: almalinux-oval-8
+    url: https://security.almalinux.org/oval/org.almalinux.alsa-8.xml.bz2
+  - type: almalinux-oval
+    id: almalinux-oval-10
+    url: https://security.almalinux.org/oval/org.almalinux.alsa-10.xml.bz2
+  # Oracle Linux errata OVAL: one bz2 per release (ELSA). Parsed by oval-to-vex
+  # FromOracleOVAL; the release major is read per-definition from the
+  # <platform>Oracle Linux N</platform> tag (a single ELSA can target several
+  # majors). Keyed pkg:rpm/oracle/<name>?distro=oracle-<N> — matches Trivy's
+  # oracle-<N> directly. Ksplice variants are skipped in v1.
+  - type: oracle-oval
+    id: oracle-oval-ol9
+    url: https://linux.oracle.com/security/oval/com.oracle.elsa-ol9.xml.bz2
+  - type: oracle-oval
+    id: oracle-oval-ol8
+    url: https://linux.oracle.com/security/oval/com.oracle.elsa-ol8.xml.bz2
+  - type: oracle-oval
+    id: oracle-oval-ol10
+    url: https://linux.oracle.com/security/oval/com.oracle.elsa-ol10.xml.bz2
 
 aliases:
   - type: redhat-repository-to-cpe
