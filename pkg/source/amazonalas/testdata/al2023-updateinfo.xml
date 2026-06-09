@@ -1,0 +1,22 @@
+<?xml version="1.0" ?>
+<updates>
+  <update status="final" version="1.0" author="linux-security@amazon.com" type="security" from="linux-security@amazon.com">
+    <id>ALAS2023-2023-010</id>
+    <title>Amazon Linux 2023 - ALAS2023-2023-010: medium priority package update for tzdata</title>
+    <issued date="2023-02-20 00:00:00" />
+    <updated date="2023-02-23 00:00:00" />
+    <severity>Medium</severity>
+    <description>Package updates are available for Amazon Linux 2023.</description>
+    <references>
+      <reference href="http://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2021-25220" title="" id="CVE-2021-25220" type="cve" />
+      <reference href="https://alas.aws.amazon.com/AL2023/ALAS-2023-010.html" id="ALAS2023-2023-010" title="ALAS2023-2023-010" type="self" />
+    </references>
+    <pkglist>
+      <collection short="amazon-linux-2023">
+        <name>Amazon Linux 2023</name>
+        <package name="tzdata" version="2022g" release="1.amzn2023.0.2" epoch="0" arch="noarch"><filename>Packages/tzdata-2022g-1.amzn2023.0.2.noarch.rpm</filename></package>
+        <package name="tzdata-java" version="8.2204.0" release="3.amzn2023.0.2" epoch="1" arch="noarch"><filename>Packages/tzdata-java-8.2204.0-3.amzn2023.0.2.noarch.rpm</filename></package>
+      </collection>
+    </pkglist>
+  </update>
+</updates>

@@ -196,3 +196,49 @@ func TestNormalizeAlpineDistro(t *testing.T) {
 		}
 	}
 }
+
+func TestExpand_AmazonDistroNormalization(t *testing.T) {
+	// Amazon statements are stored major-scoped as ?distro=amazon-<major>. Trivy
+	// emits AL2023's distro as the full point release (with a "+(Amazon Linux)"
+	// suffix that decodes to a trailing space); it must normalize to amazon-2023
+	// so the query matches that major precisely and doesn't leak across majors via
+	// the bare candidate. Regression for the confirmed AL2023 match gap.
+	r := New(resolverTestDB(t))
+	for _, in := range []string{
+		"pkg:rpm/amazon/openssl@1:3.0.8-1.amzn2023.0.6?arch=x86_64&distro=amazon-2023.7.20250512+(Amazon Linux)", // Trivy AL2023
+		"pkg:rpm/amazon/openssl@1:3.0.8-1.amzn2023?distro=amazon-2023",                                           // already major
+	} {
+		ids := make(map[string]string)
+		for _, c := range r.Expand(in) {
+			ids[c.ID] = c.MatchReason
+		}
+		if ids["pkg:rpm/amazon/openssl?distro=amazon-2023"] != "direct" {
+			t.Errorf("%s: missing normalized candidate ?distro=amazon-2023 in %v", in, ids)
+		}
+	}
+	// AL2's short distro already equals its major.
+	ids := make(map[string]string)
+	for _, c := range r.Expand("pkg:rpm/amazon/openssl@1.0.2k-24.amzn2?distro=amazon-2") {
+		ids[c.ID] = c.MatchReason
+	}
+	if ids["pkg:rpm/amazon/openssl?distro=amazon-2"] != "direct" {
+		t.Errorf("AL2: missing ?distro=amazon-2 in %v", ids)
+	}
+}
+
+func TestNormalizeAmazonDistro(t *testing.T) {
+	cases := map[string]string{
+		"amazon-2023.7.20250512":                "amazon-2023",
+		"amazon-2023.7.20250512 (Amazon Linux)": "amazon-2023", // +(Amazon Linux) decodes to a space
+		"amazon-2023 (Amazon Linux)":            "amazon-2023", // no-dot, space-suffixed
+		"amazon-2":                              "amazon-2",
+		"amazon-2023":                           "amazon-2023",
+		"redhat-9.3":                            "", // not amazon → no normalization
+		"":                                      "",
+	}
+	for in, want := range cases {
+		if got := normalizeAmazonDistro(in); got != want {
+			t.Errorf("normalizeAmazonDistro(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

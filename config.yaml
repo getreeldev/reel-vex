@@ -129,6 +129,23 @@ adapters:
     id: alpine-secdb-v3.19-community
     name: Alpine Linux 3.19
     url: https://secdb.alpinelinux.org/v3.19/community.json
+  # Amazon Linux Security Advisories (ALAS). Amazon ships no OVAL/CSAF; the
+  # data lives in each yum repo's repodata/updateinfo.xml, reached via a
+  # mirror.list -> repomd.xml -> updateinfo.xml.gz crawl (re-resolved every
+  # run — the mirror base embeds a content GUID that rotates). One adapter per
+  # distro; the distro (amzn2 / al2023) is inferred from the mirror.list URL,
+  # so the config is just type/id/url. Statements are package-level "fixed",
+  # keyed on pkg:rpm/amazon/<name>?distro=amazon-<major>. SCOPE (v1): core
+  # repos only — the AL2 "Extras" repos (amzn2extra-*) and EOL AL1 are not
+  # crawled (see the package doc comment).
+  - type: amazon-alas
+    id: amazon-alas-2
+    name: Amazon Linux 2
+    url: https://cdn.amazonlinux.com/2/core/latest/x86_64/mirror.list
+  - type: amazon-alas
+    id: amazon-alas-2023
+    name: Amazon Linux 2023
+    url: https://cdn.amazonlinux.com/al2023/core/mirrors/latest/x86_64/mirror.list
 
 aliases:
   - type: redhat-repository-to-cpe

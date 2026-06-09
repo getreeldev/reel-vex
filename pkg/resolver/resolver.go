@@ -82,6 +82,17 @@ func (r *Resolver) Expand(id string) []Candidate {
 				add(bare+"?distro="+norm, "direct")
 			}
 		}
+		// rpm (Amazon Linux): statements are stored major-scoped as
+		// ?distro=amazon-<major> — amzn2 and amzn2023 are different packages with
+		// different fixes, so distro is identity. Trivy emits the full point
+		// release ("amazon-2023.7.20250512"); normalize to amazon-<major> so the
+		// query stays distro-precise instead of leaking across majors via the bare
+		// candidate. Additive; amazon-only.
+		if strings.HasPrefix(bare, "pkg:rpm/amazon/") {
+			if norm := normalizeAmazonDistro(base[i+len("?distro="):]); norm != "" {
+				add(bare+"?distro="+norm, "direct")
+			}
+		}
 	}
 
 	// via_alias: repository_id qualifier on a PURL → CPEs in the alias table.
@@ -148,4 +159,26 @@ func normalizeAlpineDistro(d string) string {
 		return ""
 	}
 	return "alpine-" + parts[0] + "." + parts[1]
+}
+
+// normalizeAmazonDistro maps a scanner-supplied Amazon distro qualifier to the
+// amazon-<major> form reel-vex stores Amazon statements under. Trivy emits the
+// full point release ("amazon-2023.7.20250512", and AL2023's "+(Amazon Linux)"
+// suffix decodes to a trailing " (Amazon Linux)"); both collapse to
+// "amazon-2023". AL2's "amazon-2" maps to itself. Returns "" for a non-amazon
+// distro so no spurious candidate is added.
+func normalizeAmazonDistro(d string) string {
+	if !strings.HasPrefix(d, "amazon-") {
+		return ""
+	}
+	major := strings.SplitN(strings.TrimPrefix(d, "amazon-"), ".", 2)[0]
+	if f := strings.Fields(major); len(f) > 0 { // tolerate a space-separated suffix
+		major = f[0]
+	} else {
+		major = ""
+	}
+	if major == "" {
+		return ""
+	}
+	return "amazon-" + major
 }
