@@ -70,12 +70,25 @@ jobs:
         id: tags
         run: |
           VERSION="${GITHUB_REF_NAME}"
-          MAJOR="${VERSION%%.*}"   # v0.1.0 → v0
+          # Pre-release tags carry a semver hyphen suffix (e.g. v0.10.0-rc.1).
+          # They publish ONLY the exact version tag — never :latest or the rolling
+          # :vMAJOR — so a release candidate (rolled to the A/B snapshot box for
+          # validation before the DNS swap) can't move the tags stable consumers
+          # pull. Final releases publish version + :vMAJOR + :latest as before.
+          if [[ "$VERSION" == *-* ]]; then
+            TAGS="getreel/vex-hub:${VERSION}"
+            echo "Pre-release ${VERSION}: publishing only getreel/vex-hub:${VERSION}"
+          else
+            MAJOR="${VERSION%%.*}"   # v0.1.0 → v0
+            TAGS="getreel/vex-hub:${VERSION}"$'\n'"getreel/vex-hub:${MAJOR}"$'\n'"getreel/vex-hub:latest"
+            echo "Release ${VERSION}: publishing getreel/vex-hub:${VERSION}, :${MAJOR}, :latest"
+          fi
           {
             echo "version=${VERSION}"
-            echo "major=${MAJOR}"
+            echo "tags<<TAGS_EOF"
+            echo "${TAGS}"
+            echo "TAGS_EOF"
           } >> "$GITHUB_OUTPUT"
-          echo "Will publish: getreel/vex-hub:${VERSION}, :${MAJOR}, :latest"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -94,10 +107,7 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ steps.tags.outputs.version }}
-          tags: |
-            getreel/vex-hub:${{ steps.tags.outputs.version }}
-            getreel/vex-hub:${{ steps.tags.outputs.major }}
-            getreel/vex-hub:latest
+          tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -112,6 +122,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # A semver pre-release (hyphen suffix, e.g. -rc.1) is flagged as a
+          # GitHub pre-release and kept off "Latest release".
+          PRERELEASE=""
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            PRERELEASE="--prerelease --latest=false"
+          fi
           gh release create "${GITHUB_REF_NAME}" \
             --title "vex-hub ${GITHUB_REF_NAME}" \
-            --generate-notes
+            --generate-notes $PRERELEASE
