@@ -30,6 +30,19 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      # Scan the dependency tree for known CVEs (matters most for the
+      # decompression libs — xz/zstd/bzip2 — used in the ingest feed paths).
+      # Run as a tool so it stays out of go.mod.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
   unit-test:
     runs-on: ubuntu-latest
     steps:

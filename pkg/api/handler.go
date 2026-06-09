@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -441,7 +442,10 @@ func (s *Server) handleIngestTrigger(w http.ResponseWriter, r *http.Request) {
 
 	if s.ingest.adminToken != "" {
 		auth := r.Header.Get("Authorization")
-		if auth != "Bearer "+s.ingest.adminToken {
+		// Constant-time compare so the admin token can't be recovered byte-by-byte
+		// from response-timing differences. ConstantTimeCompare leaks only the
+		// length (returns 0 immediately on a length mismatch), which is not secret.
+		if subtle.ConstantTimeCompare([]byte(auth), []byte("Bearer "+s.ingest.adminToken)) != 1 {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}

@@ -120,9 +120,13 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 			IDType:        s.IDType,
 			Status:        s.Status,
 			Justification: s.Justification,
-			Updated:       s.Updated.Format(time.RFC3339),
-			SourceFormat:  a.SourceFormat(),
-			Scope:         s.Scope,
+			// Force UTC: `updated` is a TEXT column compared lexicographically
+			// (the `?since=` filter and the incremental watermark), which only
+			// equals chronological order when every stored string uses the same
+			// zone. A non-zero offset (e.g. +05:00) would sort wrong against `Z`.
+			Updated:      s.Updated.UTC().Format(time.RFC3339),
+			SourceFormat: a.SourceFormat(),
+			Scope:        s.Scope,
 		})
 		processed++
 		if len(batch) >= batchSize {
@@ -145,7 +149,7 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 	// erase a previously-set last_synced.
 	var newestStr string
 	if !newest.IsZero() {
-		newestStr = newest.Format(time.RFC3339)
+		newestStr = newest.UTC().Format(time.RFC3339) // UTC: see emit() above
 	}
 	if err := database.UpsertAdapterState(a.ID(), feed.FeedURL, newestStr); err != nil {
 		return fmt.Errorf("update adapter state: %w", err)

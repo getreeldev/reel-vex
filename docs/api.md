@@ -178,9 +178,9 @@ User VEX submissions are processed in memory: parsed, validated, merged, returne
 
 | Rule | Value | Status |
 |---|---|---|
-| Request body size | 5 MB | `413` |
+| Request body size | 10 MB | `413` |
 | `user_vex` documents per request | 10 | `400` |
-| User statements (total across docs) | 1000 | `400` |
+| User statements (total across docs) | 25 000 | `400` |
 | Products per user statement | 100 | `400` |
 | SBOM components | 50 000 | `400` |
 | SBOM vulnerabilities | 10 000 | `400` |
@@ -276,7 +276,7 @@ When `sbom` is present, reel-vex extracts:
 - **Products** from `.components[].purl` and `.components[].cpe`,
 - **Scope** from `.metadata.component` (the SBOM's root subject) — opts in any product-scoped statements for that image/module (see [Product-scoped statements](#product-scoped-statements)).
 
-Both sets are unioned with any explicit `cves` / `products` the request also carries — so a caller can broaden the query with extras without losing what the SBOM declared. The SBOM body counts against the same body-size cap as `/v1/analyze` (default 5 MB, configurable on the operator side via `-sbom-max-mb`).
+Both sets are unioned with any explicit `cves` / `products` the request also carries — so a caller can broaden the query with extras without losing what the SBOM declared. The SBOM body counts against the same body-size cap as `/v1/analyze` (default 10 MB, configurable on the operator side via `-sbom-max-mb`).
 
 This removes the manual `jq` extraction step from the `trivy image --vex` flow: pipe the Trivy JSON straight in instead of pre-shelling out for CVE/PURL lists. See the [recipes](#recipes) section below.
 
