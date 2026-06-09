@@ -51,9 +51,9 @@ Empty results return `204 No Content`. OpenVEX 0.2.0's schema requires `statemen
 | `vulnerability.name` | string | The CVE ID (e.g. `CVE-2021-44228`). |
 | `products[]` | array | One or more products covered by this statement. Each carries an `@id` and/or an `identifiers` object with `purl`/`cpe22`/`cpe23`. When the request includes `products` (`/v1/statements`, `/v1/analyze`), the user's input identifier is echoed verbatim into `products[]` so consumers like Trivy that match on PURL see what they sent. |
 | `status` | string | One of the four VEX statuses (see [Status values](#status-values)). |
-| `status_notes` | string | Diagnostic free text: `source_format=<csaf|oval|openvex>; match_reason=<...>`, plus `scope=<product @id>` on product-scoped rows. Empty `source_format=` is omitted on user-sourced rows. |
+| `status_notes` | string | Diagnostic free text: `source_format=<csaf|oval|openvex|secdb|updateinfo>; match_reason=<...>`, plus `scope=<product @id>` on product-scoped rows. Empty `source_format=` is omitted on user-sourced rows. |
 | `justification` | string | Required when `status==not_affected`. OpenVEX 0.2.0 enum (see [Justification values](#justification-values)). |
-| `supplier` | string | Vendor identifier (`redhat`, `suse`, `rancher`, `ubuntu`, `debian`). For user-sourced rows, the value the user self-disclosed via the inbound doc's `supplier` field. |
+| `supplier` | string | Vendor identifier (`redhat`, `suse`, `rancher`, `ubuntu`, `debian`, `alpine`, `amazon`, `almalinux`, `oracle`). For user-sourced rows, the value the user self-disclosed via the inbound doc's `supplier` field. |
 | `timestamp` | RFC3339 string | When the upstream advisory (or user document) last updated this statement. |
 
 ### Status values
