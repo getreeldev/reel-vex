@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -123,7 +125,21 @@ func (r *IngestRunner) runIngest() {
 	slog.Info("ingest started")
 	start := time.Now()
 
-	err := r.ingestFn()
+	// runIngest runs in its own goroutine, so a panic in any feed parser (e.g. a
+	// nil-deref / index-out-of-range on malformed third-party feed data) would
+	// otherwise crash the whole server process and — short of that — leave
+	// `running` stuck true forever (every later trigger 409s, the scheduler
+	// no-ops). Recover it into an error so the status reset below always runs and
+	// the next cycle can proceed.
+	err := func() (err error) {
+		defer func() {
+			if p := recover(); p != nil {
+				err = fmt.Errorf("ingest panicked: %v", p)
+				slog.Error("ingest panicked", "panic", p, "stack", string(debug.Stack()))
+			}
+		}()
+		return r.ingestFn()
+	}()
 
 	r.mu.Lock()
 	r.running = false
