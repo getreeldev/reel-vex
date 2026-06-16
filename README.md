@@ -6,7 +6,7 @@
 <h1 align="center"><samp>reel</samp> vex</h1>
 
 <p align="center">
-  <strong>Free, open-source VEX service.</strong>
+  <strong>The free, open-source VEX hub.</strong>
   <br>
   Aggregates vendor VEX statements (CSAF 2.0, OVAL, OpenVEX) into one database and serves them over an HTTP API.
   <br><br>
@@ -124,4 +124,4 @@ Most useful: new CSAF providers (a `config.yaml` entry), new OVAL sources (a `tr
 
 ## License
 
-Apache 2.0
+Apache 2.0 — see [`LICENSE`](./LICENSE). Vendor-data attribution and licensing is in [`NOTICE.md`](./NOTICE.md).
