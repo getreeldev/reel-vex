@@ -53,6 +53,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
+          # The runner's cached toolchain can lag a patch release behind, and
+          # govulncheck scans the stdlib at the toolchain's own version — a
+          # stale cache fails the scan on already-fixed stdlib CVEs.
+          check-latest: true
       # Scan the dependency tree for known CVEs (matters most for the
       # decompression libs — xz/zstd/bzip2 — used in the ingest feed paths).
       # Run as a tool so it stays out of go.mod.
