@@ -2,6 +2,12 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [Unreleased]
+
+### Added
+
+- **`X-Reel-CVE` response header** on `POST /v1/statements` for single-CVE lookups (exactly one CVE queried; omitted for multi-CVE and broad/SBOM queries to avoid high-cardinality noise). Lets the telemetry pipeline see which CVE was asked for — the CVE rides the request body, invisible to the fronting proxy. Paired with the website `vector.toml` lifting it into the `api_request` event as `cve`.
+
 ## [0.11.0] — telemetry: query mode + result size on response headers
 
 ### Added

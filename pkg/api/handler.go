@@ -384,6 +384,13 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("X-Reel-Mode", mode)
 	w.Header().Set("X-Reel-Statements", strconv.Itoa(len(stmts)))
+	// Single-CVE lookups echo the queried CVE so the telemetry pipeline can see
+	// what was asked (the CVE rides the request body, invisible to the proxy).
+	// Only when exactly one CVE is queried — multi-CVE/SBOM queries would be
+	// high-cardinality noise.
+	if !broadMode && len(req.CVEs) == 1 {
+		w.Header().Set("X-Reel-CVE", req.CVEs[0])
+	}
 
 	// OpenVEX 0.2.0 schema requires statements: minItems 1. 204 on empty
 	// keeps the response schema-valid.

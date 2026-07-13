@@ -259,6 +259,16 @@ func TestTelemetryHeaders(t *testing.T) {
 		if got := w.Header().Get("X-Reel-Statements"); got != "2" {
 			t.Errorf("X-Reel-Statements: got %q, want 2", got)
 		}
+		if got := w.Header().Get("X-Reel-CVE"); got != "CVE-2024-1234" {
+			t.Errorf("X-Reel-CVE: got %q, want CVE-2024-1234", got)
+		}
+	})
+
+	t.Run("statements multi-CVE omits X-Reel-CVE", func(t *testing.T) {
+		w := post(t, "/v1/statements", statementsRequest{CVEs: []string{"CVE-2024-1234", "CVE-2024-5678"}})
+		if got := w.Header().Get("X-Reel-CVE"); got != "" {
+			t.Errorf("X-Reel-CVE should be unset for multi-CVE, got %q", got)
+		}
 	})
 
 	t.Run("statements broad mode", func(t *testing.T) {
