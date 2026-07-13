@@ -2,7 +2,7 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
-## [Unreleased]
+## [0.11.1] — telemetry: echo queried CVE for single-CVE lookups
 
 ### Added
 
