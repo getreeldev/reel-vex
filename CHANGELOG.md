@@ -2,6 +2,12 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.11.0] — telemetry: query mode + result size on response headers
+
+### Added
+
+- **`X-Reel-Mode` + `X-Reel-Statements` response headers** on `POST /v1/statements` and `POST /v1/analyze`. `X-Reel-Mode` is `cve` or `broad` (broad = product/SBOM-component query with no CVE filter); `X-Reel-Statements` is the emitted/merged statement count. Set on both the 200 and 204 paths. The fronting Caddy proxy logs response headers, so the PostHog telemetry pipeline (Caddy access log → Vector sidecar) can capture query shape and result size without inspecting request bodies. The served VEX/JSON bodies are untouched. Pairs with the website `vector.toml` change that lifts these into the `api_request` event.
+
 ## [0.10.0] — four new OS feeds: Alpine, Amazon Linux, AlmaLinux, Oracle Linux
 
 ### Added
