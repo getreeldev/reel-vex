@@ -234,6 +234,72 @@ func TestHandleStatements_Truncation(t *testing.T) {
 
 // TestHandleStatements_OrderStable verifies the deterministic ordering that
 // makes a cached broad-mode doc byte-stable across refetches.
+// Telemetry headers: query mode + result size ride X-Reel-Mode /
+// X-Reel-Statements so the fronting proxy's access log (the PostHog
+// pipeline's source) can see what the proxy can't read from a POST body.
+func TestTelemetryHeaders(t *testing.T) {
+	database := setupTestDB(t)
+	srv := NewServer(database, nil)
+
+	post := func(t *testing.T, path string, payload any) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest("POST", path, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		return w
+	}
+
+	t.Run("statements cve mode", func(t *testing.T) {
+		w := post(t, "/v1/statements", statementsRequest{CVEs: []string{"CVE-2024-1234"}})
+		if got := w.Header().Get("X-Reel-Mode"); got != "cve" {
+			t.Errorf("X-Reel-Mode: got %q, want cve", got)
+		}
+		if got := w.Header().Get("X-Reel-Statements"); got != "2" {
+			t.Errorf("X-Reel-Statements: got %q, want 2", got)
+		}
+	})
+
+	t.Run("statements broad mode", func(t *testing.T) {
+		w := post(t, "/v1/statements", statementsRequest{Products: []string{"pkg:rpm/test/openssl@3.0"}})
+		if got := w.Header().Get("X-Reel-Mode"); got != "broad" {
+			t.Errorf("X-Reel-Mode: got %q, want broad", got)
+		}
+		if got := w.Header().Get("X-Reel-Statements"); got != "1" {
+			t.Errorf("X-Reel-Statements: got %q, want 1", got)
+		}
+	})
+
+	t.Run("statements 204 still carries headers", func(t *testing.T) {
+		w := post(t, "/v1/statements", statementsRequest{CVEs: []string{"CVE-9999-0000"}})
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d", w.Code)
+		}
+		if got := w.Header().Get("X-Reel-Statements"); got != "0" {
+			t.Errorf("X-Reel-Statements: got %q, want 0", got)
+		}
+	})
+
+	t.Run("analyze broad mode", func(t *testing.T) {
+		sbom := map[string]any{
+			"bomFormat":   "CycloneDX",
+			"specVersion": "1.5",
+			"components":  []map[string]any{{"purl": "pkg:rpm/test/openssl@3.0"}},
+		}
+		w := post(t, "/v1/analyze", map[string]any{"sbom": sbom})
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		if got := w.Header().Get("X-Reel-Mode"); got != "broad" {
+			t.Errorf("X-Reel-Mode: got %q, want broad", got)
+		}
+		if got := w.Header().Get("X-Reel-Statements"); got != "1" {
+			t.Errorf("X-Reel-Statements: got %q, want 1", got)
+		}
+	})
+}
+
 func TestHandleStatements_OrderStable(t *testing.T) {
 	database := setupTestDB(t)
 	srv := NewServer(database, nil)

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -256,6 +257,16 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 7. Output.
+	// Telemetry: query mode + result size ride response headers so the
+	// fronting proxy's access log (the PostHog pipeline's source) can see
+	// them — the proxy can't inspect request bodies, and the response body
+	// stays untouched. Mirrors handleStatements.
+	mode := "cve"
+	if synthesize {
+		mode = "broad"
+	}
+	w.Header().Set("X-Reel-Mode", mode)
+	w.Header().Set("X-Reel-Statements", strconv.Itoa(len(merged)))
 	w.Header().Set("Content-Type", "application/json")
 	if hasSBOM {
 		if len(merged) > 0 {

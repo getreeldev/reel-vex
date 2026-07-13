@@ -374,6 +374,17 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		truncated = true
 	}
 
+	// Telemetry: query mode + result size ride response headers so the
+	// fronting proxy's access log (the PostHog pipeline's source) can see
+	// them — the proxy can't inspect request bodies, and the served VEX
+	// body stays untouched. Set on both the 200 and 204 paths.
+	mode := "cve"
+	if broadMode {
+		mode = "broad"
+	}
+	w.Header().Set("X-Reel-Mode", mode)
+	w.Header().Set("X-Reel-Statements", strconv.Itoa(len(stmts)))
+
 	// OpenVEX 0.2.0 schema requires statements: minItems 1. 204 on empty
 	// keeps the response schema-valid.
 	if len(stmts) == 0 {
