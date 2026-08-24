@@ -1684,3 +1684,20 @@ func TestHandleStats_OtherErrorsStill500(t *testing.T) {
 		t.Fatalf("expected 500 for a genuine failure, got %d", w.Code)
 	}
 }
+
+// TestCORSExposesRetryAfter guards the header the playground needs to know how
+// long to wait for a warming stats cache. Retry-After is not CORS-safelisted,
+// so without an explicit expose a browser reads null and has to guess.
+func TestCORSExposesRetryAfter(t *testing.T) {
+	srv := NewServer(dbtest.New(), nil)
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	exposed := w.Header().Get("Access-Control-Expose-Headers")
+	for _, h := range []string{"Retry-After", "X-Reel-Grouped", "X-Reel-Arch", "X-Reel-Truncated"} {
+		if !strings.Contains(exposed, h) {
+			t.Errorf("Access-Control-Expose-Headers must include %q; got %q", h, exposed)
+		}
+	}
+}

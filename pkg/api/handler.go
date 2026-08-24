@@ -176,7 +176,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Custom response headers aren't readable by cross-origin JS (e.g. the
 	// vex.getreel.dev playground) unless explicitly exposed — only the CORS
 	// safelist is. The truncation signal is useless to a browser otherwise.
-	w.Header().Set("Access-Control-Expose-Headers", "X-Reel-Truncated, X-Reel-Next-Offset, X-Reel-Converted, X-Reel-Grouped, X-Reel-Arch")
+	// Retry-After rides the 503 that /v1/stats returns while its cache warms.
+	// It is not a CORS-safelisted response header, so a browser client (the
+	// vex.getreel.dev playground) cannot read it without this — and would have
+	// to guess how long to wait before asking again.
+	w.Header().Set("Access-Control-Expose-Headers", "X-Reel-Truncated, X-Reel-Next-Offset, X-Reel-Converted, X-Reel-Grouped, X-Reel-Arch, Retry-After")
 
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)

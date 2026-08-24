@@ -2,6 +2,14 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.12.2] — the stats timeout now survives the process that set it
+
+### Fixed
+
+- **The stats timeout is enforced server-side.** 0.12.1 bounded the computation with a Go context, which is enough only while the process is alive. If it exits mid-scan — a container recreate, say — Postgres does not notice the client is gone until the query tries to return rows, so an aggregate over the whole table runs to completion with nothing to return to, competing for I/O with the replacement process doing the same work. Observed on the 0.12.0 → 0.12.1 swap: an orphaned count was still running **eleven minutes** after the container that asked for it had exited. The computation now runs in a transaction with `SET LOCAL statement_timeout`, so the database enforces the bound whether or not the client is still there. `SET LOCAL` rather than `SET`, so the setting can't ride a pooled connection back into the pool and cap unrelated work later.
+
+- **`Retry-After` is exposed to browsers.** `/v1/stats` answers `503` + `Retry-After` while its cache warms, but `Retry-After` is not a CORS-safelisted response header — so a browser client could not read it and had to guess how long to wait. Added to `Access-Control-Expose-Headers`.
+
 ## [0.12.1] — /v1/stats no longer stalls after a restart
 
 ### Fixed

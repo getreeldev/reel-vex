@@ -373,6 +373,11 @@ func (p *DB) computeAndCache() (db.Stats, error) {
 // unbounded COUNT(DISTINCT) ran ~30 minutes on 382M rows and spilled GBs.)
 const statsTimeout = 20 * time.Minute
 
+// statsTimeoutSQL is statsTimeout as a Postgres literal, applied server-side
+// with SET LOCAL so the database enforces it even if this process is gone.
+// Kept next to statsTimeout so the two can't drift.
+const statsTimeoutSQL = `'20min'`
+
 // distinctCVEQuery counts distinct CVEs with a loose ("skip") index scan rather
 // than COUNT(DISTINCT cve).
 //
@@ -399,21 +404,43 @@ func (p *DB) computeStats() (db.Stats, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), statsTimeout)
 	defer cancel()
 	var s db.Stats
+
+	// Run inside a transaction so `SET LOCAL statement_timeout` scopes to these
+	// queries and unwinds on its own — a plain SET would ride the pooled
+	// connection back into the pool and silently cap unrelated work later.
+	//
+	// The Go context above is not enough on its own. If this process dies
+	// mid-scan (a container recreate, say), Postgres does not notice the client
+	// is gone until the query tries to return rows, so an aggregate over the
+	// whole table keeps running to completion with nothing to return to,
+	// competing for I/O with the replacement process doing the same work.
+	// Observed on a v0.12.0 -> v0.12.1 swap: an orphaned count was still going
+	// eleven minutes after the container that asked for it had exited. Only a
+	// server-side timeout can end that, because only the server is still there.
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return s, err
+	}
+	defer tx.Rollback(context.Background()) // read-only; rollback is the cheap exit
+	if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = `+statsTimeoutSQL); err != nil {
+		return s, err
+	}
+
 	var vendors, cves, statements, aliases int64
-	if err := p.pool.QueryRow(ctx, `SELECT COUNT(DISTINCT id) FROM vendors`).Scan(&vendors); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT COUNT(DISTINCT id) FROM vendors`).Scan(&vendors); err != nil {
 		return s, err
 	}
-	if err := p.pool.QueryRow(ctx, distinctCVEQuery).Scan(&cves); err != nil {
+	if err := tx.QueryRow(ctx, distinctCVEQuery).Scan(&cves); err != nil {
 		return s, err
 	}
-	if err := p.pool.QueryRow(ctx, `SELECT COUNT(*) FROM statements`).Scan(&statements); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM statements`).Scan(&statements); err != nil {
 		return s, err
 	}
-	if err := p.pool.QueryRow(ctx, `SELECT COUNT(*) FROM product_aliases`).Scan(&aliases); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM product_aliases`).Scan(&aliases); err != nil {
 		return s, err
 	}
 	var lastUpdated *string
-	if err := p.pool.QueryRow(ctx, `SELECT MAX(last_synced) FROM adapter_state`).Scan(&lastUpdated); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT MAX(last_synced) FROM adapter_state`).Scan(&lastUpdated); err != nil {
 		return s, err
 	}
 	s.Vendors, s.CVEs, s.Statements, s.Aliases = int(vendors), int(cves), int(statements), int(aliases)
