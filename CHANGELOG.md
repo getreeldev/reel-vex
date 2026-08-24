@@ -2,6 +2,38 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.12.0] — OpenVEX statements grouped by assertion; opt-in architecture matching
+
+### Fixed
+
+- **Responses that supply `products` are now schema-valid.** OpenVEX 0.2.0 declares `statements` with `uniqueItems: true`, and reel-vex was emitting duplicates: one statement per database row, while a products-bearing query echoes the *caller's* identifier in base form — no version, no arch — so the eight architectures × five package versions a distro publishes for one advisory all rendered byte-identically. A real `ubuntu:22.04` SBOM query returned 13 543 statements of which 12 215 were exact duplicates, and the document failed validation. CVE-only queries were never affected (each statement carried its own stored identifier).
+
+### Changed
+
+- **`statements[]` now counts distinct assertions, not database rows.** Rows agreeing on every statement-level field — CVE, status, justification, supplier, timestamp, and the whole of `status_notes` — are emitted once with `products[]` holding the union of their subjects. Nothing merges across a differing verdict, vendor, timestamp or provenance: `status_notes` carries `source_format`, `match_reason` and `scope`, and is part of the merge key precisely so a CSAF row and an OVAL row, or a scoped Rancher verdict and an unscoped one, stay distinct.
+
+  Measured on live data: `ubuntu:22.04` SBOM 13 543 → 750 statements (4.5 MB → 316 KB); `CVE-2023-4911` 6 353 → 19. **Nothing is dropped** — every product in the old response is in the new one. If you counted `statements[]` as a number of verdicts, that number changes; `X-Reel-Statements` still reports rows and is unchanged.
+
+  Consumers that iterate `products[]` need no change. Verified against **Trivy 0.74.0**: a grouped document suppresses the identical set of CVEs as the ungrouped equivalent, including with statements carrying thousands of products.
+
+### Added
+
+- **`strict_arch` on `POST /v1/statements` and `POST /v1/analyze`** (optional, default `false` — existing behaviour unchanged). Matching ignores the `arch` qualifier by default, which is correct across a corpus where the feeds disagree wildly about whether to qualify (Canonical's OpenVEX ~100% of rows, Red Hat CSAF ~69%, every other source 0%) — but it means a scanner on `amd64` silently receives `arm64` and `s390x` verdicts echoed back under its own identifier. With `strict_arch` a row is returned only if it carries no `arch`, an architecture-independent one, or one the caller named.
+
+  Architecture-independent means `noarch`, `src`, `source` and `all` — Red Hat writes `src`, Ubuntu writes `source`, Debian/Ubuntu write `all`. Narrowing these away would discard real vendor verdicts, so the set is table-tested by vendor.
+
+  The architecture set is request-level (the union across supplied products), so a mixed-architecture request widens rather than narrows; and it is a no-op when nothing you sent names an architecture, including every CVE-only query.
+
+- **`X-Reel-Grouped`** — statements emitted, alongside `X-Reel-Statements`' row count.
+- **`X-Reel-Arch`** — the architecture set `strict_arch` applied; absent when nothing was narrowed. Deliberately not a dropped-row count, which would require running the un-narrowed query to compute. Both headers are CORS-exposed.
+
+### Internal
+
+- `pkg/csaf.PURLArch` / `csaf.ArchIndependent`; `db.QueryFilters.ArchAllow`, implemented in both the Postgres backend and the in-memory fake. Arch filtering is two layers: a `LIKE` superset in SQL so `LIMIT` applies to rows the caller keeps and truncation stays honest, and an exact qualifier re-parse in `pkg/api` because `LIKE` cannot see qualifier boundaries (`arch=amd64` vs `arch=amd64_v2`). The predicate rides the existing covering index as an index filter — verified on production data: no additional heap fetches, **no new index**.
+- `TestEncode_ValidatesAgainstSchema` runs encoder output through a real JSON Schema validator. The previous test read the schema but only checked required fields and enums, which is why a `uniqueItems` violation could ship.
+- **No schema migration, no ingest change.** Rows stay one-per-architecture; all of this is response-time, and rollback is redeploying the previous image.
+- Dependencies refreshed: `gocsaf/csaf` v3.5.1 → v3.6.0, `klauspost/compress` v1.18.6 → v1.19.2, `ulikunitz/xz` v0.5.15 → v0.5.16. Toolchain moved to **Go 1.27** across reel-vex, `oval-to-vex` and `cyclonedx-to-openvex`.
+
 ## [0.11.1] — telemetry: echo queried CVE for single-CVE lookups
 
 ### Added

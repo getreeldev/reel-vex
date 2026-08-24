@@ -32,6 +32,18 @@ Per-feed provenance (`source_format`) and per-statement match reasoning (`match_
 
 Empty results return `204 No Content`. OpenVEX 0.2.0's schema requires `statements: minItems 1`, so we cannot emit a valid doc with zero statements; 204 signals "query valid, no statements" without violating the schema.
 
+### Statements are grouped by assertion, not by database row
+
+**Changed in 0.12.0.** One statement carries every product it applies to. Rows that agree on *every* statement-level field — CVE, status, justification, supplier, timestamp, and the whole of `status_notes` — are emitted once, with `products[]` holding the union of their subjects. Anything that differs on any of those fields stays a separate statement, so a CSAF row and an OVAL row, a `direct` match and a `via_alias` match, or a scoped and an unscoped verdict are never merged.
+
+This matters for two reasons.
+
+It is what the format asks for: `products[]` is an array precisely so one assertion can name many subjects, and OpenVEX 0.2.0 declares `statements` with `uniqueItems: true`. Before 0.12.0 reel-vex emitted one statement per row, and because a query that supplies `products` echoes *your* identifier in base form — no version, no arch — the eight architectures and five package versions a distro publishes for one advisory all rendered as byte-identical statements. A real `ubuntu:22.04` SBOM query returned 13 543 statements of which 12 215 were duplicates, and the document failed schema validation.
+
+And it changes what a statement count means. `statements[]` now counts distinct assertions, so the same query returns far fewer entries than before (that `ubuntu:22.04` query: 13 543 → 750). Nothing is dropped — every product in the old response is still in the new one. If you need the row count, read `X-Reel-Statements`, which is unchanged.
+
+Consumers that iterate `products[]` need no change. Trivy 0.74.0 suppresses the identical set of CVEs from a grouped and an ungrouped document.
+
 ### Document-level fields
 
 | Field | Type | Description |
@@ -49,7 +61,7 @@ Empty results return `204 No Content`. OpenVEX 0.2.0's schema requires `statemen
 | Field | Type | Description |
 |---|---|---|
 | `vulnerability.name` | string | The CVE ID (e.g. `CVE-2021-44228`). |
-| `products[]` | array | One or more products covered by this statement. Each carries an `@id` and/or an `identifiers` object with `purl`/`cpe22`/`cpe23`. When the request includes `products` (`/v1/statements`, `/v1/analyze`), the user's input identifier is echoed verbatim into `products[]` so consumers like Trivy that match on PURL see what they sent. |
+| `products[]` | array | Every product this statement applies to — deduped and ordered by identifier. Each carries an `@id` and/or an `identifiers` object with `purl`/`cpe22`/`cpe23`. When the request includes `products` (`/v1/statements`, `/v1/analyze`), the user's input identifier is echoed verbatim into `products[]` so consumers like Trivy that match on PURL see what they sent. Iterate the whole array; do not assume `products[0]`. |
 | `status` | string | One of the four VEX statuses (see [Status values](#status-values)). |
 | `status_notes` | string | Diagnostic free text: `source_format=<csaf|oval|openvex|secdb|updateinfo>; match_reason=<...>`, plus `scope=<product @id>` on product-scoped rows. Empty `source_format=` is omitted on user-sourced rows. |
 | `justification` | string | Required when `status==not_affected`. OpenVEX 0.2.0 enum (see [Justification values](#justification-values)). |
@@ -101,7 +113,8 @@ For PURL-keyed statements, qualifiers behave in two distinct modes:
 | `distro` (deb) | identity | Part of the statement's `base_id` — `pkg:deb/debian/openssl?distro=debian-12` is a different identity from `pkg:deb/debian/openssl?distro=debian-11`. **Required** on deb-shaped queries to match Debian and Ubuntu OVAL/OpenVEX statements. |
 | `distro` (rpm) | strip-and-also | Trivy and syft emit RPM PURLs with `?distro=redhat-X.Y`, but Red Hat CSAF publishes bare PURLs without distro. The resolver therefore expands a distro-bearing RPM input into both the input-as-given **and** a distro-stripped candidate — purely additive, so a Trivy-shape RPM input matches bare-stored Red Hat statements without losing identity-aware matching against feeds that publish *with* distro. |
 | `repository_id` | filter | Stripped from `base_id`; used by the alias resolver to expand to a CPE (`via_alias`). Required on Red Hat queries that need EUS / AUS / E4S coverage. |
-| `arch`, `epoch` | stripped | Not part of identity; ignored when matching. |
+| `arch` | stripped by default | Not part of `base_id`, so matching ignores architecture unless you ask otherwise. This is deliberate: the feeds disagree about whether to qualify at all (Canonical's OpenVEX qualifies ~100% of rows, Red Hat CSAF ~69%, every other source 0%), so matching exactly would turn most of the corpus into false negatives. Set [`strict_arch`](#architecture-matching-strict_arch) to narrow. |
+| `epoch` | stripped | Not part of identity; ignored when matching. |
 
 ### Product-scoped statements
 
@@ -254,6 +267,7 @@ POST /v1/statements
   "statuses":       ["not_affected", "fixed"],                                 // optional
   "justifications": ["vulnerable_code_not_present"],                           // optional
   "scopes":         ["pkg:oci/longhorn-engine?repository_url=..."],            // optional; opts in product-scoped statements (Rancher VEX)
+  "strict_arch":    false,                                                     // optional; narrow to the architectures your products name
   "since":          "2026-01-01T00:00:00Z",                                    // optional, RFC3339
   "limit":          50000,                                                     // optional, clamped to server -statements-max
   "offset":         0                                                          // optional, for paging a truncated result
@@ -286,6 +300,29 @@ When `products` is provided, each identifier runs through the resolver (`direct`
 
 When `products` is absent, no expansion happens and the encoder emits each statement's stored `product_id` (which may be a CPE for OVAL-derived rows). Trivy will ignore CPE-only entries; `vexctl` and other consumers accept them.
 
+### Architecture matching (`strict_arch`)
+
+**Added in 0.12.0.** Off by default; the default behaviour is unchanged.
+
+Matching normally ignores the `arch` qualifier entirely (see [PURL identity rules](#purl-identity-rules)). That is the right default across a corpus where most feeds never qualify — but it means a scanner running on `amd64` gets `arm64` and `s390x` verdicts echoed back under its own identifier, with nothing in the response to say so.
+
+Set `"strict_arch": true` and a statement row is returned only when it:
+
+- carries no `arch` qualifier, **or**
+- carries an architecture-independent one — `noarch`, `src`, `source`, `all` — which hold everywhere and are never narrowed away, **or**
+- carries an architecture your own `products` named.
+
+Notes on the semantics:
+
+- **The architecture set is request-level**, the union across every identifier you supplied. A mixed-architecture request widens rather than narrows — the safe direction, and in practice one image is one architecture.
+- **It is a no-op when nothing you sent names an architecture**, including every CVE-only query. There is nothing to be strict about, so nothing is filtered.
+- **Narrowing is never silent**: the response carries `X-Reel-Arch` with the set applied. There is no dropped-row count, because computing one would require running the un-narrowed query too.
+- On `/v1/analyze` the architectures come from the SBOM's own components. Your `user_vex` is never narrowed — you asserted on a specific identifier and reel-vex does not second-guess it.
+
+```json
+{"cves": ["CVE-2019-9923"], "products": ["pkg:deb/ubuntu/tar@1.34-1?arch=amd64&distro=ubuntu-22.04"], "strict_arch": true}
+```
+
 ### Cap, truncation, and ordering
 
 - Results are capped at the server's `-statements-max` (default **50 000**; `0` = unlimited). A request `limit` lowers — never raises — that ceiling.
@@ -295,6 +332,19 @@ When `products` is absent, no expansion happens and the encoder emits each state
 ### Compression
 
 Responses are gzip-compressed when the request sends `Accept-Encoding: gzip`. OpenVEX is highly repetitive and compresses ~10×, which keeps a large broad-mode doc small enough to cache and ship cheaply.
+
+### Response headers
+
+| Header | Meaning |
+|---|---|
+| `X-Reel-Mode` | `cve` or `broad` — which query shape ran. |
+| `X-Reel-Statements` | Database rows matched. Unchanged by grouping. |
+| `X-Reel-Grouped` | Statements actually emitted, i.e. `statements[]` length. ≤ `X-Reel-Statements`. |
+| `X-Reel-CVE` | Echoes the queried CVE on single-CVE lookups. |
+| `X-Reel-Arch` | Comma-separated architectures `strict_arch` applied. Absent when nothing was narrowed. |
+| `X-Reel-Truncated` / `X-Reel-Next-Offset` | The result hit the cap; page with `offset`. |
+
+All are exposed via CORS (`Access-Control-Expose-Headers`), so browser clients can read them.
 
 ### Response
 
@@ -312,7 +362,10 @@ Responses are gzip-compressed when the request sends `Accept-Encoding: gzip`. Op
     {
       "vulnerability": {"name": "CVE-2021-44228"},
       "timestamp": "2026-04-01T16:43:13Z",
-      "products": [{"@id": "pkg:rpm/redhat/log4j", "identifiers": {"purl": "pkg:rpm/redhat/log4j"}}],
+      "products": [
+        {"@id": "pkg:rpm/redhat/log4j", "identifiers": {"purl": "pkg:rpm/redhat/log4j"}},
+        {"@id": "pkg:rpm/redhat/log4j-jcl", "identifiers": {"purl": "pkg:rpm/redhat/log4j-jcl"}}
+      ],
       "status": "not_affected",
       "status_notes": "source_format=csaf; match_reason=via_alias",
       "justification": "vulnerable_code_not_present",
@@ -351,6 +404,7 @@ Trivy's `--vex` implementation matches on **PURL only** — it ignores `identifi
 
 - Query with a PURL → hierarchical PURL in the doc → Trivy suppresses matching scan findings. ✓
 - CVE-only query (no `products`) → `products[]` carries each statement's stored identifier, which may be CPE → Trivy ignores. Use `vexctl` or any other OpenVEX consumer instead, or add `products` to the request.
+- Multi-product statements (see [grouping](#statements-are-grouped-by-assertion-not-by-database-row)) are matched correctly — Trivy iterates `products[]`. Verified against Trivy 0.74.0: a grouped document suppresses the identical set of CVEs as the ungrouped equivalent, including with statements carrying thousands of products.
 
 ## Recipes
 
