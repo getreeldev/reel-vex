@@ -100,3 +100,52 @@ func TestNormalizeScope(t *testing.T) {
 		})
 	}
 }
+
+func TestPURLArch(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+		want string
+	}{
+		{"redhat rpm", "pkg:rpm/redhat/openssl@3.0.7-1.el9?arch=x86_64", "x86_64"},
+		{"ubuntu deb with distro", "pkg:deb/ubuntu/tar@1.34-1?arch=arm64&distro=ubuntu-22.04", "arm64"},
+		{"arch not first qualifier", "pkg:deb/ubuntu/tar@1.34-1?distro=ubuntu-22.04&arch=s390x", "s390x"},
+		{"noarch", "pkg:rpm/redhat/log4j@1.2.17?arch=noarch", "noarch"},
+		{"no qualifiers", "pkg:rpm/redhat/openssl@3.0.7", ""},
+		{"qualifiers but no arch", "pkg:deb/ubuntu/tar@1.34-1?distro=ubuntu-22.04", ""},
+		{"empty arch value", "pkg:rpm/redhat/openssl@3.0.7?arch=", ""},
+		{"url-encoded value", "pkg:generic/x@1?arch=x86%5F64", "x86_64"},
+		{"subpath fragment after qualifiers", "pkg:golang/x/y@1?arch=amd64#sub/dir", "amd64"},
+		{"cpe input", "cpe:/a:redhat:openssl:3.0", ""},
+		{"empty input", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := PURLArch(tt.id); got != tt.want {
+				t.Errorf("PURLArch(%q) = %q, want %q", tt.id, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestArchIndependent names the vendor behind each value so the set can't be
+// trimmed without someone noticing which feed it breaks.
+func TestArchIndependent(t *testing.T) {
+	independent := map[string]string{
+		"":       "no arch qualifier at all — every CSAF/OVAL feed but Red Hat's",
+		"noarch": "Red Hat, architecture-independent RPM",
+		"src":    "Red Hat, source RPM",
+		"source": "Ubuntu, source package",
+		"all":    "Debian/Ubuntu, architecture-independent deb",
+	}
+	for v, why := range independent {
+		if !ArchIndependent(v) {
+			t.Errorf("ArchIndependent(%q) = false, want true (%s)", v, why)
+		}
+	}
+	for _, v := range []string{"x86_64", "amd64", "arm64", "armhf", "i386", "ppc64el", "riscv64", "s390x", "aarch64"} {
+		if ArchIndependent(v) {
+			t.Errorf("ArchIndependent(%q) = true, want false", v)
+		}
+	}
+}

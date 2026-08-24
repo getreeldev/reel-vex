@@ -241,6 +241,26 @@ func (p *DB) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 		clauses = append(clauses, fmt.Sprintf("updated >= $%d", len(args)))
 	}
 
+	// Arch narrowing: keep rows with no arch qualifier at all, plus rows whose
+	// product_id contains one of the allowed values. Deliberately a superset —
+	// LIKE can't see qualifier boundaries, so '%arch=amd64%' would also match a
+	// hypothetical arch=amd64_v2. pkg/api re-parses the qualifier and does the
+	// exact check; this pass exists so LIMIT applies to rows the caller will
+	// actually keep. The predicate rides the existing (base_id, cve, product_id,
+	// source_format) covering index as an index filter — verified on prod: no
+	// additional heap fetches, no new index.
+	if len(f.ArchAllow) > 0 {
+		patterns := make([]string, 0, len(f.ArchAllow))
+		for _, a := range f.ArchAllow {
+			if a == "" {
+				continue
+			}
+			patterns = append(patterns, "%arch="+a+"%")
+		}
+		args = append(args, patterns)
+		clauses = append(clauses, fmt.Sprintf("(position('arch=' in product_id) = 0 OR product_id LIKE ANY($%d::text[]))", len(args)))
+	}
+
 	// Scope gate: with no scope context only unscoped rows are returned, so a
 	// product-scoped not_affected can't suppress an unrelated product's finding.
 	if len(f.Scopes) == 0 {

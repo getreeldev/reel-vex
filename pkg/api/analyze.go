@@ -32,6 +32,11 @@ type analyzeRequest struct {
 	// the nearest bucket. Default false = normalise everything (lossy mappings
 	// are flagged in the result's status_notes).
 	RejectCycloneDXLossy bool `json:"reject_cyclonedx_lossy,omitempty"`
+	// StrictArch narrows vendor matching to the architectures the SBOM's
+	// components name. Off by default, same reasoning as on /v1/statements.
+	// User-supplied VEX is never narrowed — the user asserted on a specific
+	// identifier and we don't second-guess it.
+	StrictArch bool `json:"strict_arch,omitempty"`
 }
 
 // handleAnalyze routes by input shape:
@@ -133,6 +138,13 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	//    the resolver so via_alias / via_cpe_prefix candidates surface.
 	//    User base_ids are used directly: user asserts on a specific
 	//    identifier and we don't want resolver expansion to widen the claim.
+	//    Architecture narrowing (opt-in) is derived from the SBOM's own
+	//    components, which carry the arch qualifier the base form drops.
+	var arches []string
+	if req.StrictArch {
+		arches = requestArches(sbomComponentIDs)
+	}
+	archAllow := archAllowList(arches)
 	respBaseToReason, respBaseToInputs := s.expandProducts(sbomComponentIDs)
 	queryBases := make(map[string]bool, len(respBaseToReason))
 	for b := range respBaseToReason {
@@ -169,7 +181,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	var truncated bool
 	switch {
 	case synthesize && len(queryBases) > 0:
-		filters := db.QueryFilters{ProductBaseIDs: mapKeysSorted(queryBases), Scopes: scopes}
+		filters := db.QueryFilters{ProductBaseIDs: mapKeysSorted(queryBases), Scopes: scopes, ArchAllow: archAllow}
 		if s.statementsMax > 0 {
 			filters.Limit = s.statementsMax + 1 // +1 to detect truncation
 		}
@@ -194,6 +206,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			CVEs:           mapKeysSorted(queryCVEs),
 			ProductBaseIDs: mapKeysSorted(queryBases),
 			Scopes:         scopes,
+			ArchAllow:      archAllow,
 		})
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
@@ -205,6 +218,10 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	// Exact arch check on vendor rows only (see filterByArch). After the
+	// broad-mode page trim above, so truncation still describes the query.
+	vendorStmts = filterByArch(vendorStmts, arches)
 
 	// 5. Merge with user-override semantics.
 	merged, userCVEs := uservex.Merge(vendorStmts, userStmts)
@@ -267,6 +284,9 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("X-Reel-Mode", mode)
 	w.Header().Set("X-Reel-Statements", strconv.Itoa(len(merged)))
+	if h := archHeader(arches); h != "" {
+		w.Header().Set("X-Reel-Arch", h)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if hasSBOM {
 		if len(merged) > 0 {
@@ -294,6 +314,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	doc := openvex.Encode(merged, respBaseToInputs, respBaseToReason)
+	w.Header().Set("X-Reel-Grouped", strconv.Itoa(len(doc.Statements)))
 	if err := json.NewEncoder(w).Encode(doc); err != nil {
 		slog.Error("openvex encode failed", "error", err)
 	}

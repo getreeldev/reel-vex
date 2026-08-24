@@ -91,8 +91,21 @@ type QueryFilters struct {
 	// OR its scope is in the list. Callers pass already-normalised scopes (see
 	// pkg/csaf.NormalizeScope).
 	Scopes []string
-	Limit  int
-	Offset int
+	// ArchAllow narrows matching to a set of CPU architectures. Empty (the
+	// default) means arch-blind matching — the historical behaviour, and the
+	// right default because the feeds disagree about whether to qualify at all.
+	// When set, a row matches if its product_id carries no arch qualifier, or
+	// an architecture-independent one (see csaf.ArchIndependent), or one named
+	// here.
+	//
+	// The backends apply this as a cheap superset filter only; the exact
+	// qualifier-boundary check is the caller's (pkg/api), which re-parses
+	// product_id. Filtering here rather than only in the caller is what keeps
+	// Limit honest — a narrowed query would otherwise spend its whole page cap
+	// on rows it then discards, and report truncation that isn't real.
+	ArchAllow []string
+	Limit     int
+	Offset    int
 }
 
 // Alias is a mapping from one identifier namespace to another, as published

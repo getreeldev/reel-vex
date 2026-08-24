@@ -140,6 +140,9 @@ func seedDB(dsn string) error {
 	if err := database.UpsertVendor("rancher", "SUSE Rancher (OpenVEX)"); err != nil {
 		return err
 	}
+	if err := database.UpsertVendor("ubuntu", "Canonical Ubuntu"); err != nil {
+		return err
+	}
 
 	stmts := []db.Statement{
 		// CVE-2024-1234: Red Hat, openssl, not_affected
@@ -167,6 +170,15 @@ func seedDB(dsn string) error {
 		// must withhold it unless that image is named (statements) or is the
 		// SBOM root (analyze). See the scope-gate tests below.
 		{Vendor: "rancher", CVE: "CVE-2024-7777", ProductID: "pkg:golang/golang.org/x/net@v0.17.0", BaseID: "pkg:golang/golang.org/x/net", Version: "v0.17.0", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-09-10T00:00:00Z", SourceFormat: "openvex", Scope: "pkg:oci/longhorn-engine?repository_url=registry.suse.com/rancher/longhorn-engine"},
+
+		// CVE-2024-8888: one Ubuntu assertion fanned out across architectures,
+		// the shape strict_arch exists for. Same base_id, so without narrowing
+		// all five rows echo the caller's identifier identically.
+		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar@1.34-1?arch=amd64&distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Version: "1.34-1", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-05-01T00:00:00Z", SourceFormat: "openvex"},
+		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar@1.34-1?arch=arm64&distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Version: "1.34-1", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-05-01T00:00:00Z", SourceFormat: "openvex"},
+		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar@1.34-1?arch=s390x&distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Version: "1.34-1", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-05-01T00:00:00Z", SourceFormat: "openvex"},
+		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar@1.34-1?arch=source&distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Version: "1.34-1", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-05-01T00:00:00Z", SourceFormat: "openvex"},
+		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar@1.34-1?distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Version: "1.34-1", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-05-01T00:00:00Z", SourceFormat: "openvex"},
 	}
 
 	return database.BulkInsert(stmts)
@@ -181,8 +193,14 @@ func TestStatements_CVEOnly(t *testing.T) {
 	expectStatus(t, resp, 200)
 
 	stmts := decodeOpenVEXStatements(t, resp)
-	if len(stmts) != 2 {
-		t.Fatalf("expected 2 statements, got %d", len(stmts))
+	// Two seeded rows (purl + cpe) of one Red Hat assertion; they agree on
+	// every statement-level field, so the encoder groups them into one
+	// statement naming both products.
+	if len(stmts) != 1 {
+		t.Fatalf("expected 1 grouped statement, got %d", len(stmts))
+	}
+	if got := len(stmts[0].Products); got != 2 {
+		t.Fatalf("expected 2 products on the grouped statement, got %d", got)
 	}
 	for _, s := range stmts {
 		if s.Supplier != "redhat" {
@@ -286,8 +304,9 @@ func TestStatements_PURLAndCPE(t *testing.T) {
 	expectStatus(t, resp, 200)
 
 	stmts := decodeOpenVEXStatements(t, resp)
-	if len(stmts) != 2 {
-		t.Fatalf("expected 2 statements (purl + cpe), got %d", len(stmts))
+	// One assertion, both identifiers echoed into its products[].
+	if len(stmts) != 1 {
+		t.Fatalf("expected 1 grouped statement (purl + cpe), got %d", len(stmts))
 	}
 
 	hasPURL, hasCPE := false, false
@@ -404,8 +423,8 @@ func TestStatements_Gzip(t *testing.T) {
 	if err := json.NewDecoder(gz).Decode(&doc); err != nil {
 		t.Fatalf("decode gzipped openvex: %v", err)
 	}
-	if len(doc.Statements) != 2 {
-		t.Fatalf("expected 2 statements, got %d", len(doc.Statements))
+	if len(doc.Statements) != 1 {
+		t.Fatalf("expected 1 grouped statement, got %d", len(doc.Statements))
 	}
 }
 
@@ -554,14 +573,14 @@ func TestStats(t *testing.T) {
 		t.Fatalf("decode stats: %s\nbody: %s", err, body)
 	}
 
-	if stats.Vendors != 3 {
-		t.Fatalf("expected 3 vendors, got %d", stats.Vendors)
+	if stats.Vendors != 4 {
+		t.Fatalf("expected 4 vendors, got %d", stats.Vendors)
 	}
-	if stats.CVEs != 7 {
-		t.Fatalf("expected 7 CVEs, got %d", stats.CVEs)
+	if stats.CVEs != 8 {
+		t.Fatalf("expected 8 CVEs, got %d", stats.CVEs)
 	}
-	if stats.Statements != 9 {
-		t.Fatalf("expected 9 statements, got %d", stats.Statements)
+	if stats.Statements != 14 {
+		t.Fatalf("expected 14 statements, got %d", stats.Statements)
 	}
 	if stats.Version == "" {
 		t.Fatalf("expected /v1/stats to carry a version field; body: %s", body)
@@ -1423,5 +1442,71 @@ func findRepoRoot() string {
 			panic("could not find repo root")
 		}
 		dir = parent
+	}
+}
+
+// TestStatements_StrictArch exercises the arch narrowing against real
+// Postgres, not the in-memory fake — the SQL superset predicate and the Go
+// exact pass have to agree, and a Fake/Postgres divergence in
+// QueryStatements is a mistake this codebase has made before.
+func TestStatements_StrictArch(t *testing.T) {
+	const amd64 = "pkg:deb/ubuntu/tar@1.34-1?arch=amd64&distro=ubuntu-22.04"
+
+	t.Run("off by default", func(t *testing.T) {
+		resp := post(t, "/v1/statements", map[string]any{
+			"cves":     []string{"CVE-2024-8888"},
+			"products": []string{amd64},
+		})
+		expectStatus(t, resp, 200)
+		if got := resp.Header.Get("X-Reel-Statements"); got != "5" {
+			t.Errorf("X-Reel-Statements: got %q, want 5", got)
+		}
+		if got := resp.Header.Get("X-Reel-Arch"); got != "" {
+			t.Errorf("X-Reel-Arch should be absent, got %q", got)
+		}
+	})
+
+	t.Run("narrows to the caller's arch plus the independents", func(t *testing.T) {
+		resp := post(t, "/v1/statements", map[string]any{
+			"cves":        []string{"CVE-2024-8888"},
+			"products":    []string{amd64},
+			"strict_arch": true,
+		})
+		expectStatus(t, resp, 200)
+		// amd64 + source + the unqualified row; arm64 and s390x dropped.
+		if got := resp.Header.Get("X-Reel-Statements"); got != "3" {
+			t.Errorf("X-Reel-Statements: got %q, want 3", got)
+		}
+		if got := resp.Header.Get("X-Reel-Arch"); got != "amd64" {
+			t.Errorf("X-Reel-Arch: got %q, want amd64", got)
+		}
+		stmts := decodeOpenVEXStatements(t, resp)
+		if len(stmts) != 1 {
+			t.Fatalf("the surviving rows are one assertion; expected 1 statement, got %d", len(stmts))
+		}
+	})
+}
+
+// TestStatements_GroupedResponseIsUnique guards the schema rule that made
+// grouping necessary: OpenVEX 0.2.0 declares statements with uniqueItems, and
+// a products-bearing query used to emit byte-identical duplicates.
+func TestStatements_GroupedResponseIsUnique(t *testing.T) {
+	resp := post(t, "/v1/statements", map[string]any{
+		"cves":     []string{"CVE-2024-8888"},
+		"products": []string{"pkg:deb/ubuntu/tar@1.34-1?arch=amd64&distro=ubuntu-22.04"},
+	})
+	expectStatus(t, resp, 200)
+	stmts := decodeOpenVEXStatements(t, resp)
+
+	seen := make(map[string]bool, len(stmts))
+	for _, s := range stmts {
+		raw, err := json.Marshal(s)
+		if err != nil {
+			t.Fatalf("marshal statement: %v", err)
+		}
+		if seen[string(raw)] {
+			t.Fatalf("duplicate statement in response (violates uniqueItems): %s", raw)
+		}
+		seen[string(raw)] = true
 	}
 }

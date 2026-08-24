@@ -12,6 +12,7 @@ package dbtest
 
 import (
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -166,6 +167,15 @@ func (s *Store) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 		if f.Since != "" && st.Updated < f.Since {
 			continue
 		}
+		// Arch narrowing. The Postgres backend applies a LIKE superset here and
+		// leaves the exact qualifier check to pkg/api; the fake does the same
+		// substring match so the two backends can't drift on which rows survive
+		// the query itself.
+		if len(f.ArchAllow) > 0 && strings.Contains(st.ProductID, "arch=") {
+			if !archLikeAny(st.ProductID, f.ArchAllow) {
+				continue
+			}
+		}
 		// Scope gate: no scope context => unscoped rows only; otherwise unscoped
 		// OR a named scope.
 		if len(f.Scopes) == 0 {
@@ -287,4 +297,20 @@ func (s *Store) Stats() (db.Stats, error) {
 // RefreshStats is identical to Stats for the fake.
 func (s *Store) RefreshStats() (db.Stats, error) {
 	return s.Stats()
+}
+
+// archLikeAny mirrors the Postgres backend's `product_id LIKE ANY(...)` arch
+// predicate: a substring match, boundaries and all left to the caller's exact
+// check. Kept deliberately imprecise so the fake and Postgres return the same
+// rows.
+func archLikeAny(productID string, allow []string) bool {
+	for _, a := range allow {
+		if a == "" {
+			continue
+		}
+		if strings.Contains(productID, "arch="+a) {
+			return true
+		}
+	}
+	return false
 }

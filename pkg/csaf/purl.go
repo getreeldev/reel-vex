@@ -88,3 +88,48 @@ func NormalizeScope(id string) string {
 	}
 	return id
 }
+
+// PURLArch returns the `arch` qualifier of a PURL, or "" when the identifier
+// is not a PURL, carries no qualifiers, or has no arch.
+//
+// SplitPURL strips arch from the base form on purpose — matching is
+// arch-blind by default because the feeds disagree wildly about whether to
+// qualify at all (Canonical's OpenVEX qualifies ~100% of rows, Red Hat CSAF
+// ~69%, every other wired source 0%), so exact matching would turn most of
+// the corpus into false negatives. This helper exists for the caller that
+// opts into arch-precise matching and therefore needs the value back.
+func PURLArch(id string) string {
+	if !strings.HasPrefix(id, "pkg:") {
+		return ""
+	}
+	q := strings.IndexByte(id, '?')
+	if q < 0 {
+		return ""
+	}
+	qualifiers := id[q+1:]
+	if i := strings.IndexByte(qualifiers, '#'); i >= 0 {
+		qualifiers = qualifiers[:i]
+	}
+	vals, err := url.ParseQuery(qualifiers)
+	if err != nil {
+		return ""
+	}
+	return vals.Get("arch")
+}
+
+// ArchIndependent reports whether an arch qualifier value means the statement
+// holds regardless of the consumer's architecture.
+//
+// Getting this set right is not cosmetic. Red Hat writes `src` for source
+// packages and `noarch` for architecture-independent ones; Ubuntu writes
+// `source`; Debian and Ubuntu write `all`. Treating any of these as a
+// concrete architecture would make arch-precise matching silently discard
+// real vendor verdicts — the one failure mode a suppression service must
+// never have.
+func ArchIndependent(arch string) bool {
+	switch arch {
+	case "", "noarch", "src", "source", "all":
+		return true
+	}
+	return false
+}

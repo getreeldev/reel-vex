@@ -175,7 +175,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Custom response headers aren't readable by cross-origin JS (e.g. the
 	// vex.getreel.dev playground) unless explicitly exposed — only the CORS
 	// safelist is. The truncation signal is useless to a browser otherwise.
-	w.Header().Set("Access-Control-Expose-Headers", "X-Reel-Truncated, X-Reel-Next-Offset, X-Reel-Converted")
+	w.Header().Set("Access-Control-Expose-Headers", "X-Reel-Truncated, X-Reel-Next-Offset, X-Reel-Converted, X-Reel-Grouped, X-Reel-Arch")
 
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -217,6 +217,13 @@ type statementsRequest struct {
 	// automatically.
 	Scopes []string `json:"scopes,omitempty"`
 	Since  string   `json:"since,omitempty"`
+	// StrictArch narrows matching to the architectures named by the caller's
+	// products. Off by default: matching is arch-blind because the feeds
+	// disagree about whether to qualify at all, so exact matching would produce
+	// false negatives across most of the corpus. With it on, a row is returned
+	// only if it carries no arch qualifier, an architecture-independent one, or
+	// one the caller asked for. A no-op when no product names an architecture.
+	StrictArch bool `json:"strict_arch,omitempty"`
 	// Limit / Offset paginate the result. Limit is clamped to the server's
 	// configured ceiling (-statements-max); Offset skips that many rows. Both
 	// mainly matter in broad mode, where the result set can be large.
@@ -332,8 +339,17 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Architecture narrowing, opt-in. archAllow drives the backend's superset
+	// predicate so LIMIT applies to rows the caller keeps; arches drives the
+	// exact re-parse below.
+	var arches []string
+	if req.StrictArch {
+		arches = requestArches(req.Products)
+	}
+
 	filters := db.QueryFilters{
 		ProductBaseIDs: bases,
+		ArchAllow:      archAllowList(arches),
 		Vendors:        req.Vendors,
 		SourceFormats:  req.SourceFormats,
 		Statuses:       req.Statuses,
@@ -373,6 +389,9 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		stmts = stmts[:limit]
 		truncated = true
 	}
+	// Exact arch check. Runs after the page trim so truncation keeps describing
+	// the query's own page, not a post-filtered slice of it.
+	stmts = filterByArch(stmts, arches)
 
 	// Telemetry: query mode + result size ride response headers so the
 	// fronting proxy's access log (the PostHog pipeline's source) can see
@@ -391,6 +410,13 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 	if !broadMode && len(req.CVEs) == 1 {
 		w.Header().Set("X-Reel-CVE", req.CVEs[0])
 	}
+	// Narrowing is never silent: a caller that asked for strict_arch and got
+	// fewer statements should be able to see which architectures were kept. A
+	// count of what was dropped would need the un-narrowed query to compute, so
+	// we report the set applied instead of a number we would have to invent.
+	if h := archHeader(arches); h != "" {
+		w.Header().Set("X-Reel-Arch", h)
+	}
 
 	// OpenVEX 0.2.0 schema requires statements: minItems 1. 204 on empty
 	// keeps the response schema-valid.
@@ -399,6 +425,9 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	doc := openvex.Encode(stmts, baseToInputs, baseToReason)
+	// X-Reel-Statements counts DB rows; this counts the statements they grouped
+	// into. Both are useful and neither substitutes for the other.
+	w.Header().Set("X-Reel-Grouped", strconv.Itoa(len(doc.Statements)))
 	w.Header().Set("Content-Type", "application/json")
 	// Truncation is signalled out-of-band via headers (not in the OpenVEX body,
 	// which must stay schema-valid). Status stays 200: an unsolicited 206 with
