@@ -90,7 +90,7 @@ reel-vex/
   test/integration/api_test.go -- end-to-end tests (binary + DB + HTTP)
   testdata/                    -- fixtures: CSAF slices, OVAL fixture, alias sample
   config.yaml                  -- adapter + alias-fetcher configuration
-  Dockerfile                   -- golang:1.26-alpine → alpine:3.21
+  Dockerfile                   -- golang:1.27-alpine → alpine:3.21
 ```
 
 **Companion library**: [`getreeldev/oval-to-vex`](https://github.com/getreeldev/oval-to-vex) — standalone Go library that parses Red Hat, Ubuntu, Debian, AlmaLinux, and Oracle Linux OVAL XML into VEX-shaped statements. Zero dependencies beyond stdlib. reel-vex's five OVAL adapters delegate to it; anyone else building scanners can `go get github.com/getreeldev/oval-to-vex/translator`.

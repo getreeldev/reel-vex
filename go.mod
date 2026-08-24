@@ -1,6 +1,6 @@
 module github.com/getreeldev/reel-vex
 
-go 1.26.1
+go 1.27.0
 
 require (
 	github.com/gocsaf/csaf/v3 v3.6.0
