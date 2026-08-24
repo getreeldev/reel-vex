@@ -1,12 +1,15 @@
 package openvex
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/getreeldev/reel-vex/pkg/db"
 )
@@ -227,7 +230,8 @@ func TestEncode_RoundTrip(t *testing.T) {
 // Schema and checks that every `required` key at the document and
 // statement levels is present in an encoded sample. Not a full JSON
 // Schema validator — covers the regressions we care about (missing
-// required field) without adding a runtime or test-time dependency.
+// required field) cheaply. TestEncode_ValidatesAgainstSchema below is the
+// real thing; this one stays because it names the missing field directly.
 func TestEncode_SchemaRequiredFields(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("testdata", "openvex_json_schema_0.2.0.json"))
 	if err != nil {
@@ -299,4 +303,74 @@ func reverse(in []db.Statement) []db.Statement {
 		out[len(in)-1-i] = v
 	}
 	return out
+}
+
+// TestEncode_ValidatesAgainstSchema runs encoder output through a real JSON
+// Schema validator, not a hand-rolled subset of one.
+//
+// TestEncode_SchemaRequiredFields above deliberately avoided a validator
+// dependency, and that gap is exactly how a spec violation reached
+// production: the OpenVEX 0.2.0 schema declares `statements` with
+// `uniqueItems: true`, and before grouping every SBOM-shaped query emitted
+// byte-identical duplicates — 12,215 of 13,543 statements on a real
+// ubuntu:22.04 query. A required-fields check cannot see that; a validator
+// can. The dependency was already in the module graph (gocsaf pulls it), so
+// this promotes an indirect to a direct rather than adding anything new.
+//
+// The fixture is the shape that produced the duplicates: two rows with
+// distinct product_ids that resolve to one base_id, so both echo the same
+// caller-supplied identifier into products[].
+func TestEncode_ValidatesAgainstSchema(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "openvex_json_schema_0.2.0.json"))
+	if err != nil {
+		t.Fatalf("read schema: %v", err)
+	}
+	schemaDoc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+	c := jsonschema.NewCompiler()
+	if err := c.AddResource("openvex.json", schemaDoc); err != nil {
+		t.Fatalf("add schema: %v", err)
+	}
+	schema, err := c.Compile("openvex.json")
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+
+	row := func(productID string) db.Statement {
+		return db.Statement{
+			Vendor:        "ubuntu",
+			CVE:           "CVE-2019-9923",
+			ProductID:     productID,
+			BaseID:        "pkg:deb/ubuntu/tar?distro=ubuntu-22.04",
+			Status:        "not_affected",
+			Justification: "vulnerable_code_not_present",
+			Updated:       "2019-03-22T08:29:00Z",
+			SourceFormat:  "openvex",
+		}
+	}
+	stmts := []db.Statement{
+		row("pkg:deb/ubuntu/tar@1.34-1?arch=amd64&distro=ubuntu-22.04"),
+		row("pkg:deb/ubuntu/tar@1.34-1?arch=arm64&distro=ubuntu-22.04"),
+		row("pkg:deb/ubuntu/tar@1.34-2?arch=amd64&distro=ubuntu-22.04"),
+	}
+	base := "pkg:deb/ubuntu/tar?distro=ubuntu-22.04"
+	doc := Encode(stmts, map[string][]string{base: {base}}, map[string]string{base: "direct"})
+
+	if len(doc.Statements) != 1 {
+		t.Fatalf("three identifier variants of one assertion should group into 1 statement, got %d", len(doc.Statements))
+	}
+
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatalf("re-parse encoded: %v", err)
+	}
+	if err := schema.Validate(inst); err != nil {
+		t.Fatalf("encoded document is not valid OpenVEX 0.2.0: %v", err)
+	}
 }

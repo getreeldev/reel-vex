@@ -36,11 +36,14 @@ var now = func() time.Time { return time.Now().UTC() }
 // ("direct", "via_alias", "via_cpe_prefix") — carried into each statement's
 // status_notes for diagnostic traceability.
 //
-// Statements are kept 1:1 with DB rows — each CSAF + OVAL source stays
-// distinguishable via supplier + status_notes. Deterministic output:
-// statements are sorted by a stable key before serialization, so two
-// identical calls produce byte-identical documents (sans timestamp, which
-// is emitted once at doc level).
+// Rows are converted 1:1 and then grouped (see group): rows that make the
+// same assertion about different subjects collapse into one statement whose
+// products[] is the union. Each CSAF + OVAL source stays distinguishable,
+// because supplier and status_notes are both part of the merge key.
+// Deterministic output: statements are sorted by a stable key before
+// grouping and products are ordered within each group, so two identical
+// calls produce byte-identical documents (sans timestamp, which is emitted
+// once at doc level).
 func Encode(stmts []db.Statement, baseToInputs map[string][]string, baseToReason map[string]string) Document {
 	ts := now().Format(time.RFC3339)
 
@@ -54,6 +57,7 @@ func Encode(stmts []db.Statement, baseToInputs map[string][]string, baseToReason
 	for _, s := range sorted {
 		out = append(out, toStatement(s, baseToInputs, baseToReason))
 	}
+	out = group(out)
 
 	doc := Document{
 		Context:    Context,
@@ -78,6 +82,117 @@ func docID(d Document) string {
 	raw, _ := json.Marshal(probe)
 	sum := sha256.Sum256(raw)
 	return DocIDPrefix + hex.EncodeToString(sum[:])
+}
+
+// group merges statements that make the same assertion about different
+// subjects into a single statement carrying all of them in products[].
+//
+// This is what OpenVEX's products[] array is for, and skipping it is not just
+// verbose — it is invalid. The 0.2.0 schema declares statements with
+// `uniqueItems: true`, and a query that supplies products echoes the caller's
+// identifier (base form: no version, no arch) rather than each row's own
+// product_id, so the eight architectures × five package versions a distro
+// publishes for one advisory all render as the *same* statement. Before
+// grouping, an SBOM query for ubuntu:22.04 returned 13,543 statements of
+// which 12,215 were byte-identical duplicates, and the document failed schema
+// validation.
+//
+// Two rows merge only when they agree on every statement-level field, so no
+// information is lost: a different verdict, vendor, timestamp, justification,
+// or provenance keeps them apart. status_notes carries source_format,
+// match_reason and scope, which is why it must stay in the key — otherwise a
+// CSAF row and an OVAL row, or a scoped Rancher verdict and an unscoped one,
+// would fuse into a single statement that misreports its own provenance.
+func group(in []Statement) []Statement {
+	idx := make(map[string]int, len(in))
+	out := make([]Statement, 0, len(in))
+	for _, s := range in {
+		k := groupKey(s)
+		if i, seen := idx[k]; seen {
+			out[i].Products = append(out[i].Products, s.Products...)
+			continue
+		}
+		// Copy the products slice before it can be appended to: the caller's
+		// backing array must not be written through.
+		s.Products = append([]Component(nil), s.Products...)
+		idx[k] = len(out)
+		out = append(out, s)
+	}
+	for i := range out {
+		out[i].Products = dedupeComponents(out[i].Products)
+	}
+	return out
+}
+
+// groupKey is the statement with its subjects removed — two statements
+// producing the same key are the same assertion about different products.
+//
+// Marshalling the whole struct rather than naming fields is deliberate: a
+// field added to Statement later joins the merge key automatically. A
+// hand-written key would silently start over-merging the day someone wires up
+// a new provenance or impact field, and over-merging is how a document starts
+// telling a consumer something the vendor never said.
+func groupKey(s Statement) string {
+	probe := s
+	probe.Products = nil
+	b, _ := json.Marshal(probe)
+	return string(b)
+}
+
+// dedupeComponents sorts a group's products and drops exact repeats. The
+// schema puts uniqueItems on products[] too, so the dedupe is required and
+// not merely tidy.
+//
+// Ordering is by identifier first so the output matches the order the encoder
+// already produced for a single row (toStatement sorts its inputs as plain
+// strings); the serialized form is only a tiebreaker for the pathological case
+// of two components sharing an identifier but differing elsewhere.
+func dedupeComponents(in []Component) []Component {
+	type keyed struct {
+		id  string
+		raw string
+		c   Component
+	}
+	ks := make([]keyed, 0, len(in))
+	for _, c := range in {
+		b, _ := json.Marshal(c)
+		ks = append(ks, keyed{id: componentID(c), raw: string(b), c: c})
+	}
+	sort.SliceStable(ks, func(i, j int) bool {
+		if ks[i].id != ks[j].id {
+			return ks[i].id < ks[j].id
+		}
+		return ks[i].raw < ks[j].raw
+	})
+	out := make([]Component, 0, len(ks))
+	prev := ""
+	for i, k := range ks {
+		if i > 0 && k.raw == prev {
+			continue
+		}
+		prev = k.raw
+		out = append(out, k.c)
+	}
+	return out
+}
+
+// componentID returns the identifier a Component is ordered by: @id when set
+// (every PURL carries one), else whichever identifier scheme is populated.
+func componentID(c Component) string {
+	if c.ID != "" {
+		return c.ID
+	}
+	if c.Identifiers == nil {
+		return ""
+	}
+	switch {
+	case c.Identifiers.PURL != "":
+		return c.Identifiers.PURL
+	case c.Identifiers.CPE23 != "":
+		return c.Identifiers.CPE23
+	default:
+		return c.Identifiers.CPE22
+	}
 }
 
 // stmtKey produces a stable sort key for DB rows. Ordered by (cve, vendor,

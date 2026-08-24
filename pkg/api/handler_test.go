@@ -67,9 +67,15 @@ func TestHandleStatements_CVEOnly(t *testing.T) {
 			t.Fatalf("expected 200, got %d", w.Code)
 		}
 		doc := decodeOpenVEX(t, w)
-		// CVE-2024-1234 has 2 seeded statements (purl + cpe variants).
-		if len(doc.Statements) != 2 {
-			t.Fatalf("expected 2 statements, got %d", len(doc.Statements))
+		// CVE-2024-1234 has 2 seeded rows (purl + cpe variants of one
+		// testvendor assertion). They agree on every statement-level field, so
+		// the encoder groups them into one statement naming both products —
+		// see openvex.group.
+		if len(doc.Statements) != 1 {
+			t.Fatalf("expected 1 grouped statement, got %d", len(doc.Statements))
+		}
+		if got := len(doc.Statements[0].Products); got != 2 {
+			t.Fatalf("expected 2 products on the grouped statement, got %d", got)
 		}
 	})
 
@@ -364,8 +370,11 @@ func TestHandleStatements_Gzip(t *testing.T) {
 	if err := json.NewDecoder(gz).Decode(&doc); err != nil {
 		t.Fatalf("decode gzipped openvex: %v", err)
 	}
-	if len(doc.Statements) != 2 {
-		t.Fatalf("expected 2 statements, got %d", len(doc.Statements))
+	if len(doc.Statements) != 1 {
+		t.Fatalf("expected 1 grouped statement, got %d", len(doc.Statements))
+	}
+	if got := len(doc.Statements[0].Products); got != 2 {
+		t.Fatalf("expected 2 products on the grouped statement, got %d", got)
 	}
 }
 
@@ -461,9 +470,13 @@ func TestHandleStatements_NewFilters(t *testing.T) {
 			Justifications: []string{"vulnerable_code_not_present"},
 		})
 		// Both seeded testvendor not_affected rows carry that justification;
-		// the vendor2 affected row has no justification → excluded.
-		if len(stmts) != 2 {
-			t.Fatalf("expected 2 statements with that justification, got %d", len(stmts))
+		// the vendor2 affected row has no justification → excluded. The two
+		// surviving rows group into one statement naming both products.
+		if len(stmts) != 1 {
+			t.Fatalf("expected 1 grouped statement with that justification, got %d", len(stmts))
+		}
+		if got := len(stmts[0].Products); got != 2 {
+			t.Fatalf("expected 2 products on the grouped statement, got %d", got)
 		}
 	})
 
