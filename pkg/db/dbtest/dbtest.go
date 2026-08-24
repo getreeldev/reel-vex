@@ -28,6 +28,9 @@ type Store struct {
 	aliases  []db.Alias
 	vendors  map[string]string
 	adapters map[string]adapterState
+	// statsErr, when set, is returned by Stats instead of a computed result.
+	// See SetStatsErr.
+	statsErr error
 }
 
 // New returns an empty in-memory Store.
@@ -287,10 +290,22 @@ func (s *Store) computeStats() db.Stats {
 	}
 }
 
+// SetStatsErr makes Stats return err instead of computing. Lets a test drive
+// the caller's error paths (e.g. db.ErrStatsWarming) without a real backend,
+// which is the only place the cold-cache condition can arise.
+func (s *Store) SetStatsErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.statsErr = err
+}
+
 // Stats computes live (the fake has no slow scan to cache).
 func (s *Store) Stats() (db.Stats, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.statsErr != nil {
+		return db.Stats{}, s.statsErr
+	}
 	return s.computeStats(), nil
 }
 

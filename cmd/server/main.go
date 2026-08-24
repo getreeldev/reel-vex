@@ -283,9 +283,11 @@ func runServe(opts serveOptions) error {
 		go runner.StartScheduler(ctx, lastIngest)
 	}
 
-	// Warm the /v1/stats cache in the background. The first call after restart
-	// would otherwise hit a 30-60s SQL scan on a multi-GB DB before the
-	// ingest scheduler's first cycle refreshes the cache.
+	// Warm the /v1/stats cache in the background. The aggregate scans take
+	// minutes on a prod-size table, so until this finishes /v1/stats answers
+	// 503 "warming up" rather than blocking a request behind it (see
+	// db.ErrStatsWarming). The ingest scheduler refreshes the cache at the end
+	// of every cycle thereafter.
 	go func() {
 		if _, err := database.RefreshStats(); err != nil {
 			slog.Warn("startup stats cache warmup failed", "error", err)

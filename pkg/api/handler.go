@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -454,6 +455,18 @@ type statsResponse struct {
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := s.db.Stats()
+	if errors.Is(err, db.ErrStatsWarming) {
+		// Cold cache with a computation already in flight (startup warm-up, or
+		// the first request after a restart). Answer immediately rather than
+		// holding the connection for the minutes the scans take — a caller that
+		// waits just gets a proxy timeout, and a client polling this endpoint
+		// can retry. Not an error condition: nothing is broken, the number
+		// isn't ready.
+		setCacheControl(w, cacheNone)
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusServiceUnavailable, "stats warming up; retry shortly")
+		return
+	}
 	if err != nil {
 		slog.Error("stats failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "stats failed")

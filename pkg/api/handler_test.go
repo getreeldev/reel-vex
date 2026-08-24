@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1641,4 +1642,45 @@ func TestHandleStatements_SourceFormatsFilter(t *testing.T) {
 
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
+}
+
+// TestHandleStats_WarmingUp covers the cold-cache path: when the stats cache is
+// empty and a computation is already in flight, the endpoint answers straight
+// away instead of holding the connection for the minutes the aggregate scans
+// take. A caller that waits only ever gets a proxy timeout.
+func TestHandleStats_WarmingUp(t *testing.T) {
+	database := dbtest.New()
+	t.Cleanup(func() { database.Close() })
+	database.SetStatsErr(db.ErrStatsWarming)
+	srv := NewServer(database, nil)
+
+	req := httptest.NewRequest("GET", "/v1/stats", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 while warming, got %d", w.Code)
+	}
+	if got := w.Header().Get("Retry-After"); got != "60" {
+		t.Errorf("Retry-After: got %q, want 60", got)
+	}
+	if got := w.Header().Get("Cache-Control"); got != cacheNone {
+		t.Errorf("a warming response must not be cached: got %q", got)
+	}
+}
+
+// TestHandleStats_OtherErrorsStill500 keeps the warming path from swallowing
+// real failures.
+func TestHandleStats_OtherErrorsStill500(t *testing.T) {
+	database := dbtest.New()
+	t.Cleanup(func() { database.Close() })
+	database.SetStatsErr(errors.New("connection refused"))
+	srv := NewServer(database, nil)
+
+	req := httptest.NewRequest("GET", "/v1/stats", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for a genuine failure, got %d", w.Code)
+	}
 }

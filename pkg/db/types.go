@@ -1,9 +1,17 @@
 package db
 
+import "errors"
+
 // This file holds the backend-agnostic data types shared by every db.Store
 // implementation and its consumers. The concrete store lives in a backend
 // subpackage (pkg/db/postgres); pkg/db itself carries only types + the Store
 // interface (see store.go), so it pulls in no database driver.
+
+// ErrStatsWarming is returned by Stats when the cache is cold and another
+// caller is already computing it. The aggregate scans take minutes on a
+// prod-size table; a request that waited for them would hold its connection
+// until the proxy gave up. Callers should surface "try again shortly" instead.
+var ErrStatsWarming = errors.New("stats cache warming")
 
 // Statement is a VEX assertion stored in the database.
 type Statement struct {

@@ -318,7 +318,14 @@ func scanStatements(rows pgx.Rows) ([]db.Statement, error) {
 }
 
 // Stats returns cached coverage stats, computing on first call. Cached because
-// the COUNT(DISTINCT) scans are slow on the big table (see the statsMu fields).
+// the aggregate scans are slow on the big table (see the statsMu fields).
+//
+// A caller never queues behind an in-flight computation. The startup warm-up
+// (cmd/server) holds statsCompute for as long as the scans take — minutes on a
+// prod-size table — and a request that blocked on that mutex would hang until
+// the fronting proxy timed it out, reporting nothing after 30s of waiting.
+// db.ErrStatsWarming says "ask again shortly", which the caller can turn into a
+// fast 503 instead of a stalled connection.
 func (p *DB) Stats() (db.Stats, error) {
 	p.statsMu.RLock()
 	cached := p.cachedStats
@@ -326,7 +333,9 @@ func (p *DB) Stats() (db.Stats, error) {
 	if cached != nil {
 		return *cached, nil
 	}
-	p.statsCompute.Lock()
+	if !p.statsCompute.TryLock() {
+		return db.Stats{}, db.ErrStatsWarming
+	}
 	defer p.statsCompute.Unlock()
 	p.statsMu.RLock()
 	cached = p.cachedStats
@@ -357,14 +366,44 @@ func (p *DB) computeAndCache() (db.Stats, error) {
 	return s, nil
 }
 
+// statsTimeout bounds the whole stats computation. It is a backstop against a
+// pathological plan, not a normal-path budget: the queries below run in a few
+// minutes on a prod-size table, and if one ever takes an hour we want it dead
+// rather than holding a pooled connection and spilling temp files. (An earlier
+// unbounded COUNT(DISTINCT) ran ~30 minutes on 382M rows and spilled GBs.)
+const statsTimeout = 20 * time.Minute
+
+// distinctCVEQuery counts distinct CVEs with a loose ("skip") index scan rather
+// than COUNT(DISTINCT cve).
+//
+// Postgres has no native loose index scan, and plans COUNT(DISTINCT cve) as a
+// single-threaded Seq Scan over every row followed by a full Sort — on 382M
+// rows that is ~30 minutes and gigabytes of temp spill, every process restart.
+// This recursive form walks idx_statements_cve one distinct value at a time, so
+// the work tracks the number of *distinct* CVEs (~336k) instead of the number
+// of rows. Measured on production: 30 min -> 1m59s, same answer.
+//
+// It depends on an index leading with `cve` (idx_statements_cve). Without one,
+// each step degrades to a full scan and this becomes far worse than the query
+// it replaced — so do not drop that index without revisiting this.
+const distinctCVEQuery = `
+	WITH RECURSIVE t AS (
+	    (SELECT cve FROM statements ORDER BY cve LIMIT 1)
+	  UNION ALL
+	    SELECT (SELECT s.cve FROM statements s WHERE s.cve > t.cve ORDER BY s.cve LIMIT 1)
+	    FROM t WHERE t.cve IS NOT NULL
+	)
+	SELECT count(*) FROM t WHERE cve IS NOT NULL`
+
 func (p *DB) computeStats() (db.Stats, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), statsTimeout)
+	defer cancel()
 	var s db.Stats
 	var vendors, cves, statements, aliases int64
 	if err := p.pool.QueryRow(ctx, `SELECT COUNT(DISTINCT id) FROM vendors`).Scan(&vendors); err != nil {
 		return s, err
 	}
-	if err := p.pool.QueryRow(ctx, `SELECT COUNT(DISTINCT cve) FROM statements`).Scan(&cves); err != nil {
+	if err := p.pool.QueryRow(ctx, distinctCVEQuery).Scan(&cves); err != nil {
 		return s, err
 	}
 	if err := p.pool.QueryRow(ctx, `SELECT COUNT(*) FROM statements`).Scan(&statements); err != nil {

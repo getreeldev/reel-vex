@@ -2,6 +2,22 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [0.12.1] — /v1/stats no longer stalls after a restart
+
+### Fixed
+
+- **The distinct-CVE count is ~15× faster.** `COUNT(DISTINCT cve)` is correct but Postgres plans it as a single-threaded sequential scan over every row followed by a full sort — on a 382M-row table that is **~30 minutes and gigabytes of temp spill, on every process restart**. It is now a recursive loose ("skip") index scan over the `cve` index, so the work tracks the number of *distinct* CVEs (~336k) rather than the number of rows. Measured on production: **30 min → 1m59s**, same answer. An integration test pins it against the naive query, empty table included.
+
+  This depends on an index leading with `cve`; dropping `idx_statements_cve` would make the new form far worse than the old one, and the code says so.
+
+- **`/v1/stats` answers immediately while the cache is cold.** The startup warm-up holds the stats mutex for as long as the scans take, and a request arriving in that window used to block on it — so the caller got a proxy timeout after 30s rather than an answer. The endpoint now returns **`503` with `Retry-After: 60`** when a computation is already in flight. Nothing is broken in that state; the number simply isn't ready, and saying so beats stalling a connection.
+
+- **Stats computation is bounded.** It ran with `context.Background()` — no timeout at all, which is how a pathological plan held a pooled connection for half an hour. It now has a 20-minute backstop: far above the normal path, far below forever.
+
+### Changed
+
+- **`shm_size: 1gb` on the bundled Postgres service.** Docker defaults `/dev/shm` to 64MB, which is too small for the parallel plans a table this size invites — a parallel bitmap scan fails outright with `could not resize shared memory segment`. Takes effect when the container is recreated.
+
 ## [0.12.0] — OpenVEX statements grouped by assertion; opt-in architecture matching
 
 ### Fixed

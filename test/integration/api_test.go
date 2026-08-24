@@ -1510,3 +1510,58 @@ func TestStatements_GroupedResponseIsUnique(t *testing.T) {
 		seen[string(raw)] = true
 	}
 }
+
+// TestStats_DistinctCVEMatchesNaiveCount pins the loose-index-scan rewrite in
+// pkg/db/postgres against the query it replaced.
+//
+// COUNT(DISTINCT cve) is correct but plans as a full scan plus a full sort —
+// ~30 minutes and gigabytes of temp spill on a production-size table, on every
+// process restart. The recursive form walks the cve index one distinct value at
+// a time instead. It is clever enough to be worth proving equal on real
+// Postgres rather than trusting it: an off-by-one in the recursion, or a
+// mishandled empty table, would silently misreport coverage.
+func TestStats_DistinctCVEMatchesNaiveCount(t *testing.T) {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, os.Getenv("REEL_VEX_TEST_PG_DSN"))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	const recursive = `
+		WITH RECURSIVE t AS (
+		    (SELECT cve FROM statements ORDER BY cve LIMIT 1)
+		  UNION ALL
+		    SELECT (SELECT s.cve FROM statements s WHERE s.cve > t.cve ORDER BY s.cve LIMIT 1)
+		    FROM t WHERE t.cve IS NOT NULL
+		)
+		SELECT count(*) FROM t WHERE cve IS NOT NULL`
+
+	var naive, loose int64
+	if err := pool.QueryRow(ctx, `SELECT COUNT(DISTINCT cve) FROM statements`).Scan(&naive); err != nil {
+		t.Fatalf("naive count: %v", err)
+	}
+	if err := pool.QueryRow(ctx, recursive).Scan(&loose); err != nil {
+		t.Fatalf("loose count: %v", err)
+	}
+	if naive != loose {
+		t.Fatalf("distinct CVE count mismatch: naive=%d loose=%d", naive, loose)
+	}
+	if naive == 0 {
+		t.Fatal("seed data should contain CVEs; a zero count would make this test vacuous")
+	}
+
+	// Empty table: the recursion's anchor returns no row, so the result must be
+	// 0 rather than an error or a stray NULL row.
+	if _, err := pool.Exec(ctx, `CREATE TEMP TABLE statements_empty (LIKE statements INCLUDING ALL)`); err != nil {
+		t.Fatalf("temp table: %v", err)
+	}
+	var empty int64
+	emptyQ := strings.ReplaceAll(recursive, "statements", "statements_empty")
+	if err := pool.QueryRow(ctx, emptyQ).Scan(&empty); err != nil {
+		t.Fatalf("empty count: %v", err)
+	}
+	if empty != 0 {
+		t.Fatalf("empty table should count 0 distinct CVEs, got %d", empty)
+	}
+}

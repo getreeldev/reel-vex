@@ -21,6 +21,11 @@ services:
       POSTGRES_DB: vex
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Docker defaults /dev/shm to 64MB, which is far too small for the parallel
+    # query plans this table's size invites: a parallel bitmap scan over the
+    # statements table dies with `could not resize shared memory segment ... No
+    # space left on device`, and the planner's better plans become unusable.
+    shm_size: 1gb
     # Tuning for a ~16–32 GB box; scale shared_buffers/effective_cache_size to
     # roughly 25% / 75% of available RAM. maintenance_work_mem speeds the
     # covering-index build; max_wal_size smooths the bulk ingest.
