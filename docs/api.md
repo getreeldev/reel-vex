@@ -30,7 +30,7 @@ Every VEX-statement-emitting endpoint (`/v1/statements`, `/v1/analyze` when `use
 
 Per-feed provenance (`source_format`) and per-statement match reasoning (`match_reason`) are carried in the spec-blessed `status_notes` free-text field. Format: `source_format=<csaf|oval|openvex>; match_reason=<direct|via_alias|via_cpe_prefix|from_user_vex>`, plus `scope=<product @id>` on product-scoped rows (Rancher VEX — see [Product-scoped statements](#product-scoped-statements)). User-sourced rows omit the `source_format=` prefix entirely (no upstream feed).
 
-Empty results return `204 No Content`. OpenVEX 0.2.0's schema requires `statements: minItems 1`, so we cannot emit a valid doc with zero statements; 204 signals "query valid, no statements" without violating the schema.
+Empty results return `204 No Content`. OpenVEX 0.2.0's schema requires `statements: minItems 1`, so a valid document with zero statements cannot be emitted; 204 signals "query valid, no statements" without violating the schema.
 
 ### Statements are grouped by assertion, not by database row
 
@@ -38,9 +38,9 @@ Empty results return `204 No Content`. OpenVEX 0.2.0's schema requires `statemen
 
 This matters for two reasons.
 
-It is what the format asks for: `products[]` is an array precisely so one assertion can name many subjects, and OpenVEX 0.2.0 declares `statements` with `uniqueItems: true`. Before 0.12.0 reel-vex emitted one statement per row, and because a query that supplies `products` echoes *your* identifier in base form — no version, no arch — the eight architectures and five package versions a distro publishes for one advisory all rendered as byte-identical statements. A real `ubuntu:22.04` SBOM query returned 13 543 statements of which 12 215 were duplicates, and the document failed schema validation.
+It is what the format asks for: `products[]` is an array precisely so one assertion can name many subjects, and OpenVEX 0.2.0 declares `statements` with `uniqueItems: true`. Before 0.12.0 reel-vex emitted one statement per row, and because a query that supplies `products` echoes the caller's identifier in base form — no version, no arch — the eight architectures and five package versions a distro publishes for one advisory all rendered as byte-identical statements. A real `ubuntu:22.04` SBOM query returned 13 543 statements of which 12 215 were duplicates, and the document failed schema validation.
 
-And it changes what a statement count means. `statements[]` now counts distinct assertions, so the same query returns far fewer entries than before (that `ubuntu:22.04` query: 13 543 → 750). Nothing is dropped — every product in the old response is still in the new one. If you need the row count, read `X-Reel-Statements`, which is unchanged.
+And it changes what a statement count means. `statements[]` now counts distinct assertions, so the same query returns far fewer entries than before (that `ubuntu:22.04` query: 13 543 → 750). Nothing is dropped — every product in the old response is still in the new one. The row count is still available in `X-Reel-Statements`, which is unchanged.
 
 Consumers that iterate `products[]` need no change. Trivy 0.74.0 suppresses the identical set of CVEs from a grouped and an ungrouped document.
 
@@ -50,7 +50,7 @@ Consumers that iterate `products[]` need no change. Trivy 0.74.0 suppresses the 
 |---|---|---|
 | `@context` | string | `https://openvex.dev/ns/v0.2.0`. Always present. |
 | `@id` | string | Deterministic SHA-256 of the document body (with timestamps zeroed): `https://openvex.dev/docs/public/vex-<hex>`. The same query produces the same `@id` byte-for-byte. |
-| `author` | string | `reel-vex aggregator <vex@getreel.dev>`. We act as an aggregator; we do not sign documents. |
+| `author` | string | `reel-vex aggregator <vex@getreel.dev>`. reel-vex acts as an aggregator and does not sign documents. |
 | `role` | string | `aggregator`. |
 | `timestamp` | RFC3339 string | When this document was emitted. |
 | `version` | integer | Document revision; always `1`. |
@@ -77,7 +77,7 @@ Consumers that iterate `products[]` need no change. Trivy 0.74.0 suppresses the 
 | `fixed` | A fix is available; consumers should upgrade. |
 | `under_investigation` | Vendor has not yet determined impact. |
 
-reel-vex publishes whatever status the vendor stated — including `affected` and `under_investigation`. Trivy's `--vex` flag suppresses on `not_affected` and `fixed` and ignores the other two; `vexctl` and custom policy engines may treat them differently. Filter client-side if you want a narrower set.
+reel-vex publishes whatever status the vendor stated — including `affected` and `under_investigation`. Trivy's `--vex` flag suppresses on `not_affected` and `fixed` and ignores the other two; `vexctl` and custom policy engines may treat them differently. Filter client-side for a narrower set.
 
 ### Justification values
 
@@ -93,7 +93,7 @@ Only meaningful when `status == "not_affected"`. Values match the OpenVEX 0.2.0 
 
 ### Match reasons
 
-Carried in `status_notes` as `match_reason=<value>`. Tells you which rule caused this statement to match your query.
+Carried in `status_notes` as `match_reason=<value>`. Identifies which rule caused the statement to match the query.
 
 | Value | Meaning | Precedence |
 |---|---|---|
@@ -113,7 +113,7 @@ For PURL-keyed statements, qualifiers behave in two distinct modes:
 | `distro` (deb) | identity | Part of the statement's `base_id` — `pkg:deb/debian/openssl?distro=debian-12` is a different identity from `pkg:deb/debian/openssl?distro=debian-11`. **Required** on deb-shaped queries to match Debian and Ubuntu OVAL/OpenVEX statements. |
 | `distro` (rpm) | strip-and-also | Trivy and syft emit RPM PURLs with `?distro=redhat-X.Y`, but Red Hat CSAF publishes bare PURLs without distro. The resolver therefore expands a distro-bearing RPM input into both the input-as-given **and** a distro-stripped candidate — purely additive, so a Trivy-shape RPM input matches bare-stored Red Hat statements without losing identity-aware matching against feeds that publish *with* distro. |
 | `repository_id` | filter | Stripped from `base_id`; used by the alias resolver to expand to a CPE (`via_alias`). Required on Red Hat queries that need EUS / AUS / E4S coverage. |
-| `arch` | stripped by default | Not part of `base_id`, so matching ignores architecture unless you ask otherwise. This is deliberate: the feeds disagree about whether to qualify at all (Canonical's OpenVEX qualifies ~100% of rows, Red Hat CSAF ~69%, every other source 0%), so matching exactly would turn most of the corpus into false negatives. Set [`strict_arch`](#architecture-matching-strict_arch) to narrow. |
+| `arch` | stripped by default | Not part of `base_id`, so matching ignores architecture by default. This is deliberate: the feeds disagree about whether to qualify at all (Canonical's OpenVEX qualifies ~100% of rows, Red Hat CSAF ~69%, every other source 0%), so matching exactly would turn most of the corpus into false negatives. Set [`strict_arch`](#architecture-matching-strict_arch) to narrow. |
 | `epoch` | stripped | Not part of identity; ignored when matching. |
 
 ### Product-scoped statements
@@ -122,7 +122,7 @@ Most feeds are package-level — a statement is about a package, full stop. The 
 
 A scoped statement matches **only when the caller names its scope** — otherwise it is withheld, so a verdict scoped to one image can never suppress the same package for an unrelated one. Supply the scope two ways:
 
-- **`/v1/statements`** — pass the product/image identifier(s) in the `scopes` array. When you POST an SBOM instead, its root subject (`metadata.component`) supplies the scope automatically.
+- **`/v1/statements`** — pass the product/image identifier(s) in the `scopes` array. When an SBOM is POSTed instead, its root subject (`metadata.component`) supplies the scope automatically.
 - **`/v1/analyze`** — the SBOM's `metadata.component` (purl/cpe) is used automatically as the scope, so scanning an image applies exactly the verdicts scoped to it.
 
 With no scope context, only unscoped (package-level) rows are returned — every other feed behaves exactly as before. Scopes are normalised before matching (the OCI `repository_url` is kept, the tag/digest dropped), and a matched scoped row discloses its scope in `status_notes` as `scope=<product @id>`.
@@ -250,7 +250,7 @@ Unified query primitive over the VEX statements database. The query input set ma
 Two query shapes:
 
 - **CVE-scoped** — `cves` present (explicit or SBOM-derived). Returns statements for those CVEs, optionally narrowed by `products` and the other filters. Classic behaviour.
-- **Broad mode** — `cves` absent but `products`/components present. Returns **every** vendor statement touching the matched products, with no CVE filter. This is the fetch-once-attach-to-every-scan path: `trivy --vex` does its own CVE matching against the returned doc, so the same broad doc can be cached and applied to every scan of the image regardless of which CVEs a given scan surfaces. Capped (see below).
+- **Broad mode** — `cves` absent but `products`/components present. Returns **every** vendor statement touching the matched products, with no CVE filter. The result does not depend on which CVEs a given scan surfaced, because `trivy --vex` does its own CVE matching against the returned document — so one broad-mode document can be cached and reused across scans of the same image. Capped (see below).
 
 Replaces the v0.3.0 trio (`GET /v1/cve/{id}`, `GET /v1/cve/{id}/summary`, `POST /v1/resolve`). All three paths now return `404`; migrate to `POST /v1/statements`.
 
@@ -267,7 +267,7 @@ POST /v1/statements
   "statuses":       ["not_affected", "fixed"],                                 // optional
   "justifications": ["vulnerable_code_not_present"],                           // optional
   "scopes":         ["pkg:oci/longhorn-engine?repository_url=..."],            // optional; opts in product-scoped statements (Rancher VEX)
-  "strict_arch":    false,                                                     // optional; narrow to the architectures your products name
+  "strict_arch":    false,                                                     // optional; narrow to the architectures the products name
   "since":          "2026-01-01T00:00:00Z",                                    // optional, RFC3339
   "limit":          50000,                                                     // optional, clamped to server -statements-max
   "offset":         0                                                          // optional, for paging a truncated result
@@ -292,7 +292,7 @@ When `sbom` is present, reel-vex extracts:
 
 Both sets are unioned with any explicit `cves` / `products` the request also carries — so a caller can broaden the query with extras without losing what the SBOM declared. The SBOM body counts against the same body-size cap as `/v1/analyze` (default 10 MB, configurable on the operator side via `-sbom-max-mb`).
 
-This removes the manual `jq` extraction step from the `trivy image --vex` flow: pipe the Trivy JSON straight in instead of pre-shelling out for CVE/PURL lists. See the [recipes](#recipes) section below.
+So the `trivy image --vex` flow needs no `jq` extraction step — the Trivy JSON can be piped in as-is. See [recipes](#recipes) below.
 
 ### Resolver behaviour with `products`
 
@@ -310,14 +310,14 @@ Set `"strict_arch": true` and a statement row is returned only when it:
 
 - carries no `arch` qualifier, **or**
 - carries an architecture-independent one — `noarch`, `src`, `source`, `all` — which hold everywhere and are never narrowed away, **or**
-- carries an architecture your own `products` named.
+- carries an architecture named by the request's own `products`.
 
 Notes on the semantics:
 
-- **The architecture set is request-level**, the union across every identifier you supplied. A mixed-architecture request widens rather than narrows — the safe direction, and in practice one image is one architecture.
-- **It is a no-op when nothing you sent names an architecture**, including every CVE-only query. There is nothing to be strict about, so nothing is filtered.
+- **The architecture set is request-level**, the union across every identifier supplied. A mixed-architecture request widens rather than narrows — the safe direction, and in practice one image is one architecture.
+- **It is a no-op when no supplied identifier names an architecture**, including every CVE-only query. There is nothing to be strict about, so nothing is filtered.
 - **Narrowing is never silent**: the response carries `X-Reel-Arch` with the set applied. There is no dropped-row count, because computing one would require running the un-narrowed query too.
-- On `/v1/analyze` the architectures come from the SBOM's own components. Your `user_vex` is never narrowed — you asserted on a specific identifier and reel-vex does not second-guess it.
+- On `/v1/analyze` the architectures come from the SBOM's own components. Inbound `user_vex` is never narrowed: it asserts on a specific identifier, which reel-vex takes as given.
 
 ```json
 {"cves": ["CVE-2019-9923"], "products": ["pkg:deb/ubuntu/tar@1.34-1?arch=amd64&distro=ubuntu-22.04"], "strict_arch": true}
@@ -381,7 +381,7 @@ All are exposed via CORS (`Access-Control-Expose-Headers`), so browser clients c
   ```json
   {"cves": ["CVE-2021-44228"]}
   ```
-- **Broad mode — all statements for an image's products** (fetch once, attach to every scan):
+- **Broad mode — all statements for an image's products**:
   ```json
   {"products": ["pkg:deb/ubuntu/openssl?distro=ubuntu-22.04", "pkg:deb/ubuntu/glibc?distro=ubuntu-22.04"]}
   ```
@@ -400,7 +400,7 @@ All are exposed via CORS (`Access-Control-Expose-Headers`), so browser clients c
 
 ### What Trivy will and won't match
 
-Trivy's `--vex` implementation matches on **PURL only** — it ignores `identifiers.cpe23` even when set. The encoder takes that into account by emitting your input PURLs (not the vendor's underlying CPEs) in `products[]` whenever `products` is provided. Trade-offs:
+Trivy's `--vex` implementation matches on **PURL only** — it ignores `identifiers.cpe23` even when set. The encoder takes that into account by emitting the request's input PURLs (not the vendor's underlying CPEs) in `products[]` whenever `products` is provided. Trade-offs:
 
 - Query with a PURL → hierarchical PURL in the doc → Trivy suppresses matching scan findings. ✓
 - CVE-only query (no `products`) → `products[]` carries each statement's stored identifier, which may be CPE → Trivy ignores. Use `vexctl` or any other OpenVEX consumer instead, or add `products` to the request.
@@ -410,7 +410,7 @@ Trivy's `--vex` implementation matches on **PURL only** — it ignores `identifi
 
 ### Suppress vendor-acknowledged CVEs in a Trivy scan (SBOM passthrough)
 
-The shortest path from a Trivy scan to a VEX-suppressed re-scan: hand reel-vex the CycloneDX SBOM Trivy already produces and let the server extract CVEs + PURLs.
+Trivy's own CycloneDX output can be POSTed unchanged; the server extracts the CVEs and PURLs from it.
 
 ```bash
 # 1. Trivy emits CycloneDX with .vulnerabilities[] populated.
@@ -430,7 +430,7 @@ For `trivy sbom --vex`, swap `/v1/statements` for `/v1/analyze` and feed the ret
 
 ### Query explicit CVE / PURL lists
 
-When you already have CVE and PURL lists (e.g. extracted by some other tool, or you only care about a specific subset of an image's findings), skip the SBOM and pass them directly:
+When CVE and PURL lists already exist — extracted by another tool, or narrowed to a subset of an image's findings — skip the SBOM and pass them directly:
 
 ```bash
 curl -s -X POST https://vex.getreel.dev/v1/statements \
@@ -445,7 +445,7 @@ curl -s -X POST https://vex.getreel.dev/v1/statements \
 
 ### Layer user VEX on top of vendor data
 
-If you have your own VEX doc (e.g. `vexctl create` output) describing application-layer assertions, feed both the SBOM and your VEX through `/v1/analyze` in one call:
+A user VEX document (e.g. `vexctl create` output) describing application-layer assertions can be merged with vendor data by passing both through `/v1/analyze` in one call:
 
 ```bash
 jq -n \

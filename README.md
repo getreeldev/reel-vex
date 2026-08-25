@@ -15,30 +15,41 @@
 
 ## What it does
 
-Scanners report many CVEs that don't actually affect you — the vendor has often already assessed them and published a **VEX** statement: `not_affected`, `fixed`, `affected`, or `under_investigation`. But every vendor uses a different format, location, and identifier scheme.
+Scanners report many CVEs that don't affect the product they were found in. The vendor has often already assessed the CVE and published a **VEX** statement saying so: `not_affected`, `fixed`, `affected`, or `under_investigation`. Each vendor publishes in a different format, at a different location, under a different identifier scheme.
 
-reel-vex pulls those statements from Red Hat, SUSE, Rancher, Ubuntu, Debian, Alpine, Amazon Linux, AlmaLinux, and Oracle Linux into one database, bridges identifier schemes (PURL ↔ CPE), and serves the result over HTTP. We mirror what the vendor said and let you decide what to do with it — no pre-filtering.
+reel-vex pulls those statements from Red Hat, SUSE, Rancher, Ubuntu, Debian, Alpine, Amazon Linux, AlmaLinux, and Oracle Linux into one database, bridges identifier schemes (PURL ↔ CPE), and serves the result over HTTP. Statements are mirrored as the vendor published them; nothing is filtered out by status.
 
-## What you can ask it
+## What it answers
 
-- A **CVE** (and optionally some packages) → the vendor statements for it.
-- A **package list or SBOM with no CVEs** → every vendor statement touching those packages (*broad mode*). Fetch once, reuse on every scan.
-- A **CycloneDX SBOM** → the same SBOM annotated with vendor verdicts, ready for `trivy --vex`.
+- A **CVE**, optionally narrowed by packages → the vendor statements for it.
+- A **package list or SBOM carrying no CVEs** → every vendor statement touching those packages (*broad mode*). The result is CVE-independent, so one document covers repeated scans of the same image.
+- A **CycloneDX SBOM** → the same SBOM annotated with vendor verdicts, in the shape `trivy --vex` consumes.
 
 Request and response shapes are in [`docs/api.md`](./docs/api.md).
 
 ## How it works
 
 ```
-   Vendor feeds                  reel-vex                  You
-   ────────────            ┌──────────────────┐      ────────────
-   Red Hat · SUSE          │ pull · normalize │       query a CVE,
-   Ubuntu · Debian   ────► │ Postgres-backed  │ ────► a package, or
-   CSAF·OVAL·OpenVEX       │ HTTP API         │       a full SBOM
-                           └──────────────────┘
+  vendor feeds                  reel-vex                     queries answered
+  ────────────                  ────────                     ────────────────
+
+  Red Hat    CSAF, OVAL    ┌────────────────────────┐   a CVE
+  SUSE       CSAF          │ fetch                  │     → the vendor statements
+  Rancher    OpenVEX       │   per feed, scheduled; │       filed against it
+  Ubuntu     OpenVEX, OVAL │   incremental after    │
+  Debian     OVAL     ────►│   the first run        ├─► a package list or SBOM
+  Alpine     secdb         │                        │     → every statement touching
+  Amazon     updateinfo    │ normalize              │       those packages, no CVE
+  AlmaLinux  OVAL          │   one OpenVEX 0.2.0    │       filter (broad mode)
+  Oracle     OVAL          │   shape; identifiers   │
+                           │   bridged PURL → CPE   │   a CycloneDX SBOM
+                           │                        │     → the same SBOM, annotated
+                           │ store    PostgreSQL    │       in place with verdicts
+                           │ serve    HTTP API      │
+                           └────────────────────────┘
 ```
 
-A Go API service backed by PostgreSQL. The PURL ↔ CPE bridge means a query with a package identifier still matches statements a vendor filed against a platform identifier.
+A Go service backed by PostgreSQL. Ingest runs on a schedule and writes normalized statements; the API reads them. The identifier bridge is what lets a query carrying a package identifier match a statement the vendor filed against a platform identifier.
 
 Deeper detail: [`docs/architecture.md`](./docs/architecture.md) (pipeline + layout), [`docs/data-model.md`](./docs/data-model.md) (schema), [`docs/api.md`](./docs/api.md) (every endpoint).
 
@@ -58,7 +69,7 @@ Deeper detail: [`docs/architecture.md`](./docs/architecture.md) (pipeline + layo
 | AlmaLinux | OVAL | [security.almalinux.org/oval/](https://security.almalinux.org/oval/) | PURL (`pkg:rpm/almalinux\|alma/…?distro=almalinux-<major>`) |
 | Oracle Linux | OVAL | [linux.oracle.com/security/oval/](https://linux.oracle.com/security/oval/) | PURL (`pkg:rpm/oracle/…?distro=oracle-<major>`) |
 
-Ubuntu has two feeds on purpose: the OpenVEX feed is broad, the OVAL feed covers ~10% of package-name shapes the OpenVEX feed spells differently. They aren't strict supersets, so we keep both.
+Ubuntu has two feeds on purpose: the OpenVEX feed is broad, the OVAL feed covers ~10% of package-name shapes the OpenVEX feed spells differently. They aren't strict supersets of each other, so both are kept.
 
 Rancher's feed is **product-scoped**: each `not_affected` is about a specific image or Go module (the *scope*), with the affected package in an OpenVEX subcomponent. reel-vex stores the package as the queryable identifier and the image/module as the row's scope, and only applies a scoped verdict when the caller names that product (the `scopes` field on `/v1/statements`, or an SBOM's root component on `/v1/analyze`) — so a suppression scoped to one image never hides the same package elsewhere.
 
@@ -72,7 +83,7 @@ reel-vex stores its data in **PostgreSQL**. The simplest single-box setup is the
 
 ```bash
 cp .env.example .env          # set POSTGRES_PASSWORD
-cp /path/to/config.yaml .     # your adapter list (never baked into the image)
+cp /path/to/config.yaml .     # the adapter list (never baked into the image)
 docker compose up -d
 ```
 
@@ -89,7 +100,7 @@ go build -o reel-vex ./cmd/server
 
 ### Limits
 
-The public hub at `vex.getreel.dev` is breadth- and size-limited because it's a single shared instance. **Your own instance has no such constraint** — every limit is a flag, so set them to whatever your hardware allows (or effectively off):
+The public hub at `vex.getreel.dev` is breadth- and size-limited because it's a single shared instance. A self-hosted instance has no such constraint — every limit is a flag, and can be raised to whatever the hardware allows, or switched off:
 
 | Flag | Default | Bounds |
 |------|---------|--------|
@@ -103,7 +114,7 @@ The public hub at `vex.getreel.dev` is breadth- and size-limited because it's a 
 | `-max-user-vex-statements` | 25000 | flattened user-VEX statements per `/v1/analyze` |
 | `-ingest-interval` | 24h | how often feeds are re-pulled |
 
-The HTTP write timeout auto-tracks `-query-timeout`, so raising the query ceiling won't cut a long response short.
+The HTTP write timeout tracks `-query-timeout`, so raising the query ceiling does not truncate a long response.
 
 ## Adding a source
 

@@ -14,7 +14,7 @@ CREATE TABLE adapter_state (
     adapter_id  TEXT PRIMARY KEY,  -- unique per adapter instance
     feed_url    TEXT,              -- canonical upstream URL
     last_synced TEXT,              -- RFC3339; newest upstream data absorbed
-    updated     TEXT NOT NULL      -- RFC3339; last time we wrote this row
+    updated     TEXT NOT NULL      -- RFC3339; when this row was last written
 );
 
 CREATE TABLE statements (
