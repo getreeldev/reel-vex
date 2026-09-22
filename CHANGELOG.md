@@ -8,6 +8,10 @@ All notable changes to reel-vex are documented here. Format loosely follows [Kee
 
 - **Rancher: a subcomponent that is not a package identifier is skipped, not stored as a CPE.** The adapter typed every non-PURL subcomponent `cpe`, so when Rancher's generator writes its own error text as the `@id` — live today: `[ERROR] CVE type  not mapped`, on five CVEs × three registry scopes of `nginx-ingress-controller` — it was ingested as a product identifier that nothing can ever match. Only `pkg:` and `cpe:` identifiers are emitted now; the rest are counted as `skipped_bad_subcomponent` in the sync log. Found by the live-feed smoke test (`REEL_VEX_SMOKE=1`), which now passes with zero violations. Ingest only upserts, so rows already stored are not removed by this; they are deleted by `DELETE FROM statements WHERE vendor = 'rancher' AND id_type = 'cpe' AND product_id NOT LIKE 'cpe:%'`.
 
+### Changed
+
+- Dependencies: pgx 5.11.0, klauspost/compress 1.20.0, ulikunitz/xz 0.5.17, golang.org/x/{sync,sys,text,time}. Runtime image on Alpine 3.24. Release workflow on `docker/setup-buildx-action@v4`, `docker/login-action@v4`, `docker/build-push-action@v7` (Node 24; none of the removed inputs were in use). `docker-compose.yml` pins `v0.12.2`, which it had fallen behind.
+
 ## [0.12.2] — the stats timeout now survives the process that set it
 
 ### Fixed

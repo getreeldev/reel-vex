@@ -8,7 +8,7 @@ RUN for i in 1 2 3; do go mod download && break || { echo "go mod download attem
 COPY . .
 RUN go build -ldflags="-X main.version=${VERSION}" -o /reel-vex ./cmd/server
 
-FROM alpine:3.21
+FROM alpine:3.24
 # Upgrade first so libcrypto3/libssl3/musl/etc. pick up any in-series CVE
 # patches that landed after the base image tag was cut.
 RUN apk upgrade --no-cache && apk add --no-cache ca-certificates
