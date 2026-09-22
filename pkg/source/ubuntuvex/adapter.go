@@ -209,7 +209,7 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 // per-CVE OpenVEX files. Path shape: vex/cve/<year>/CVE-<rest>.json.
 // Filters out: vex/usn/*, directory entries, anything else.
 func isCVEEntry(name string, typeflag byte) bool {
-	if typeflag != tar.TypeReg && typeflag != tar.TypeRegA {
+	if typeflag != tar.TypeReg { // tar.Reader already maps legacy TypeRegA to TypeReg
 		return false
 	}
 	// Strip a leading "./" if present.
