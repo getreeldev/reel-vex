@@ -2,6 +2,12 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
+## [Unreleased]
+
+### Fixed
+
+- **Rancher: a subcomponent that is not a package identifier is skipped, not stored as a CPE.** The adapter typed every non-PURL subcomponent `cpe`, so when Rancher's generator writes its own error text as the `@id` — live today: `[ERROR] CVE type  not mapped`, on five CVEs × three registry scopes of `nginx-ingress-controller` — it was ingested as a product identifier that nothing can ever match. Only `pkg:` and `cpe:` identifiers are emitted now; the rest are counted as `skipped_bad_subcomponent` in the sync log. Found by the live-feed smoke test (`REEL_VEX_SMOKE=1`), which now passes with zero violations. Ingest only upserts, so rows already stored are not removed by this; they are deleted by `DELETE FROM statements WHERE vendor = 'rancher' AND id_type = 'cpe' AND product_id NOT LIKE 'cpe:%'`.
+
 ## [0.12.2] — the stats timeout now survives the process that set it
 
 ### Fixed

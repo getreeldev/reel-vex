@@ -21,7 +21,7 @@
 // scoped to one image never suppresses the same package in an unrelated image
 // (see pkg/csaf.NormalizeScope and pkg/db.QueryFilters.Scopes).
 //
-// Two classes of statement are skipped, by design:
+// Three classes of statement are skipped, by design:
 //   - Non-CVE-named (~3%: mostly SUSE-SU advisories, a few GHSA). They carry no
 //     CVE alias, and reel-vex keys and serves by CVE, so they would be dead
 //     rows. Deferred to a future advisory→CVE resolution pass.
@@ -29,6 +29,10 @@
 //     this feed: it would assert a global not_affected and risk over-suppression.
 //     Empirically every statement carries exactly one subcomponent, so this is
 //     a defensive guard, not a live path.
+//   - A subcomponent that is neither a PURL nor a CPE. Rancher's generator
+//     writes its own error text as the @id when it fails to map a package
+//     (observed live: "[ERROR] CVE type  not mapped"); storing that as a
+//     product identifier makes a row nothing can ever match.
 package ranchervex
 
 import (
@@ -166,7 +170,8 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 	}
 	slog.Info("rancher-vex sync complete", "adapter", a.id,
 		"statements", counts.emitted, "skipped_non_cve", counts.skippedNonCVE,
-		"skipped_no_subcomponent", counts.skippedNoSub, "files_failed", counts.filesFailed)
+		"skipped_no_subcomponent", counts.skippedNoSub, "skipped_bad_subcomponent", counts.skippedBadSub,
+		"files_failed", counts.filesFailed)
 	return nil
 }
 
@@ -321,6 +326,7 @@ func (a *Adapter) fetchAndEmit(ctx context.Context, rawBase string, locations []
 				counts.emitted += c.emitted
 				counts.skippedNonCVE += c.skippedNonCVE
 				counts.skippedNoSub += c.skippedNoSub
+				counts.skippedBadSub += c.skippedBadSub
 				if err != nil {
 					counts.filesFailed++
 					if firstErr == nil {
@@ -422,6 +428,7 @@ type syncCounts struct {
 	emitted       int
 	skippedNonCVE int
 	skippedNoSub  int
+	skippedBadSub int
 	filesFailed   int
 }
 
@@ -492,7 +499,7 @@ func (a *Adapter) emitStatement(st openvex.Statement, fallback time.Time, emit f
 	}
 	ts := parseRFC3339(st.Timestamp, fallback)
 
-	rows := 0
+	rows, bad := 0, 0
 	for _, product := range st.Products {
 		scopeIDs := openvex.CollectIdentifiers([]openvex.Component{product})
 		if len(scopeIDs) == 0 {
@@ -503,11 +510,16 @@ func (a *Adapter) emitStatement(st openvex.Statement, fallback time.Time, emit f
 			continue
 		}
 		for _, sub := range openvex.CollectIdentifiers(product.Subcomponents) {
-			base, version := csaf.SplitPURL(sub)
 			idType := "purl"
-			if !strings.HasPrefix(sub, "pkg:") {
+			switch {
+			case strings.HasPrefix(sub, "pkg:"):
+			case strings.HasPrefix(sub, "cpe:"):
 				idType = "cpe"
+			default:
+				bad++
+				continue
 			}
+			base, version := csaf.SplitPURL(sub)
 			if err := emit(source.Statement{
 				CVE:           cve,
 				ProductID:     sub,
@@ -525,7 +537,8 @@ func (a *Adapter) emitStatement(st openvex.Statement, fallback time.Time, emit f
 			rows++
 		}
 	}
-	if rows == 0 {
+	counts.skippedBadSub += bad
+	if rows == 0 && bad == 0 {
 		counts.skippedNoSub++
 	}
 	return nil

@@ -174,6 +174,9 @@ func TestAdapter_Sync(t *testing.T) {
 				scopedProduct(ociID, "pkg:rpm/suse/libcap2")),
 			// skipped: product with no subcomponent (would be a global claim).
 			stmt("CVE-2024-2", "not_affected", "", openvex.Component{ID: ociID}),
+			// skipped: the generator's own error text in place of an identifier.
+			stmt("CVE-2024-5", "not_affected", "vulnerable_code_not_present",
+				scopedProduct(ociID, "[ERROR] CVE type  not mapped")),
 		}}
 	golangDoc := openvex.Document{Context: openvex.Context, Version: 1,
 		Statements: []openvex.Statement{
@@ -245,7 +248,7 @@ func TestAdapter_Sync(t *testing.T) {
 	}
 
 	for _, s := range stmts {
-		if s.CVE == "SUSE-SU-2026:1432-1" || s.CVE == "CVE-2024-2" || s.CVE == "CVE-2024-4" {
+		if s.CVE == "SUSE-SU-2026:1432-1" || s.CVE == "CVE-2024-2" || s.CVE == "CVE-2024-4" || s.CVE == "CVE-2024-5" {
 			t.Errorf("a skipped statement leaked: %q", s.CVE)
 		}
 	}
