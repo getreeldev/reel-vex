@@ -1,6 +1,8 @@
 package csaf
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -129,6 +131,84 @@ func TestExtract_SUSE(t *testing.T) {
 
 	if statusCounts["not_affected"] == 0 && statusCounts["affected"] == 0 {
 		t.Error("expected not_affected or affected statements")
+	}
+}
+
+// TestExtract_SUSERecommendedIsFixed: SUSE marks fixed packages as
+// product_status.recommended (older documents: first_fixed) and never uses
+// fixed. cve-2025-1914 lists only recommended, so without the mapping it
+// yields nothing. Checked through both the strict and the permissive path.
+func TestExtract_SUSERecommendedIsFixed(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "suse-cve-2025-1914.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	strict, err := Extract(data)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	permissive, err := extractPermissive(data)
+	if err != nil {
+		t.Fatalf("extractPermissive: %v", err)
+	}
+	for name, stmts := range map[string][]Statement{"strict": strict, "permissive": permissive} {
+		if len(stmts) != 13 {
+			t.Errorf("%s: got %d statements, want 13", name, len(stmts))
+		}
+		var versioned int
+		for _, s := range stmts {
+			if s.Status != "fixed" {
+				t.Errorf("%s: %s status %q, want fixed", name, s.ProductID, s.Status)
+			}
+			if s.Version != "" {
+				versioned++
+			}
+		}
+		if versioned == 0 {
+			t.Errorf("%s: no statement carries a fixed version", name)
+		}
+	}
+}
+
+func TestExtract_FirstFixedIsFixed(t *testing.T) {
+	doc := map[string]any{
+		"product_tree": map[string]any{
+			"branches": []any{
+				map[string]any{
+					"product": map[string]any{
+						"product_id": "p1",
+						"product_identification_helper": map[string]any{
+							"purl": "pkg:rpm/suse/curl@8.0.1-1.1?arch=x86_64",
+						},
+					},
+				},
+			},
+		},
+		"vulnerabilities": []any{
+			map[string]any{
+				"cve": "CVE-2024-0001",
+				"product_status": map[string]any{
+					"first_fixed": []any{"p1"},
+				},
+			},
+		},
+	}
+	data, _ := json.Marshal(doc)
+	strict, err := Extract(data)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	permissive, err := extractPermissive(data)
+	if err != nil {
+		t.Fatalf("extractPermissive: %v", err)
+	}
+	for name, stmts := range map[string][]Statement{"strict": strict, "permissive": permissive} {
+		if len(stmts) != 1 {
+			t.Fatalf("%s: got %d statements, want 1", name, len(stmts))
+		}
+		if s := stmts[0]; s.Status != "fixed" || s.Version != "8.0.1-1.1" {
+			t.Errorf("%s: got status %q version %q, want fixed 8.0.1-1.1", name, s.Status, s.Version)
+		}
 	}
 }
 

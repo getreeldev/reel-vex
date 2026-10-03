@@ -5,7 +5,7 @@
 //
 // One adapter instance per (branch × repository) feed file — e.g.
 // https://secdb.alpinelinux.org/v3.21/main.json and .../community.json.
-// Branches are named explicitly (v3.19 .. v3.23); there is no latest-stable
+// Branches are named explicitly (v3.19 .. v3.24); there is no latest-stable
 // alias. The body is small, uncompressed JSON, so there is no decompression
 // step (unlike the OVAL adapters).
 //
@@ -17,9 +17,16 @@
 //	                  "0":         ["CVE-2021-42373", ...] } } } ] }
 //
 // secfixes maps a fixed apk version to the list of advisory ids fixed in it.
-// The version key "0" is a sentinel meaning "known-affected, no fix" — those
-// ids become `affected` statements with an empty Version. Any other key is a
-// real fixed version and yields a `fixed` statement with that version verbatim.
+// The version key "0" means the CVE does not apply to the package (Alpine's
+// security-rejections README; Wolfi and Anchore's vunnel read it the same
+// way) — those ids become `not_affected` statements (vulnerable_code_not_present)
+// with an empty Version. Any other key is a real fixed version and yields a
+// `fixed` statement with that version verbatim.
+//
+// product_id carries no version, so a (package, CVE) is one row. When a CVE is
+// listed under several keys the adapter picks one deterministically (secfixes
+// is a Go map): the highest fixed version by apk version ordering wins, and
+// "0" is used only when no fixed version lists the CVE.
 //
 // Only `CVE-`-prefixed ids are emitted; Alpine also files non-CVE advisories
 // (XSA-, ALPINE-, DW-, ...) which reel-vex does not key on. The skipped count is
@@ -33,8 +40,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
+
+	apkversion "github.com/knqyf263/go-apk-version"
 
 	"github.com/getreeldev/reel-vex/pkg/source"
 	"github.com/getreeldev/reel-vex/pkg/source/httpretry"
@@ -43,10 +53,10 @@ import (
 // Type is the adapter-type string used in config.yaml.
 const Type = "alpine-secdb"
 
-// affectedSentinel is the secfixes version key Alpine uses for ids that are
-// known-affected with no fix available. It maps to an `affected` statement with
-// an empty version (the rest are `fixed` with the key as the fixed version).
-const affectedSentinel = "0"
+// notApplicableKey is the secfixes version key Alpine uses for ids that do not
+// apply to the package. It maps to a `not_affected` statement with an empty
+// version (the rest are `fixed` with the key as the fixed version).
+const notApplicableKey = "0"
 
 // New constructs an Alpine secdb adapter from its config entry.
 func New(cfg source.AdapterConfig) (source.Adapter, error) {
@@ -121,7 +131,7 @@ type secdb struct {
 }
 
 // Sync fetches the secdb JSON, parses it, and emits one statement per
-// (package × secfixes-version × CVE id). Incremental via Last-Modified.
+// (package × CVE id), in sorted order. Incremental via Last-Modified.
 func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.Statement) error) error {
 	headReq, err := http.NewRequestWithContext(ctx, http.MethodHead, a.url, nil)
 	if err != nil {
@@ -194,13 +204,9 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 			continue
 		}
 		base := "pkg:apk/alpine/" + name + distroQual
-		for fixedVersion, ids := range p.Pkg.Secfixes {
-			status := "fixed"
-			version := fixedVersion
-			if fixedVersion == affectedSentinel {
-				status = "affected"
-				version = ""
-			}
+		fixes := map[string]string{} // CVE → highest fixed version
+		notApplicable := map[string]bool{}
+		for key, ids := range p.Pkg.Secfixes {
 			for _, id := range ids {
 				// A secfixes value can glue a CVE to non-CVE advisory refs with
 				// whitespace, e.g. "CVE-2021-27219 GHSL-2021-045" (324 such in
@@ -212,32 +218,74 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 						continue
 					}
 					matched = true
-					if err := ctx.Err(); err != nil {
-						return err
+					if key == notApplicableKey {
+						notApplicable[tok] = true
+					} else if cur, ok := fixes[tok]; !ok || laterFix(key, cur) {
+						fixes[tok] = key
 					}
-					if err := emit(source.Statement{
-						CVE:           tok,
-						ProductID:     base,
-						BaseID:        base,
-						Version:       version,
-						IDType:        "purl",
-						Status:        status,
-						Justification: "",
-						Scope:         "",
-						Updated:       updated,
-					}); err != nil {
-						return err
-					}
-					emitted++
 				}
 				if !matched {
 					skippedNonCVE++
 				}
 			}
 		}
+
+		cves := make([]string, 0, len(fixes)+len(notApplicable))
+		for cve := range fixes {
+			cves = append(cves, cve)
+		}
+		for cve := range notApplicable {
+			if _, ok := fixes[cve]; !ok {
+				cves = append(cves, cve)
+			}
+		}
+		sort.Strings(cves)
+		for _, cve := range cves {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			status, justification := "fixed", ""
+			version, isFixed := fixes[cve]
+			if !isFixed {
+				status, justification = "not_affected", "vulnerable_code_not_present"
+			}
+			if err := emit(source.Statement{
+				CVE:           cve,
+				ProductID:     base,
+				BaseID:        base,
+				Version:       version,
+				IDType:        "purl",
+				Status:        status,
+				Justification: justification,
+				Scope:         "",
+				Updated:       updated,
+			}); err != nil {
+				return err
+			}
+			emitted++
+		}
 	}
 
 	slog.Info("alpine-secdb sync complete", "adapter", a.id,
 		"distroversion", feed.DistroVersion, "statements", emitted, "skipped_non_cve", skippedNonCVE)
 	return nil
+}
+
+// laterFix reports whether fixed version a outranks b: higher by apk version
+// ordering; a key apk cannot parse loses to any valid one; ties (including two
+// unparseable keys) go to the greater string.
+func laterFix(a, b string) bool {
+	av, aErr := apkversion.NewVersion(a)
+	bv, bErr := apkversion.NewVersion(b)
+	switch {
+	case aErr == nil && bErr != nil:
+		return true
+	case aErr != nil && bErr == nil:
+		return false
+	case aErr == nil:
+		if c := av.Compare(bv); c != 0 {
+			return c > 0
+		}
+	}
+	return a > b
 }

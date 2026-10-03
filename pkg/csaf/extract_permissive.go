@@ -77,6 +77,10 @@ func extractPermissive(data []byte) ([]Statement, error) {
 
 		extract("known_not_affected", "not_affected")
 		extract("fixed", "fixed")
+		// SUSE marks fixed packages as recommended (older documents:
+		// first_fixed) and never uses fixed.
+		extract("first_fixed", "fixed")
+		extract("recommended", "fixed")
 		extract("known_affected", "affected")
 		extract("under_investigation", "under_investigation")
 	}

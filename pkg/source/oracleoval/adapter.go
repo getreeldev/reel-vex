@@ -7,6 +7,12 @@
 // One adapter instance per Oracle Linux release feed file. Configure against
 // https://linux.oracle.com/security/oval/com.oracle.elsa-ol<N>.xml.bz2 — the
 // per-release files (one watermark each) rather than the ~11 MB elsa-all bundle.
+//
+// An ELSA in one release's file can also cover other releases, and the
+// translator emits each package under its own release, so the ol9 file yields
+// some distro=oracle-8 rows that the ol8 adapter writes too. The adapter keeps
+// only rows of its own release, N from the configured file name; New refuses a
+// URL it cannot read N from.
 package oracleoval
 
 import (
@@ -15,6 +21,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"path"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/getreeldev/oval-to-vex/translator"
@@ -25,6 +35,9 @@ import (
 // Type is the adapter-type string used in config.yaml.
 const Type = "oracle-oval"
 
+// releaseFile matches the per-release feed file name and captures the release.
+var releaseFile = regexp.MustCompile(`^com\.oracle\.elsa-ol(\d+)\.xml\.bz2$`)
+
 // New constructs an Oracle Linux OVAL adapter from its config entry.
 func New(cfg source.AdapterConfig) (source.Adapter, error) {
 	if cfg.ID == "" {
@@ -33,15 +46,24 @@ func New(cfg source.AdapterConfig) (source.Adapter, error) {
 	if cfg.URL == "" {
 		return nil, fmt.Errorf("oracle-oval adapter %q: url required (point at a com.oracle.elsa-ol<N>.xml.bz2)", cfg.ID)
 	}
+	u, err := url.Parse(cfg.URL)
+	if err != nil {
+		return nil, fmt.Errorf("oracle-oval adapter %q: parse url: %w", cfg.ID, err)
+	}
+	m := releaseFile.FindStringSubmatch(path.Base(u.Path))
+	if m == nil {
+		return nil, fmt.Errorf("oracle-oval adapter %q: cannot read the release from url %q (want .../com.oracle.elsa-ol<N>.xml.bz2)", cfg.ID, cfg.URL)
+	}
 	name := cfg.Name
 	if name == "" {
 		name = "Oracle Linux"
 	}
 	return &Adapter{
-		id:   cfg.ID,
-		name: name,
-		url:  cfg.URL,
-		http: &http.Client{Timeout: 10 * time.Minute, Transport: httpretry.New(nil)}, // per-release OVAL is a few MB compressed, tens uncompressed
+		id:      cfg.ID,
+		name:    name,
+		url:     cfg.URL,
+		release: m[1],
+		http:    &http.Client{Timeout: 10 * time.Minute, Transport: httpretry.New(nil)}, // per-release OVAL is a few MB compressed, tens uncompressed
 	}, nil
 }
 
@@ -49,9 +71,10 @@ func New(cfg source.AdapterConfig) (source.Adapter, error) {
 // adapter instance targets one URL; multiple releases (ol8, ol9, ol10) need
 // distinct adapter entries with distinct IDs.
 type Adapter struct {
-	id   string
-	name string
-	url  string
+	id      string
+	name    string
+	url     string
+	release string // "9" for com.oracle.elsa-ol9.xml.bz2
 
 	http *http.Client
 }
@@ -126,9 +149,15 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 	if updated.IsZero() {
 		updated = time.Now().UTC()
 	}
+	own := "?distro=oracle-" + a.release
+	var emitted, otherRelease int
 	for _, s := range stmts {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if !strings.HasSuffix(s.BaseID, own) {
+			otherRelease++
+			continue
 		}
 		if err := emit(source.Statement{
 			CVE:           s.CVE,
@@ -142,7 +171,9 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 		}); err != nil {
 			return err
 		}
+		emitted++
 	}
-	slog.Info("oracle-oval sync complete", "adapter", a.id, "statements", len(stmts))
+	slog.Info("oracle-oval sync complete", "adapter", a.id, "release", a.release,
+		"statements", emitted, "skipped_other_release", otherRelease)
 	return nil
 }

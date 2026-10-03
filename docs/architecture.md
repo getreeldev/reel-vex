@@ -21,11 +21,11 @@ Parsing uses [`gocsaf/csaf`](https://github.com/gocsaf/csaf) (the strict path) w
 
 ### OVAL adapters
 
-Five OVAL adapters share the same fetch/parse flow: Red Hat, Ubuntu, Debian, AlmaLinux, and Oracle Linux. Each adapter instance fetches a single bz2-compressed OVAL XML file (one config entry per file/release). A `HEAD` check against `Last-Modified` short-circuits the GET when upstream hasn't regenerated the file. On a pull, the response is streamed through `compress/bzip2` and parsed via [`getreeldev/oval-to-vex`](https://github.com/getreeldev/oval-to-vex) — a dedicated OVAL-to-VEX translator library maintained alongside reel-vex, with per-vendor parsers (`FromRedHatOVAL`, `FromUbuntuOVAL`, `FromDebianOVAL`, `FromAlmaLinuxOVAL`, `FromOracleOVAL`).
+Four OVAL adapters share the same fetch/parse flow: Ubuntu, Debian, AlmaLinux, and Oracle Linux. Each adapter instance fetches a single bz2-compressed OVAL XML file (one config entry per file/release). A `HEAD` check against `Last-Modified` short-circuits the GET when upstream hasn't regenerated the file. On a pull, the response is streamed through `compress/bzip2` and parsed via [`getreeldev/oval-to-vex`](https://github.com/getreeldev/oval-to-vex) — a dedicated OVAL-to-VEX translator library maintained alongside reel-vex, with per-vendor parsers (`FromUbuntuOVAL`, `FromDebianOVAL`, `FromAlmaLinuxOVAL`, `FromOracleOVAL`).
 
-The Red Hat OVAL adapter exists to fill the coverage gap that Red Hat's CSAF feed intentionally leaves: EUS / AUS / E4S / SAP / HA / NFV stream-suffix CPEs (see [SECDATA-1181](https://redhat.atlassian.net/browse/SECDATA-1181)). OVAL has them; CSAF doesn't. Ubuntu and Debian don't publish CSAF, so OVAL is the primary feed for those vendors. Ubuntu deb-shaped statements emit `pkg:deb/ubuntu/<name>?distro=ubuntu-<version>` PURLs; Debian emits `pkg:deb/debian/<name>?distro=debian-<N>`. The `distro` qualifier is part of identity — focal `openssl` and noble `openssl` are distinct products with different fix versions.
+Ubuntu and Debian don't publish CSAF, so OVAL is the primary feed for those vendors. Ubuntu deb-shaped statements emit `pkg:deb/ubuntu/<name>?distro=ubuntu-<version>` PURLs; Debian emits `pkg:deb/debian/<name>?distro=debian-<N>`. The `distro` qualifier is part of identity — focal `openssl` and noble `openssl` are distinct products with different fix versions.
 
-**AlmaLinux** and **Oracle Linux** are RHEL rebuilds whose OVAL carries the RPM-level fix versions Red Hat's CPE-only OVAL omits, so `oval-to-vex` gives them RPM-keyed parsers that walk the rpminfo criteria tree (emitting one `(name, fixed-evr)` per version test, dropping signature/arch/gate tests that carry no `<evr>`). AlmaLinux's release major comes from the `alsa-<N>` filename and is emitted under both `pkg:rpm/almalinux/` and `pkg:rpm/alma/` (scanner namespace drift); Oracle reads its target release(s) per-definition from the `<platform>` tag (one ELSA can target several majors) and skips Ksplice variants in v1.
+**AlmaLinux** and **Oracle Linux** are RHEL rebuilds whose OVAL carries RPM-level fix versions, so `oval-to-vex` gives them RPM-keyed parsers that walk the rpminfo criteria tree (emitting one `(name, fixed-evr)` per version test, dropping signature/arch/gate tests that carry no `<evr>`). AlmaLinux's release major comes from the `alsa-<N>` filename and is emitted under both `pkg:rpm/almalinux/` and `pkg:rpm/alma/` (scanner namespace drift); Oracle pairs each package with the release its version test is gated on (one ELSA can cover several majors), each Oracle adapter keeps only the rows of its own file's release (`ol<N>` in the URL; the adapter refuses to start without it), and Ksplice variants are skipped in v1.
 
 ### OpenVEX adapters
 
@@ -35,7 +35,7 @@ Rancher statements are **product-scoped**, which is unique among the feeds. Each
 
 ### Distro-database adapters
 
-Two adapters consume vendor-native package databases that are neither OVAL nor OpenVEX. **Alpine** (`alpine-secdb`) fetches per-branch `main.json`/`community.json` from `secdb.alpinelinux.org` — a `{fixed-version: [CVE…]}` map per package; the `"0"` version sentinel means known-affected/no-fix (emitted `affected`), every other key a `fixed` version. **Amazon Linux** (`amazon-alas`) has no single feed file: it crawls each core repo's `mirror.list → repomd.xml → updateinfo.xml.gz` (the mirror base embeds a rotating GUID, re-resolved each run) and parses the RHSA-style `updateinfo` errata into `fixed` statements; v1 covers amzn2 + al2023 core repos.
+Two adapters consume vendor-native package databases that are neither OVAL nor OpenVEX. **Alpine** (`alpine-secdb`) fetches per-branch `main.json`/`community.json` from `secdb.alpinelinux.org` — a `{fixed-version: [CVE…]}` map per package; the `"0"` version key means the CVE does not apply to the package (emitted `not_affected`, `vulnerable_code_not_present`), every other key a `fixed` version. A CVE listed under several keys is one row: the highest fixed version by apk ordering, and `"0"` only when no fixed version lists it. **Amazon Linux** (`amazon-alas`) has no single feed file: it crawls each core repo's `mirror.list → repomd.xml → updateinfo.xml.gz` (the mirror base embeds a rotating GUID, re-resolved each run) and parses the RHSA-style `updateinfo` errata into `fixed` statements; v1 covers amzn2 + al2023 core repos.
 
 These feeds — and the AlmaLinux/Oracle RPM rebuilds — store a major(.minor)-scoped `?distro=` identity, while scanners emit a more granular distro qualifier. `pkg/resolver` normalizes the query's qualifier down to the stored granularity (`amazon-2023.7.x → amazon-2023`, `alpine-3.21.2 → alpine-3.21`, `alma-9.1 → almalinux-9`) so a query matches without one release's fix leaking into another's scan; the rule is ecosystem-gated and additive.
 
@@ -65,7 +65,6 @@ reel-vex/
       adapter.go               -- Adapter interface
       config.go, registry.go   -- AdapterConfig + factory registry
       csafadapter/             -- CSAF adapter (wraps pkg/csaf; archive.go = bulk cold-start)
-      redhatoval/              -- Red Hat OVAL adapter (wraps oval-to-vex)
       ubuntuoval/              -- Ubuntu OVAL adapter (wraps oval-to-vex)
       debianoval/              -- Debian OVAL adapter (wraps oval-to-vex)
       almalinuxoval/           -- AlmaLinux OVAL adapter (wraps oval-to-vex)
@@ -93,4 +92,4 @@ reel-vex/
   Dockerfile                   -- golang:1.27-alpine → alpine:3.24
 ```
 
-**Companion library**: [`getreeldev/oval-to-vex`](https://github.com/getreeldev/oval-to-vex) — standalone Go library that parses Red Hat, Ubuntu, Debian, AlmaLinux, and Oracle Linux OVAL XML into VEX-shaped statements. Zero dependencies beyond stdlib. reel-vex's five OVAL adapters delegate to it; anyone else building scanners can `go get github.com/getreeldev/oval-to-vex/translator`.
+**Companion library**: [`getreeldev/oval-to-vex`](https://github.com/getreeldev/oval-to-vex) — standalone Go library that parses Ubuntu, Debian, AlmaLinux, and Oracle Linux OVAL XML into VEX-shaped statements. Zero dependencies beyond stdlib. reel-vex's four OVAL adapters delegate to it; anyone else building scanners can `go get github.com/getreeldev/oval-to-vex/translator`.

@@ -97,6 +97,10 @@ func Extract(data []byte) ([]Statement, error) {
 
 		extract(ps.KnownNotAffected, "not_affected")
 		extract(ps.Fixed, "fixed")
+		// SUSE marks fixed packages as recommended (older documents:
+		// first_fixed) and never uses fixed.
+		extract(ps.FirstFixed, "fixed")
+		extract(ps.Recommended, "fixed")
 		extract(ps.KnownAffected, "affected")
 		extract(ps.UnderInvestigation, "under_investigation")
 	}

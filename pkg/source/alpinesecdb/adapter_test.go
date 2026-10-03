@@ -104,23 +104,20 @@ func TestAdapter_Lifecycle(t *testing.T) {
 
 	// Fixture (aom + busybox + glib):
 	//   aom 3.1.1-r0 → 3 CVE (fixed), 3.9.1-r0 → 1 CVE (fixed)        = 4 fixed
-	//   busybox "0"  → 3 CVE (affected, empty version)                = 3 affected
+	//   busybox "0"  → 3 CVE (not_affected, empty version)            = 3 not_affected
 	//   busybox 1.34.0-r0 → 11 CVE (fixed)                            = 11 fixed
 	//   busybox 1.35.0-r7 → [ALPINE-13661 skipped, CVE-2022-28391]    = 1 fixed
 	//   glib 2.66.8-r0 → ["CVE-2021-27219 GHSL-2021-045"] (glued)     = 1 fixed
-	// Totals: 20 emitted, 17 fixed, 3 affected, 1 non-CVE skipped.
+	// Totals: 20 emitted, 17 fixed, 3 not_affected, 1 non-CVE skipped.
 	if len(stmts) != 20 {
 		t.Fatalf("expected 20 statements, got %d", len(stmts))
 	}
 
-	var fixed, affected int
-	var sawAomFix, sawBusyboxFix, sawBusyboxAffected, sawMixedArrayCVE, sawGluedCVE bool
+	var fixed, notAffected int
+	var sawAomFix, sawBusyboxFix, sawBusyboxNotAffected, sawMixedArrayCVE, sawGluedCVE bool
 	for _, s := range stmts {
 		if s.IDType != "purl" {
 			t.Errorf("%s: IDType got %q, want purl", s.CVE, s.IDType)
-		}
-		if s.Justification != "" {
-			t.Errorf("%s: Justification got %q, want empty", s.CVE, s.Justification)
 		}
 		if s.Scope != "" {
 			t.Errorf("%s: Scope got %q, want empty", s.CVE, s.Scope)
@@ -146,6 +143,9 @@ func TestAdapter_Lifecycle(t *testing.T) {
 		switch s.Status {
 		case "fixed":
 			fixed++
+			if s.Justification != "" {
+				t.Errorf("%s: Justification got %q, want empty", s.CVE, s.Justification)
+			}
 			if s.Version == "" {
 				t.Errorf("%s: fixed statement has empty version", s.CVE)
 			}
@@ -175,16 +175,19 @@ func TestAdapter_Lifecycle(t *testing.T) {
 					t.Errorf("CVE-2021-27219: got version %q, want 2.66.8-r0", s.Version)
 				}
 			}
-		case "affected":
-			affected++
+		case "not_affected":
+			notAffected++
 			if s.Version != "" {
-				t.Errorf("%s: affected statement must have empty version, got %q", s.CVE, s.Version)
+				t.Errorf("%s: not_affected statement must have empty version, got %q", s.CVE, s.Version)
+			}
+			if s.Justification != "vulnerable_code_not_present" {
+				t.Errorf("%s: Justification got %q, want vulnerable_code_not_present", s.CVE, s.Justification)
 			}
 			if s.BaseID != "pkg:apk/alpine/busybox?distro=alpine-3.21" {
-				t.Errorf("affected: got BaseID %q, want busybox?distro=alpine-3.21", s.BaseID)
+				t.Errorf("not_affected: got BaseID %q, want busybox?distro=alpine-3.21", s.BaseID)
 			}
 			if s.CVE == "CVE-2021-42373" {
-				sawBusyboxAffected = true
+				sawBusyboxNotAffected = true
 			}
 		default:
 			t.Errorf("%s: unexpected status %q", s.CVE, s.Status)
@@ -199,8 +202,8 @@ func TestAdapter_Lifecycle(t *testing.T) {
 	if fixed != 17 {
 		t.Errorf("fixed count: got %d, want 17", fixed)
 	}
-	if affected != 3 {
-		t.Errorf("affected count: got %d, want 3", affected)
+	if notAffected != 3 {
+		t.Errorf("not_affected count: got %d, want 3", notAffected)
 	}
 	if !sawAomFix {
 		t.Error("missing aom fix CVE-2024-5171")
@@ -208,8 +211,8 @@ func TestAdapter_Lifecycle(t *testing.T) {
 	if !sawBusyboxFix {
 		t.Error("missing busybox fix CVE-2021-42386")
 	}
-	if !sawBusyboxAffected {
-		t.Error("missing busybox affected CVE-2021-42373 (the \"0\" sentinel)")
+	if !sawBusyboxNotAffected {
+		t.Error("missing busybox not_affected CVE-2021-42373 (the \"0\" key)")
 	}
 	if !sawMixedArrayCVE {
 		t.Error("missing CVE-2022-28391 from the mixed CVE/ALPINE array")
@@ -251,5 +254,68 @@ func TestAdapter_HEADShortCircuit(t *testing.T) {
 	}
 	if getCalls != 0 {
 		t.Errorf("expected no GET on short-circuit, got %d", getCalls)
+	}
+}
+
+// syncBody runs one Sync over an in-memory secdb body.
+func syncBody(t *testing.T, body string) []source.Statement {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v3.24/main.json", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Write([]byte(body))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	a, err := New(source.AdapterConfig{Type: Type, ID: "alpine", URL: server.URL + "/v3.24/main.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stmts []source.Statement
+	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+		stmts = append(stmts, s)
+		return nil
+	}); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	return stmts
+}
+
+// TestAdapter_SeveralKeysOneRow: a (package, CVE) listed under several secfixes
+// keys is one row, chosen the same way every time: the highest fixed version by
+// apk ordering (an unparseable key loses to any valid one), and "0" only when
+// no fixed version lists it. Shapes from the live v3.24 feeds: zlib lists
+// CVE-2026-22184 under "0" and 1.3.2-r0; cacti lists CVE-2024-43362 under
+// 1.2.28-r0 and 1.2.29-r0. secfixes is a Go map, so this runs repeatedly.
+func TestAdapter_SeveralKeysOneRow(t *testing.T) {
+	const body = `{"distroversion": "v3.24", "packages": [
+		{"pkg": {"name": "zlib", "secfixes": {
+			"0": ["CVE-2026-22184", "CVE-2026-0001"],
+			"1.3.2-r0": ["CVE-2026-22184"]}}},
+		{"pkg": {"name": "cacti", "secfixes": {
+			"1.2.29-r0": ["CVE-2024-43362"],
+			"1.2.28-r0": ["CVE-2024-43362"],
+			"1.2.9-r0": ["CVE-2024-43362"],
+			"not-a-version": ["CVE-2024-43362", "CVE-2024-0002"],
+			"also-not-one": ["CVE-2024-0002"]}}}]}`
+	want := []string{
+		"zlib CVE-2026-0001 not_affected ",
+		"zlib CVE-2026-22184 fixed 1.3.2-r0",
+		"cacti CVE-2024-0002 fixed not-a-version",
+		"cacti CVE-2024-43362 fixed 1.2.29-r0",
+	}
+	for i := 0; i < 50; i++ {
+		stmts := syncBody(t, body)
+		var got []string
+		for _, s := range stmts {
+			name := strings.TrimSuffix(strings.TrimPrefix(s.BaseID, "pkg:apk/alpine/"), "?distro=alpine-3.24")
+			got = append(got, name+" "+s.CVE+" "+s.Status+" "+s.Version)
+		}
+		if strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("run %d:\n got  %q\n want %q", i, got, want)
+		}
 	}
 }

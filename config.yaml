@@ -7,12 +7,6 @@ adapters:
     id: suse
     name: SUSE
     url: https://www.suse.com/.well-known/csaf/provider-metadata.json
-  # Red Hat OVAL: fills the EUS/AUS/E4S/SAP/HA/NFV coverage gap that CSAF
-  # intentionally leaves (see SECDATA-1181). One adapter per OVAL file;
-  # add more entries here as coverage needs grow — no code changes required.
-  - type: redhat-oval
-    id: redhat-oval-rhel-9.6-eus
-    url: https://security.access.redhat.com/data/oval/v2/RHEL9/rhel-9.6-eus.oval.xml.bz2
   # Canonical OpenVEX: single tarball at vex-all.tar.xz containing per-CVE
   # OpenVEX 0.2.0 documents. Strict superset of the USN-derived OVAL feeds
   # below — covers pre-USN triage state (`not_affected`,
@@ -81,14 +75,25 @@ adapters:
     url: https://raw.githubusercontent.com/rancher/vexhub/refs/heads/main/index.json
   # Alpine Linux secdb: Alpine's own security database, one tiny uncompressed
   # JSON per (branch × repository). secfixes maps fixed apk versions to advisory
-  # ids (version key "0" = known-affected/no-fix). Only CVE-prefixed ids are
-  # ingested; Alpine's non-CVE advisories (XSA-/ALPINE-/DW-) are skipped (we key
-  # by CVE). Statements are stored branch-scoped as
+  # ids (version key "0" = the CVE does not apply to the package, stored
+  # not_affected; a CVE under several keys is one row, the highest fixed
+  # version by apk ordering, "0" only when no fixed version lists it). Only
+  # CVE-prefixed ids are ingested; Alpine's non-CVE advisories
+  # (XSA-/ALPINE-/DW-) are skipped (we key by CVE). Statements are stored
+  # branch-scoped as
   # pkg:apk/alpine/<name>?distro=alpine-<major.minor>, so the same package+CVE on
   # different branches stays distinct; the resolver normalizes a scanner's apk
   # distro qualifier to match. One adapter per branch×repo; there is no
   # latest-stable alias, so name each branch. Add new entries as Alpine ships new
   # releases / retires old branches.
+  - type: alpine-secdb
+    id: alpine-secdb-v3.24-main
+    name: Alpine Linux 3.24
+    url: https://secdb.alpinelinux.org/v3.24/main.json
+  - type: alpine-secdb
+    id: alpine-secdb-v3.24-community
+    name: Alpine Linux 3.24
+    url: https://secdb.alpinelinux.org/v3.24/community.json
   - type: alpine-secdb
     id: alpine-secdb-v3.23-main
     name: Alpine Linux 3.23
@@ -162,10 +167,12 @@ adapters:
     id: almalinux-oval-10
     url: https://security.almalinux.org/oval/org.almalinux.alsa-10.xml.bz2
   # Oracle Linux errata OVAL: one bz2 per release (ELSA). Parsed by oval-to-vex
-  # FromOracleOVAL; the release major is read per-definition from the
-  # <platform>Oracle Linux N</platform> tag (a single ELSA can target several
-  # majors). Keyed pkg:rpm/oracle/<name>?distro=oracle-<N> — matches Trivy's
-  # oracle-<N> directly. Ksplice variants are skipped in v1.
+  # FromOracleOVAL, which pairs each package with the release its version test
+  # is gated on (a single ELSA can cover several majors). Each adapter keeps
+  # only the rows of its own release, read from the ol<N> in its URL; the other
+  # releases' rows are written by their own adapters. Keyed
+  # pkg:rpm/oracle/<name>?distro=oracle-<N> — matches Trivy's oracle-<N>
+  # directly. Ksplice variants are skipped in v1.
   - type: oracle-oval
     id: oracle-oval-ol9
     url: https://linux.oracle.com/security/oval/com.oracle.elsa-ol9.xml.bz2

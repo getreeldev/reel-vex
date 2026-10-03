@@ -1,6 +1,7 @@
 package oracleoval
 
 import (
+	"compress/bzip2"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getreeldev/oval-to-vex/translator"
 	"github.com/getreeldev/reel-vex/pkg/source"
 )
 
@@ -48,6 +50,17 @@ func TestNew(t *testing.T) {
 	t.Run("requires url", func(t *testing.T) {
 		if _, err := New(source.AdapterConfig{Type: Type, ID: "oracle"}); err == nil {
 			t.Fatal("expected error for empty url")
+		}
+	})
+	t.Run("requires a release in the file name", func(t *testing.T) {
+		for _, u := range []string{
+			"https://x/com.oracle.elsa-all.xml.bz2",
+			"https://x/com.oracle.elsa-ol.xml.bz2",
+			"https://x/oval.xml.bz2",
+		} {
+			if _, err := New(source.AdapterConfig{Type: Type, ID: "oracle", URL: u}); err == nil {
+				t.Errorf("%s: expected error, release cannot be derived", u)
+			}
 		}
 	})
 	t.Run("defaults name", func(t *testing.T) {
@@ -151,5 +164,51 @@ func TestAdapter_HEADShortCircuit(t *testing.T) {
 	}
 	if getCalls != 0 {
 		t.Errorf("expected no GET on short-circuit, got %d", getCalls)
+	}
+}
+
+// TestAdapter_OwnReleaseOnly: an ELSA in the ol9 file that also covers OL8
+// yields distro=oracle-8 rows from the translator, which the ol8 adapter
+// writes too; the ol9 adapter keeps only oracle-9 rows.
+func TestAdapter_OwnReleaseOnly(t *testing.T) {
+	raw, err := os.Open(fixturePath(t, "oracle-oval-ol9-sample.oval.xml.bz2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	all, err := translator.FromOracleOVAL(bzip2.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var own, other int
+	for _, s := range all {
+		if strings.HasSuffix(s.BaseID, "?distro=oracle-9") {
+			own++
+		} else {
+			other++
+		}
+	}
+	if own == 0 || other == 0 {
+		t.Fatalf("fixture must yield rows of release 9 and of another release; got %d and %d", own, other)
+	}
+
+	server := serveFixture(t, time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC))
+	defer server.Close()
+	a, err := New(source.AdapterConfig{Type: Type, ID: "oracle-oval-ol9", URL: server.URL + "/com.oracle.elsa-ol9.xml.bz2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var emitted int
+	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+		emitted++
+		if !strings.HasSuffix(s.BaseID, "?distro=oracle-9") {
+			t.Errorf("%s: ol9 adapter emitted %q", s.CVE, s.BaseID)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if emitted != own {
+		t.Errorf("emitted %d statements, want the %d of release 9", emitted, own)
 	}
 }

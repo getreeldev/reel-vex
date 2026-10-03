@@ -15,13 +15,15 @@ the provenance carried in `status_notes`.
   adaptation — and redistributes those statements **under CC BY-SA 4.0**, with
   attribution to Alpine Linux and a link to the source. Changes were made: the
   per-branch `secfixes` fixed-version map is converted to per-(CVE, package)
-  OpenVEX `fixed`/`affected` statements keyed as `pkg:apk/alpine/<name>`.
+  OpenVEX `fixed`/`not_affected` statements keyed as `pkg:apk/alpine/<name>`
+  (the version key "0", a CVE that does not apply to the package, becomes
+  `not_affected`).
 
 - **AlmaLinux — errata** (https://security.almalinux.org/). The machine-readable
   errata/OSV dataset (https://github.com/AlmaLinux/osv-database) is published
   under the **MIT License**.
 
-- **Red Hat** (CSAF, OVAL), **SUSE / Rancher** (CSAF, OpenVEX),
+- **Red Hat** (CSAF), **SUSE / Rancher** (CSAF, OpenVEX),
   **Canonical / Ubuntu** (OpenVEX, OVAL), **Debian** (OVAL), **Amazon Linux**
   (ALAS `updateinfo`), and **Oracle Linux** (OVAL) data is redistributed as
   published by each vendor, under their respective terms. These feeds are

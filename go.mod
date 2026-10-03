@@ -20,10 +20,11 @@ require (
 
 require (
 	github.com/getreeldev/cyclonedx-to-openvex v0.1.0
-	github.com/getreeldev/oval-to-vex v0.3.0
+	github.com/getreeldev/oval-to-vex v0.4.0
 	github.com/gocsaf/csaf/v3 v3.6.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/klauspost/compress v1.20.0
+	github.com/knqyf263/go-apk-version v0.0.0-20200609155635-041fdbb8563f
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/ulikunitz/xz v0.5.17
 	gopkg.in/yaml.v3 v3.0.1

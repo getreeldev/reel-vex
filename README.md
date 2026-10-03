@@ -33,7 +33,7 @@ Request and response shapes are in [`docs/api.md`](./docs/api.md).
   vendor feeds                  reel-vex                     queries answered
   ────────────                  ────────                     ────────────────
 
-  Red Hat    CSAF, OVAL    ┌────────────────────────┐   a CVE
+  Red Hat    CSAF          ┌────────────────────────┐   a CVE
   SUSE       CSAF          │ fetch                  │     → the vendor statements
   Rancher    OpenVEX       │   per feed, scheduled; │       filed against it
   Ubuntu     OpenVEX, OVAL │   incremental after    │
@@ -58,7 +58,6 @@ Deeper detail: [`docs/architecture.md`](./docs/architecture.md) (pipeline + layo
 | Vendor | Format | Feed | Identifiers |
 |--------|--------|------|-------------|
 | Red Hat | CSAF VEX | [security.access.redhat.com/data/csaf/v2/vex/](https://security.access.redhat.com/data/csaf/v2/vex/) | PURL + CPE |
-| Red Hat | OVAL | [security.access.redhat.com/data/oval/v2/](https://security.access.redhat.com/data/oval/v2/) | CPE (incl. stream variants) |
 | SUSE | CSAF VEX | [ftp.suse.com/pub/projects/security/csaf-vex/](https://ftp.suse.com/pub/projects/security/csaf-vex/) | CPE |
 | Rancher (SUSE) | OpenVEX 0.2.0 | [github.com/rancher/vexhub](https://github.com/rancher/vexhub) | PURL (image / Go-module-scoped) |
 | Ubuntu | OpenVEX 0.2.0 | [security-metadata.canonical.com/vex/](https://security-metadata.canonical.com/vex/) | PURL (`pkg:deb/ubuntu/…?distro=…`) |
@@ -118,7 +117,7 @@ The HTTP write timeout tracks `-query-timeout`, so raising the query ceiling doe
 
 ## Adding a source
 
-`config.yaml` lists `adapters:` (data sources) and `aliases:` (identifier-translation files). Registered adapter types: `csaf`, `redhat-oval`, `ubuntu-oval`, `debian-oval`, `ubuntu-vex`, `rancher-vex`, `alpine-secdb`, `amazon-alas`, `almalinux-oval`, `oracle-oval`. The adapter-author guide and per-source quirks are in [`docs/architecture.md`](./docs/architecture.md).
+`config.yaml` lists `adapters:` (data sources) and `aliases:` (identifier-translation files). Registered adapter types: `csaf`, `ubuntu-oval`, `debian-oval`, `ubuntu-vex`, `rancher-vex`, `alpine-secdb`, `amazon-alas`, `almalinux-oval`, `oracle-oval`. The adapter-author guide and per-source quirks are in [`docs/architecture.md`](./docs/architecture.md).
 
 ## Tests
 

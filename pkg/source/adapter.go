@@ -17,9 +17,9 @@ import (
 type Adapter interface {
 	// ID is the adapter instance identifier, unique across all configured
 	// adapters. Used as the key for this adapter's watermark entry in
-	// adapter_state, so two adapters that share a vendor (e.g. a CSAF and
-	// an OVAL adapter both scanning Red Hat) need distinct IDs like
-	// "redhat-csaf" and "redhat-oval-rhel-9.6-eus".
+	// adapter_state, so two adapters that share a vendor (e.g. an OpenVEX
+	// and an OVAL adapter both scanning Ubuntu) need distinct IDs like
+	// "ubuntu-vex" and "ubuntu-oval-noble".
 	ID() string
 
 	// Vendor is the vendor identifier written onto every statement this

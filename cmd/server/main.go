@@ -26,7 +26,6 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/source/debianoval"
 	"github.com/getreeldev/reel-vex/pkg/source/oracleoval"
 	"github.com/getreeldev/reel-vex/pkg/source/ranchervex"
-	"github.com/getreeldev/reel-vex/pkg/source/redhatoval"
 	"github.com/getreeldev/reel-vex/pkg/source/ubuntuoval"
 	"github.com/getreeldev/reel-vex/pkg/source/ubuntuvex"
 )
@@ -36,7 +35,6 @@ import (
 // can resolve both purely through the factory functions.
 func registerAdapters() {
 	source.Register(csafadapter.Type, csafadapter.New)
-	source.Register(redhatoval.Type, redhatoval.New)
 	source.Register(ubuntuoval.Type, ubuntuoval.New)
 	source.Register(ubuntuvex.Type, ubuntuvex.New)
 	source.Register(debianoval.Type, debianoval.New)
