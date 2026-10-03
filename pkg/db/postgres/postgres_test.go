@@ -24,7 +24,7 @@ import (
 //	  go test -run TestPG ./pkg/db/postgres/
 //
 // It validates the dialect ports that the dry-run flagged: ANY-array IN lists,
-// the IS DISTINCT FROM conditional-upsert skip, the scope gate, nullable scans,
+// the IS DISTINCT FROM conditional-upsert skip, the scope gate, the row scan,
 // and the migration set (including the covering index).
 func TestPG(t *testing.T) {
 	dsn := os.Getenv("REEL_VEX_TEST_PG_DSN")
@@ -56,10 +56,10 @@ func TestPG(t *testing.T) {
 		t.Fatalf("LastIngestAt: %v", err)
 	}
 
-	// Statements: one plain, one with empty version/justification (NULL path),
-	// one product-scoped (Rancher-style) to exercise the scope gate.
+	// Statements: one plain, one with no versions or justification (empty
+	// list and empty string), one product-scoped (Rancher-style) to exercise the scope gate.
 	stmts := []db.Statement{
-		{Vendor: "redhat", CVE: "CVE-2024-0001", ProductID: "pkg:rpm/redhat/bash", BaseID: "pkg:rpm/redhat/bash", Version: "5.1", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2026-06-01T00:00:00Z", SourceFormat: "csaf"},
+		{Vendor: "redhat", CVE: "CVE-2024-0001", ProductID: "pkg:rpm/redhat/bash", BaseID: "pkg:rpm/redhat/bash", Versions: []string{"5.1"}, IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2026-06-01T00:00:00Z", SourceFormat: "csaf"},
 		{Vendor: "redhat", CVE: "CVE-2024-0002", ProductID: "pkg:rpm/redhat/curl", BaseID: "pkg:rpm/redhat/curl", IDType: "purl", Status: "fixed", Updated: "2026-06-01T00:00:00Z", SourceFormat: "csaf"},
 		{Vendor: "rancher", CVE: "CVE-2024-0001", ProductID: "pkg:rpm/redhat/bash", BaseID: "pkg:rpm/redhat/bash", IDType: "purl", Status: "not_affected", Justification: "inline_mitigations_already_exist", Updated: "2026-06-01T00:00:00Z", SourceFormat: "openvex", Scope: "pkg:oci/rancher/some-image"},
 	}
@@ -77,7 +77,7 @@ func TestPG(t *testing.T) {
 		t.Fatalf("scope gate (no scope): want 1 redhat row, got %d: %+v", len(got), got)
 	}
 	if got[0].Justification != "vulnerable_code_not_present" {
-		t.Fatalf("nullable scan: justification = %q", got[0].Justification)
+		t.Fatalf("scan: justification = %q", got[0].Justification)
 	}
 
 	// Naming the scope reveals the scoped row too (2 rows now).
@@ -111,16 +111,16 @@ func TestPG(t *testing.T) {
 		t.Fatalf("conditional upsert should have skipped; updated = %q", got[0].Updated)
 	}
 
-	// A real verdict change DOES update.
+	// A changed version list DOES update, in place.
 	changed := stmts[1]
-	changed.Status = "affected"
+	changed.Versions = []string{"8.0"}
 	changed.Updated = "2026-12-31T00:00:00Z"
 	if err := d.BulkInsert([]db.Statement{changed}); err != nil {
 		t.Fatalf("BulkInsert change: %v", err)
 	}
 	got, _ = d.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-2024-0002"}})
-	if got[0].Status != "affected" || got[0].Updated != "2026-12-31T00:00:00Z" {
-		t.Fatalf("verdict change not applied: %+v", got[0])
+	if len(got) != 1 || !slices.Equal(got[0].Versions, []string{"8.0"}) || got[0].Updated != "2026-12-31T00:00:00Z" {
+		t.Fatalf("version change not applied: %+v", got)
 	}
 
 	// Aliases. The bulk load goes through COPY + a set-based upsert (like
@@ -262,8 +262,9 @@ func testSweeps(t *testing.T, d *DB, dsn string) {
 		}
 		return o
 	}
+	// key is the seen key of a sweepRow: not_affected, no justification.
 	key := func(cve, product, scope string) db.StatementKey {
-		return db.StatementKey{CVE: cve, ProductID: product, Scope: scope}
+		return db.StatementKey{CVE: cve, ProductID: product, Scope: scope, Status: "not_affected"}
 	}
 
 	t.Run("sweep all deletes only the owner's unseen rows", func(t *testing.T) {
@@ -405,7 +406,7 @@ func testSweeps(t *testing.T, d *DB, dsn string) {
 			t.Fatalf("owner after unchanged re-insert = %v, want a", o)
 		}
 		changed := sweepRow("b", "CVE-1", "p1", "")
-		changed.Status = "affected"
+		changed.Versions = []string{"1.0"}
 		insert(t, changed)
 		if o := owner(t, "CVE-1", "p1"); o == nil || *o != "b" {
 			t.Fatalf("owner after changed re-insert = %v, want b", o)
@@ -618,6 +619,107 @@ func testSweeps(t *testing.T, d *DB, dsn string) {
 		}
 	})
 
+	// versionsOf reads one row's stored version list and updated.
+	versionsOf := func(t *testing.T, cve, product, status string) ([]string, string) {
+		t.Helper()
+		var vs []string
+		var updated string
+		if err := d.pool.QueryRow(ctx, `SELECT versions, updated FROM statements WHERE cve = $1 AND product_id = $2 AND status = $3`,
+			cve, product, status).Scan(&vs, &updated); err != nil {
+			t.Fatalf("versions: %v", err)
+		}
+		return vs, updated
+	}
+
+	t.Run("one row per verdict: two statuses of one key coexist", func(t *testing.T) {
+		reset(t)
+		affected := sweepRow("a", "CVE-1", "p1", "")
+		affected.Status = "affected"
+		mitigated := sweepRow("a", "CVE-1", "p1", "")
+		mitigated.Justification = "inline_mitigations_already_exist"
+		insert(t, sweepRow("a", "CVE-1", "p1", ""), affected, mitigated)
+		got, err := d.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-1"}})
+		if err != nil || len(got) != 3 {
+			t.Fatalf("QueryStatements = %+v, %v; want three verdicts", got, err)
+		}
+	})
+
+	t.Run("two rows differing only by stream coexist", func(t *testing.T) {
+		reset(t)
+		rhel9 := sweepRow("a", "CVE-1", "p1", "")
+		rhel9.Stream = "rhel-9"
+		insert(t, sweepRow("a", "CVE-1", "p1", ""), rhel9)
+		var streams []string
+		if err := d.pool.QueryRow(ctx, `SELECT array_agg(stream ORDER BY stream) FROM statements WHERE cve = 'CVE-1'`).Scan(&streams); err != nil {
+			t.Fatalf("streams: %v", err)
+		}
+		if !slices.Equal(streams, []string{"", "rhel-9"}) {
+			t.Fatalf("streams = %q, want both", streams)
+		}
+	})
+
+	t.Run("version lists are normalised and guarded", func(t *testing.T) {
+		reset(t)
+		first := sweepRow("a", "CVE-1", "p1", "")
+		first.Versions = []string{"2.0", "1.0", "2.0", ""}
+		insert(t, first)
+		if vs, _ := versionsOf(t, "CVE-1", "p1", "not_affected"); !slices.Equal(vs, []string{"1.0", "2.0"}) {
+			t.Fatalf("stored versions = %q, want [1.0 2.0]", vs)
+		}
+		// The same list in another order with a newer timestamp and another
+		// writer: not a change, so nothing is rewritten.
+		same := sweepRow("b", "CVE-1", "p1", "")
+		same.Versions = []string{"2.0", "1.0"}
+		same.Updated = "2026-12-31T00:00:00Z"
+		insert(t, same)
+		if _, updated := versionsOf(t, "CVE-1", "p1", "not_affected"); updated != "2026-06-01T00:00:00Z" {
+			t.Fatalf("an unchanged list rewrote the row: updated = %s", updated)
+		}
+		if o := owner(t, "CVE-1", "p1"); o == nil || *o != "a" {
+			t.Fatalf("owner after an unchanged list = %v, want a", o)
+		}
+		// A changed list is written in place: still one row.
+		grown := same
+		grown.Versions = []string{"3.0", "1.0", "2.0"}
+		insert(t, grown)
+		vs, updated := versionsOf(t, "CVE-1", "p1", "not_affected")
+		if !slices.Equal(vs, []string{"1.0", "2.0", "3.0"}) || updated != "2026-12-31T00:00:00Z" {
+			t.Fatalf("changed list not written: %q, %s", vs, updated)
+		}
+		wantRows(t, "b|CVE-1|p1|")
+		// No versions is an empty list, not NULL, and reads back as nil.
+		insert(t, sweepRow("a", "CVE-2", "p1", ""))
+		if vs, _ := versionsOf(t, "CVE-2", "p1", "not_affected"); vs == nil || len(vs) != 0 {
+			t.Fatalf("empty versions stored as %#v, want {}", vs)
+		}
+		got, err := d.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-2"}})
+		if err != nil || len(got) != 1 || got[0].Versions != nil {
+			t.Fatalf("QueryStatements = %+v, %v; want nil Versions", got, err)
+		}
+	})
+
+	t.Run("the seen key includes the verdict", func(t *testing.T) {
+		reset(t)
+		old := sweepRow("a", "CVE-1", "p1", "")
+		old.Status = "affected"
+		insert(t, old, sweepRow("a", "CVE-1", "p1", ""))
+		other := sweepRow("a", "CVE-1", "p1", "")
+		other.Stream = "rhel-9"
+		insert(t, other)
+		start(t, "a", key("CVE-1", "p1", ""))
+		res, err := d.FinishSweep("a", db.SweepScope{All: true}, 1)
+		if err != nil || res != (db.SweepResult{Seen: 1, Owned: 3, Deleted: 2}) {
+			t.Fatalf("FinishSweep = %+v, %v", res, err)
+		}
+		var left []string
+		if err := d.pool.QueryRow(ctx, `SELECT array_agg(status || '|' || stream) FROM statements`).Scan(&left); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		if !slices.Equal(left, []string{"not_affected|"}) {
+			t.Fatalf("rows = %q; want only the not_affected successor on no stream", left)
+		}
+	})
+
 	t.Run("migration v2 applies on top of v1 data", func(t *testing.T) {
 		const schema = "reel_vex_v1_test"
 		if _, err := d.pool.Exec(ctx, `DROP SCHEMA IF EXISTS `+schema+` CASCADE; CREATE SCHEMA `+schema); err != nil {
@@ -647,7 +749,10 @@ func testSweeps(t *testing.T, d *DB, dsn string) {
 			VALUES ('redhat', 'CVE-1', 'p1', 'p1', 'purl', 'fixed', '2026-06-01T00:00:00Z')`); err != nil {
 			t.Fatalf("insert v1 row: %v", err)
 		}
-		if err := v1.migrate(ctx); err != nil {
+		migrations = all[:2]
+		err = v1.migrate(ctx)
+		migrations = all
+		if err != nil {
 			t.Fatalf("migrate to v2: %v", err)
 		}
 		var version int
@@ -668,6 +773,90 @@ func testSweeps(t *testing.T, d *DB, dsn string) {
 		}
 		if !slices.Contains(opts, "autovacuum_vacuum_scale_factor=0.01") || !slices.Contains(opts, "autovacuum_vacuum_threshold=100000") {
 			t.Fatalf("reloptions = %v", opts)
+		}
+	})
+
+	t.Run("migration v3 applies on top of v2 data", func(t *testing.T) {
+		const schema = "reel_vex_v2_test"
+		if _, err := d.pool.Exec(ctx, `DROP SCHEMA IF EXISTS `+schema+` CASCADE; CREATE SCHEMA `+schema); err != nil {
+			t.Fatalf("create schema: %v", err)
+		}
+		defer d.pool.Exec(context.Background(), `DROP SCHEMA IF EXISTS `+schema+` CASCADE`)
+		cfg, err := pgxpool.ParseConfig(dsn)
+		if err != nil {
+			t.Fatalf("parse dsn: %v", err)
+		}
+		cfg.ConnConfig.RuntimeParams["search_path"] = schema
+		pool, err := pgxpool.NewWithConfig(ctx, cfg)
+		if err != nil {
+			t.Fatalf("pool: %v", err)
+		}
+		defer pool.Close()
+		v2 := &DB{pool: pool}
+
+		all := migrations
+		migrations = all[:2]
+		err = v2.migrate(ctx)
+		migrations = all
+		if err != nil {
+			t.Fatalf("migrate to v2: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO statements (vendor, cve, product_id, base_id, version, id_type, status, justification, updated, adapter_id) VALUES
+			('redhat', 'CVE-1', 'p1', 'p1', '5.1', 'purl', 'fixed', NULL, '2026-06-01T00:00:00Z', 'a'),
+			('redhat', 'CVE-2', 'p1', 'p1', '', 'purl', 'not_affected', 'component_not_present', '2026-06-01T00:00:00Z', 'a'),
+			('redhat', 'CVE-3', 'p1', 'p1', NULL, 'purl', 'affected', NULL, '2026-06-01T00:00:00Z', NULL)`); err != nil {
+			t.Fatalf("insert v2 rows: %v", err)
+		}
+		// The covering index as v2 builds it, INCLUDEing version: v3 must drop it.
+		if _, err := pool.Exec(ctx, `CREATE INDEX idx_statements_broad ON statements (base_id, cve, product_id, source_format)
+			INCLUDE (vendor, version, id_type, status, justification, updated, scope)`); err != nil {
+			t.Fatalf("v2 covering index: %v", err)
+		}
+		if err := v2.migrate(ctx); err != nil {
+			t.Fatalf("migrate to v3: %v", err)
+		}
+		var version int
+		if err := pool.QueryRow(ctx, `SELECT version FROM schema_version`).Scan(&version); err != nil || version != 3 {
+			t.Fatalf("schema_version = %d, %v; want 3", version, err)
+		}
+		rows, err := pool.Query(ctx, `SELECT cve || '|' || array_to_string(versions, ',') || '|' || version_kind || '|' || stream || '|' || justification || '|' || coalesce(adapter_id, '-') FROM statements ORDER BY cve`)
+		if err != nil {
+			t.Fatalf("read v3 rows: %v", err)
+		}
+		got, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read v3 rows: %v", err)
+		}
+		want := []string{"CVE-1|5.1||||a", "CVE-2||||component_not_present|a", "CVE-3|||||-"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("v3 rows = %q, want %q", got, want)
+		}
+		var pk string
+		if err := pool.QueryRow(ctx, `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'statements'::regclass AND contype = 'p'`).Scan(&pk); err != nil {
+			t.Fatalf("primary key: %v", err)
+		}
+		if pk != "PRIMARY KEY (vendor, cve, product_id, source_format, scope, stream, status, justification)" {
+			t.Fatalf("primary key = %s", pk)
+		}
+		var hasVersion, hasBroad bool
+		if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'statements' AND column_name = 'version')`, schema).Scan(&hasVersion); err != nil || hasVersion {
+			t.Fatalf("version column still present = %v, %v", hasVersion, err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname = $1 AND indexname = 'idx_statements_broad')`, schema).Scan(&hasBroad); err != nil || hasBroad {
+			t.Fatalf("old covering index still present = %v, %v", hasBroad, err)
+		}
+		// The store writes and reads the new shape, and the index rebuilds.
+		if err := v2.BulkInsert([]db.Statement{{Vendor: "redhat", CVE: "CVE-1", ProductID: "p1", IDType: "purl", Status: "affected",
+			Updated: "2026-07-01T00:00:00Z", Versions: []string{"5.2"}}}); err != nil {
+			t.Fatalf("BulkInsert on v3: %v", err)
+		}
+		if err := v2.EnsureCoveringIndex(); err != nil {
+			t.Fatalf("EnsureCoveringIndex on v3: %v", err)
+		}
+		v2.queryTimeout = defaultQueryTimeout
+		got2, err := v2.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-1"}})
+		if err != nil || len(got2) != 2 {
+			t.Fatalf("QueryStatements on v3 = %+v, %v; want the fixed and the affected row", got2, err)
 		}
 	})
 }

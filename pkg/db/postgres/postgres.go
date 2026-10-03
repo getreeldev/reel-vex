@@ -143,21 +143,25 @@ func (p *DB) LastIngestAt() (time.Time, error) {
 	return t, nil
 }
 
-// BulkInsert applies the conditional upsert in one transaction: a row is
-// rewritten only when a verdict-bearing column actually changed (IS DISTINCT
-// FROM is null-safe, so a NULL↔value change still counts). `updated` is
+// BulkInsert applies the conditional upsert in one transaction. A row is keyed
+// by its stream and verdict (stream, status and justification are in the
+// primary key), so a changed verdict is a new row; an existing row is rewritten only when its
+// version list, base_id, id_type or version_kind changed (IS DISTINCT FROM is
+// null-safe). Versions are normalised first (db.NormalizeVersions), so a list
+// that differs only in order or repeats is not a change. `updated` is
 // intentionally not part of the change-test so a timestamp-only republish is a
 // true no-op. adapter_id is deliberately not in the change-test either: it
-// moves to the writer only when the verdict changed, so an unchanged re-insert
+// moves to the writer only when the row changed, so an unchanged re-insert
 // keeps its owner instead of rewriting every row whose owner differs.
 //
 // At ingest scale per-row INSERTs are far too slow (one network round-trip
 // each). Instead the batch is bulk-loaded into a temp table via COPY (binary,
 // index-free), then merged into statements with the conditional upsert in a
 // single set-based statement. DISTINCT ON dedups rows that share a PK within
-// the same batch (keeping the last by ctid), since the set-based upsert — unlike
-// per-row — can't touch the same conflict target twice in one statement.
-var bulkCols = []string{"vendor", "cve", "product_id", "base_id", "version", "id_type", "status", "justification", "updated", "source_format", "scope", "adapter_id"}
+// the same batch (keeping the last by ctid, lists not merged), since the
+// set-based upsert — unlike per-row — can't touch the same conflict target
+// twice in one statement.
+var bulkCols = []string{"vendor", "cve", "product_id", "base_id", "versions", "version_kind", "id_type", "status", "justification", "updated", "source_format", "scope", "stream", "adapter_id"}
 
 func (p *DB) BulkInsert(stmts []db.Statement) error {
 	if len(stmts) == 0 {
@@ -180,9 +184,9 @@ func (p *DB) BulkInsert(stmts []db.Statement) error {
 		if base == "" {
 			base = s.ProductID
 		}
-		var version any // nil -> NULL
-		if s.Version != "" {
-			version = s.Version
+		versions := db.NormalizeVersions(s.Versions)
+		if versions == nil {
+			versions = []string{} // a nil slice copies as NULL; the column is NOT NULL
 		}
 		sourceFormat := s.SourceFormat
 		if sourceFormat == "" {
@@ -192,31 +196,29 @@ func (p *DB) BulkInsert(stmts []db.Statement) error {
 		if s.AdapterID != "" {
 			adapterID = s.AdapterID
 		}
-		rows = append(rows, []any{s.Vendor, s.CVE, s.ProductID, base, version, s.IDType, s.Status, s.Justification, s.Updated, sourceFormat, s.Scope, adapterID})
+		rows = append(rows, []any{s.Vendor, s.CVE, s.ProductID, base, versions, s.VersionKind, s.IDType, s.Status, s.Justification, s.Updated, sourceFormat, s.Scope, s.Stream, adapterID})
 	}
 	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"_ingest"}, bulkCols, pgx.CopyFromRows(rows)); err != nil {
 		return err
 	}
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO statements (vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format, scope, adapter_id)
-		SELECT DISTINCT ON (vendor, cve, product_id, source_format, scope)
-			vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format, scope, adapter_id
+		INSERT INTO statements (vendor, cve, product_id, base_id, versions, version_kind, id_type, status, justification, updated, source_format, scope, stream, adapter_id)
+		SELECT DISTINCT ON (vendor, cve, product_id, source_format, scope, stream, status, justification)
+			vendor, cve, product_id, base_id, versions, version_kind, id_type, status, justification, updated, source_format, scope, stream, adapter_id
 		FROM _ingest
-		ORDER BY vendor, cve, product_id, source_format, scope, ctid DESC
-		ON CONFLICT (vendor, cve, product_id, source_format, scope) DO UPDATE SET
+		ORDER BY vendor, cve, product_id, source_format, scope, stream, status, justification, ctid DESC
+		ON CONFLICT (vendor, cve, product_id, source_format, scope, stream, status, justification) DO UPDATE SET
+			versions = excluded.versions,
 			base_id = excluded.base_id,
-			version = excluded.version,
 			id_type = excluded.id_type,
-			status = excluded.status,
-			justification = excluded.justification,
+			version_kind = excluded.version_kind,
 			updated = excluded.updated,
 			adapter_id = excluded.adapter_id
-		WHERE statements.status        IS DISTINCT FROM excluded.status
-		   OR statements.justification IS DISTINCT FROM excluded.justification
-		   OR statements.base_id       IS DISTINCT FROM excluded.base_id
-		   OR statements.version       IS DISTINCT FROM excluded.version
-		   OR statements.id_type       IS DISTINCT FROM excluded.id_type`); err != nil {
+		WHERE statements.versions     IS DISTINCT FROM excluded.versions
+		   OR statements.base_id      IS DISTINCT FROM excluded.base_id
+		   OR statements.id_type      IS DISTINCT FROM excluded.id_type
+		   OR statements.version_kind IS DISTINCT FROM excluded.version_kind`); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -282,7 +284,7 @@ func (p *DB) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 	}
 
 	query := `
-		SELECT vendor, cve, product_id, base_id, version, id_type, status, justification, updated, source_format, scope
+		SELECT vendor, cve, product_id, base_id, versions, version_kind, id_type, status, justification, updated, source_format, scope
 		FROM statements
 		WHERE ` + strings.Join(clauses, " AND ") + `
 		ORDER BY base_id, cve, product_id, source_format`
@@ -305,23 +307,19 @@ func (p *DB) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 	return scanStatements(rows)
 }
 
-// scanStatements reads result rows into Statements. version and justification
-// are the only nullable columns.
+// scanStatements reads result rows into Statements. No selected column is
+// nullable; an empty version list reads as nil, as NormalizeVersions writes it.
 func scanStatements(rows pgx.Rows) ([]db.Statement, error) {
 	var out []db.Statement
 	for rows.Next() {
 		var s db.Statement
-		var version, justification *string
 		if err := rows.Scan(
-			&s.Vendor, &s.CVE, &s.ProductID, &s.BaseID, &version, &s.IDType,
-			&s.Status, &justification, &s.Updated, &s.SourceFormat, &s.Scope); err != nil {
+			&s.Vendor, &s.CVE, &s.ProductID, &s.BaseID, &s.Versions, &s.VersionKind, &s.IDType,
+			&s.Status, &s.Justification, &s.Updated, &s.SourceFormat, &s.Scope); err != nil {
 			return nil, err
 		}
-		if version != nil {
-			s.Version = *version
-		}
-		if justification != nil {
-			s.Justification = *justification
+		if len(s.Versions) == 0 {
+			s.Versions = nil
 		}
 		out = append(out, s)
 	}
@@ -468,12 +466,15 @@ func (p *DB) computeStats() (db.Stats, error) {
 // here (after the index-free bulk load) instead of in the migration keeps the
 // cold load fast. The key/INCLUDE columns must stay aligned with the broad-mode
 // query in QueryStatements (key = its WHERE/ORDER-BY tuple; INCLUDE = the rest
-// of the SELECTed columns) so the scan stays index-only.
+// of the SELECTed columns) so the scan stays index-only. INCLUDEing the version
+// list keeps the entries small: a list holds the versions of one package
+// identity, and the identities with the most versions (Ubuntu kernels) are
+// short because their binary names carry the ABI.
 func (p *DB) EnsureCoveringIndex() error {
 	_, err := p.pool.Exec(context.Background(), `
 		CREATE INDEX IF NOT EXISTS idx_statements_broad
 			ON statements (base_id, cve, product_id, source_format)
-			INCLUDE (vendor, version, id_type, status, justification, updated, scope)`)
+			INCLUDE (vendor, versions, version_kind, id_type, status, justification, updated, scope)`)
 	return err
 }
 

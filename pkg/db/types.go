@@ -1,6 +1,9 @@
 package db
 
-import "errors"
+import (
+	"errors"
+	"slices"
+)
 
 // This file holds the backend-agnostic data types shared by every db.Store
 // implementation and its consumers. The concrete store lives in a backend
@@ -19,12 +22,24 @@ type Statement struct {
 	CVE           string
 	ProductID     string
 	BaseID        string
-	Version       string
 	IDType        string
 	Status        string
 	Justification string
 	Updated       string
 	SourceFormat  string // "csaf", "oval", ... — upstream feed format
+	// Versions are the versions the vendor stated for this verdict, sorted and
+	// de-duplicated at the store boundary (see NormalizeVersions). A row whose
+	// VersionKind is '' was emitted with one version per statement and holds
+	// zero or one.
+	Versions []string
+	// VersionKind says how Versions are read: '' (legacy, not yet converted),
+	// 'exact' (the queried version must be in the list) or 'boundary' (the
+	// versions are fixed-in boundaries).
+	VersionKind string
+	// Stream is the vendor product stream a boundary holds within (CSAF's
+	// relates_to product). Part of the primary key; empty for every feed until
+	// one records it. Not returned by QueryStatements.
+	Stream string
 	// Scope restricts a statement to one product context (an OpenVEX product
 	// @id — e.g. a container image). Empty for every package-level feed; set
 	// only for subcomponent-scoped sources (Rancher VEX). Part of the primary
@@ -46,10 +61,24 @@ type Statement struct {
 	Notes string
 }
 
+// NormalizeVersions returns vs sorted lexically, de-duplicated and without
+// empty elements, or nil when nothing is left. Every store applies it to a
+// row's Versions on write, so a list that differs only in order or repeats
+// never reads as a change.
+func NormalizeVersions(vs []string) []string {
+	out := slices.DeleteFunc(slices.Clone(vs), func(v string) bool { return v == "" })
+	if len(out) == 0 {
+		return nil
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
 // StatementKey identifies a statement within one adapter's rows. Vendor and
-// source_format are fixed per adapter, so (cve, product_id, scope) is the rest
-// of the primary key.
-type StatementKey struct{ CVE, ProductID, Scope string }
+// source_format are fixed per adapter, so (cve, product_id, scope, stream,
+// status, justification) is the rest of the primary key: a verdict is part of
+// a row's identity, so a changed verdict is a new row and the old one is swept.
+type StatementKey struct{ CVE, ProductID, Scope, Stream, Status, Justification string }
 
 // SweepScope says which of an adapter's rows a sweep may delete.
 type SweepScope struct {

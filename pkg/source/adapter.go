@@ -101,6 +101,15 @@ type Statement struct {
 	Status        string
 	Justification string
 	Updated       time.Time
+	// Versions, when non-empty, replaces Version: every version the vendor
+	// stated for this verdict, read as VersionKind says ('' legacy, 'exact',
+	// 'boundary'; see db.Statement). The orchestrator stores Version as a
+	// one-element list when Versions is empty. Stream is the vendor product
+	// stream a boundary holds within (see db.Statement); empty for every
+	// adapter today.
+	Versions    []string
+	VersionKind string
+	Stream      string
 	// Scope, when non-empty, restricts the statement to a single product
 	// context — an OpenVEX product @id such as a container image or Go module
 	// (see pkg/csaf.NormalizeScope). The orchestrator stores it on the row and

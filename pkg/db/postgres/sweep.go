@@ -19,6 +19,9 @@ import (
 // deletes the adapter's rows of CVEs absent from the vendor's manifest. Sizes
 // from the production-scale measurement: ~192M owned rows, ~2% stale, a sweep
 // takes ~20-40 min, spills ~40 GB of temp files and fills a ~23 GB seen table.
+// That table had three columns (cve, product_id, scope); it now also carries
+// stream, status and justification, so the ~23 GB is a lower bound until
+// re-measured.
 
 // sweepTimeout bounds one FinishSweep or Withdraw. The store methods take no
 // context, so a shutdown cannot cancel a running sweep; this bound and its
@@ -109,9 +112,12 @@ func (p *DB) StartSweep(adapterID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), sweepDDLTimeout)
 	defer cancel()
 	if _, err := p.pool.Exec(ctx, `CREATE UNLOGGED TABLE `+pgx.Identifier{name}.Sanitize()+` (
-			cve        TEXT NOT NULL,
-			product_id TEXT NOT NULL,
-			scope      TEXT NOT NULL
+			cve           TEXT NOT NULL,
+			product_id    TEXT NOT NULL,
+			scope         TEXT NOT NULL,
+			stream        TEXT NOT NULL,
+			status        TEXT NOT NULL,
+			justification TEXT NOT NULL
 		) WITH (autovacuum_enabled = false)`); err != nil {
 		return fmt.Errorf("start sweep: create %s: %w", name, err)
 	}
@@ -125,7 +131,7 @@ func (p *DB) StartSweep(adapterID string) error {
 }
 
 // seenCols is the COPY column order for the seen table.
-var seenCols = []string{"cve", "product_id", "scope"}
+var seenCols = []string{"cve", "product_id", "scope", "stream", "status", "justification"}
 
 // RecordSeen appends keys to the adapter's seen table.
 func (p *DB) RecordSeen(adapterID string, keys []db.StatementKey) error {
@@ -140,7 +146,7 @@ func (p *DB) RecordSeen(adapterID string, keys []db.StatementKey) error {
 	}
 	rows := make([][]any, 0, len(keys))
 	for _, k := range keys {
-		rows = append(rows, []any{k.CVE, k.ProductID, k.Scope})
+		rows = append(rows, []any{k.CVE, k.ProductID, k.Scope, k.Stream, k.Status, k.Justification})
 	}
 	if _, err := p.pool.CopyFrom(context.Background(), pgx.Identifier{seenTable(adapterID)}, seenCols, pgx.CopyFromRows(rows)); err != nil {
 		return fmt.Errorf("record seen: %w", err)
@@ -158,9 +164,11 @@ func (p *DB) RecordSeen(adapterID string, keys []db.StatementKey) error {
 // must stay in a WHERE clause, where it plans as an anti join that can spill —
 // in a SELECT list it plans as a SubPlan that cannot, or scans seen once per
 // owned row, which never finishes at scale. Deleting via `DELETE … USING owned`
-// plans a second full scan; `ctid = ANY(ARRAY(…))` plans a Tid Scan. `scope`
-// is NOT NULL with an empty-string default in both tables, so plain equality
-// is correct. $1 is the adapter id; scoped adds $2, the CVE list.
+// plans a second full scan; `ctid = ANY(ARRAY(…))` plans a Tid Scan. The key
+// is (cve, product_id, scope, stream, status, justification) — the verdict
+// is part of a row's identity, so a row whose verdict changed is swept and its
+// successor kept — and every one of them is NOT NULL in both tables, so plain
+// equality is correct. $1 is the adapter id; scoped adds $2, the CVE list.
 func sweepSQL(seen string, scoped bool) string {
 	cveFilter := ""
 	if scoped {
@@ -168,7 +176,7 @@ func sweepSQL(seen string, scoped bool) string {
 	}
 	return `
 		WITH owned AS MATERIALIZED (
-			SELECT s.ctid AS row_ctid, s.cve, s.product_id, s.scope
+			SELECT s.ctid AS row_ctid, s.cve, s.product_id, s.scope, s.stream, s.status, s.justification
 			FROM statements s WHERE s.adapter_id = $1` + cveFilter + `
 		), gone AS (
 			DELETE FROM statements d
@@ -176,7 +184,8 @@ func sweepSQL(seen string, scoped bool) string {
 			  AND d.ctid = ANY (ARRAY(
 				SELECT o.row_ctid FROM owned o
 				WHERE NOT EXISTS (SELECT 1 FROM ` + pgx.Identifier{seen}.Sanitize() + ` k
-					WHERE k.cve = o.cve AND k.product_id = o.product_id AND k.scope = o.scope)))
+					WHERE k.cve = o.cve AND k.product_id = o.product_id AND k.scope = o.scope
+					  AND k.stream = o.stream AND k.status = o.status AND k.justification = o.justification)))
 			RETURNING 1
 		)
 		SELECT (SELECT count(*) FROM owned), (SELECT count(*) FROM gone)`

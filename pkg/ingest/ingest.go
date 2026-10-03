@@ -112,12 +112,18 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 		if s.Updated.After(newest) {
 			newest = s.Updated
 		}
+		versions := s.Versions
+		if len(versions) == 0 && s.Version != "" {
+			versions = []string{s.Version}
+		}
 		batch = append(batch, db.Statement{
 			Vendor:        a.Vendor(),
 			CVE:           s.CVE,
 			ProductID:     s.ProductID,
 			BaseID:        s.BaseID,
-			Version:       s.Version,
+			Versions:      versions,
+			VersionKind:   s.VersionKind,
+			Stream:        s.Stream,
 			IDType:        s.IDType,
 			Status:        s.Status,
 			Justification: s.Justification,

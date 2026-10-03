@@ -7,12 +7,14 @@
 // "Faithful" means: same filter semantics (IN within a dimension, AND across
 // dimensions), the same scope gate, the same deterministic ORDER BY
 // (base_id, cve, product_id, source_format), and the same BulkInsert base/
-// source_format defaulting as the real backends.
+// source_format defaulting, version-list normalisation, primary key and
+// change guard as the real backends.
 package dbtest
 
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -100,8 +102,8 @@ func (s *Store) LastIngestAt() (time.Time, error) {
 	return t, nil
 }
 
-// pkOf returns the statement primary key (vendor, cve, product_id,
-// source_format, scope) after applying the same defaulting the real backends do.
+// normalize applies the same defaulting and version-list normalisation the
+// real backends do on write.
 func normalize(st db.Statement) db.Statement {
 	if st.BaseID == "" {
 		st.BaseID = st.ProductID
@@ -109,36 +111,48 @@ func normalize(st db.Statement) db.Statement {
 	if st.SourceFormat == "" {
 		st.SourceFormat = "csaf"
 	}
+	st.Versions = db.NormalizeVersions(st.Versions)
 	return st
 }
 
+// samePK compares the primary key (vendor, cve, product_id, source_format,
+// scope, stream, status, justification): one row per stream and verdict.
 func samePK(a, b db.Statement) bool {
 	return a.Vendor == b.Vendor && a.CVE == b.CVE && a.ProductID == b.ProductID &&
-		a.SourceFormat == b.SourceFormat && a.Scope == b.Scope
+		a.SourceFormat == b.SourceFormat && a.Scope == b.Scope && a.Stream == b.Stream &&
+		a.Status == b.Status && a.Justification == b.Justification
 }
 
-// BulkInsert replaces-or-appends each statement by primary key. (The real
-// backends' conditional-upsert skip only affects whether `updated` and
-// AdapterID are rewritten on a no-op; for test data correctness a replace is
-// equivalent.) One consequence differs from Postgres: here a row's AdapterID
-// follows the last writer even when nothing changed, where Postgres keeps the
-// owner of an unchanged re-insert.
+// changed is the upsert guard: an existing row is rewritten only when one of
+// these differs, so an unchanged re-insert keeps its `updated` and its owner.
+func changed(old, in db.Statement) bool {
+	return !slices.Equal(old.Versions, in.Versions) || old.BaseID != in.BaseID ||
+		old.IDType != in.IDType || old.VersionKind != in.VersionKind
+}
+
+// BulkInsert mirrors the Postgres upsert: rows sharing a primary key within
+// the batch resolve last-wins, then each is appended, or replaces the stored
+// row with its key only when the guard says it changed.
 func (s *Store) BulkInsert(stmts []db.Statement) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var batch []db.Statement
 	for _, in := range stmts {
 		in = normalize(in)
-		replaced := false
-		for i := range s.stmts {
-			if samePK(s.stmts[i], in) {
+		if i := slices.IndexFunc(batch, func(b db.Statement) bool { return samePK(b, in) }); i >= 0 {
+			batch[i] = in
+			continue
+		}
+		batch = append(batch, in)
+	}
+	for _, in := range batch {
+		if i := slices.IndexFunc(s.stmts, func(st db.Statement) bool { return samePK(st, in) }); i >= 0 {
+			if changed(s.stmts[i], in) {
 				s.stmts[i] = in
-				replaced = true
-				break
 			}
+			continue
 		}
-		if !replaced {
-			s.stmts = append(s.stmts, in)
-		}
+		s.stmts = append(s.stmts, in)
 	}
 	return nil
 }
@@ -202,7 +216,7 @@ func (s *Store) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 		} else if st.Scope != "" && !contains(f.Scopes, st.Scope) {
 			continue
 		}
-		st.AdapterID = "" // never selected by the Postgres query
+		st.AdapterID, st.Stream = "", "" // never selected by the Postgres query
 		out = append(out, st)
 	}
 
@@ -406,7 +420,8 @@ func (s *Store) FinishSweep(adapterID string, scope db.SweepScope, maxFraction f
 	for _, st := range s.stmts {
 		if st.AdapterID == adapterID && (scope.All || contains(scope.CVEs, st.CVE)) {
 			res.Owned++
-			if _, seen := sw.keys[db.StatementKey{CVE: st.CVE, ProductID: st.ProductID, Scope: st.Scope}]; !seen {
+			if _, seen := sw.keys[db.StatementKey{CVE: st.CVE, ProductID: st.ProductID, Scope: st.Scope,
+				Stream: st.Stream, Status: st.Status, Justification: st.Justification}]; !seen {
 				res.Deleted++
 				continue
 			}

@@ -24,7 +24,7 @@ func setupArchDB(t *testing.T) db.Store {
 		return db.Statement{
 			Vendor: "ubuntu", CVE: "CVE-2019-9923",
 			ProductID: productID, BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04",
-			Version: "1.34-1", IDType: "purl",
+			Versions: []string{"1.34-1"}, IDType: "purl",
 			Status: "not_affected", Justification: "vulnerable_code_not_present",
 			Updated: "2019-03-22T08:29:00Z", SourceFormat: "openvex",
 		}

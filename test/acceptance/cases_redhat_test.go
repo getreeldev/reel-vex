@@ -23,8 +23,6 @@ const (
 
 	// archiveDateBug is the KnownBug of every case on an archive-seeded document.
 	archiveDateBug = "rows seeded from the bulk archive are dated by the archive (2026-09-27), not by the document's own tracking.current_release_date (Phase 5c)"
-	// streamBug is the KnownBug of a component that has two verdicts in two streams.
-	streamBug = "CSAF rows are keyed (vendor, cve, product_id): a component with different verdicts in two product streams keeps one row with the last verdict extracted (stream identity is Phase 5b)"
 )
 
 var rh20012Fixed = []string{
@@ -131,7 +129,6 @@ func redhatCases() []Case {
 		{
 			Name: "redhat/cve-only/one component, two streams, two verdicts", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2025-20012")}, Status: 200, Rows: 44,
-			KnownBug: streamBug + ": pkg:rpm/redhat/microcode_ctl is affected on RHEL 6 and not_affected on RHEL 10; the not_affected statement is lost",
 			Want: []Stmt{
 				{CVE: "CVE-2025-20012", Supplier: "redhat", Status: "affected", Timestamp: tsRH20012, Notes: notes("csaf", ""),
 					Products: ss("cpe:/o:redhat:enterprise_linux:6", "pkg:rpm/redhat/microcode_ctl", "pkg:rpm/redhat/microcode_ctl?arch=src"),
@@ -146,7 +143,7 @@ func redhatCases() []Case {
 		{
 			Name: "redhat/cve-only/archive-seeded, one source package in two streams", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2026-47699")}, Status: 200, Rows: 5,
-			KnownBug: streamBug + ": pkg:rpm/redhat/trustee-guest-components?arch=src is not_affected on RHEL 10 and under_investigation on RHEL 9; and " + archiveDateBug,
+			KnownBug: archiveDateBug,
 			Want: []Stmt{
 				{CVE: "CVE-2026-47699", Supplier: "redhat", Status: "not_affected", Justification: "vulnerable_code_not_present", Timestamp: tsRH47699, Notes: notes("csaf", ""),
 					Products: ss("cpe:/o:redhat:enterprise_linux:10", "pkg:rpm/redhat/trustee-guest-components?arch=src", "pkg:rpm/redhat/trustee-kbs"),
@@ -297,7 +294,7 @@ func redhatCases() []Case {
 			},
 		},
 		{
-			Name: "redhat/purl/Trivy microcode_ctl: every verdict the vendor states for the package", Endpoint: epStatements, KnownBug: streamBug,
+			Name: "redhat/purl/Trivy microcode_ctl: every verdict the vendor states for the package", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2025-20012"), "products": ss("pkg:rpm/redhat/microcode_ctl@20250211-1.20250512.1.el9_6?arch=noarch&distro=redhat-9.6&epoch=4")},
 			Status: 200, Rows: 26,
 			Want: []Stmt{

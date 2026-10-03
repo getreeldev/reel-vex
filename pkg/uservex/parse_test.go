@@ -3,6 +3,7 @@ package uservex
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -362,8 +363,8 @@ func TestParse_PURLBaseIDPreservesDistroQualifier(t *testing.T) {
 	if stmts[0].BaseID != "pkg:deb/ubuntu/openssl?distro=ubuntu-24.04" {
 		t.Errorf("base_id should preserve distro qualifier (deb identity), got %q", stmts[0].BaseID)
 	}
-	if stmts[0].Version != "3.0.13" {
-		t.Errorf("version should be split out, got %q", stmts[0].Version)
+	if !slices.Equal(stmts[0].Versions, []string{"3.0.13"}) {
+		t.Errorf("version should be split out, got %q", stmts[0].Versions)
 	}
 }
 

@@ -296,12 +296,16 @@ func flattenStatement(stmt openvex.Statement, ts time.Time) ([]db.Statement, err
 		if !strings.HasPrefix(id, "pkg:") {
 			idType = "cpe"
 		}
+		var versions []string
+		if version != "" {
+			versions = []string{version}
+		}
 		rows = append(rows, db.Statement{
 			Vendor:        stmt.Supplier,
 			CVE:           stmt.Vulnerability.Name,
 			ProductID:     id,
 			BaseID:        base,
-			Version:       version,
+			Versions:      versions,
 			IDType:        idType,
 			Status:        stmt.Status,
 			Justification: stmt.Justification,

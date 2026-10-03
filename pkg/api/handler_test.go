@@ -29,9 +29,9 @@ func setupTestDB(t *testing.T) db.Store {
 	}
 
 	stmts := []db.Statement{
-		{Vendor: "testvendor", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/test/openssl@3.0", BaseID: "pkg:rpm/test/openssl", Version: "3.0", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-07-01T00:00:00Z"},
+		{Vendor: "testvendor", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/test/openssl@3.0", BaseID: "pkg:rpm/test/openssl", Versions: []string{"3.0"}, IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-07-01T00:00:00Z"},
 		{Vendor: "testvendor", CVE: "CVE-2024-1234", ProductID: "cpe:/a:test:openssl:3.0", BaseID: "cpe:/a:test:openssl:3.0", IDType: "cpe", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-07-01T00:00:00Z"},
-		{Vendor: "testvendor", CVE: "CVE-2024-5678", ProductID: "pkg:rpm/test/nginx@1.25", BaseID: "pkg:rpm/test/nginx", Version: "1.25", IDType: "purl", Status: "fixed", Updated: "2024-08-01T00:00:00Z"},
+		{Vendor: "testvendor", CVE: "CVE-2024-5678", ProductID: "pkg:rpm/test/nginx@1.25", BaseID: "pkg:rpm/test/nginx", Versions: []string{"1.25"}, IDType: "purl", Status: "fixed", Updated: "2024-08-01T00:00:00Z"},
 	}
 	if err := database.BulkInsert(stmts); err != nil {
 		t.Fatal(err)
@@ -417,7 +417,7 @@ func TestHandleStatements_NewFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := database.BulkInsert([]db.Statement{
-		{Vendor: "vendor2", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/test/openssl@3.0", BaseID: "pkg:rpm/test/openssl", Version: "3.0", IDType: "purl", Status: "affected", Updated: "2026-04-15T00:00:00Z", SourceFormat: "oval"},
+		{Vendor: "vendor2", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/test/openssl@3.0", BaseID: "pkg:rpm/test/openssl", Versions: []string{"3.0"}, IDType: "purl", Status: "affected", Updated: "2026-04-15T00:00:00Z", SourceFormat: "oval"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -841,7 +841,7 @@ func TestHandleAnalyze_SBOMOnly(t *testing.T) {
 		// Add a second vendor with "affected" status for the same CVE+product.
 		database.UpsertVendor("vendor2", "Vendor Two")
 		database.BulkInsert([]db.Statement{
-			{Vendor: "vendor2", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/test/openssl@3.0", BaseID: "pkg:rpm/test/openssl", Version: "3.0", IDType: "purl", Status: "affected", Updated: "2024-07-01T00:00:00Z"},
+			{Vendor: "vendor2", CVE: "CVE-2024-1234", ProductID: "pkg:rpm/test/openssl@3.0", BaseID: "pkg:rpm/test/openssl", Versions: []string{"3.0"}, IDType: "purl", Status: "affected", Updated: "2024-07-01T00:00:00Z"},
 		})
 
 		w := postSBOM(t, map[string]any{
@@ -1373,7 +1373,7 @@ func TestHandleStatements_SECDATA1220(t *testing.T) {
 			CVE:           s.CVE,
 			ProductID:     s.ProductID,
 			BaseID:        s.BaseID,
-			Version:       s.Version,
+			Versions:      []string{s.Version},
 			IDType:        s.IDType,
 			Status:        s.Status,
 			Justification: s.Justification,
@@ -1439,7 +1439,7 @@ func TestHandleStatements_DebDistroIdentity(t *testing.T) {
 			CVE:          "CVE-2024-26130",
 			ProductID:    "pkg:deb/ubuntu/python3-cryptography?distro=ubuntu-24.04",
 			BaseID:       "pkg:deb/ubuntu/python3-cryptography?distro=ubuntu-24.04",
-			Version:      "0:41.0.7-4ubuntu0.1",
+			Versions:     []string{"0:41.0.7-4ubuntu0.1"},
 			IDType:       "purl",
 			Status:       "fixed",
 			Updated:      "2026-04-23T00:00:00Z",
@@ -1450,7 +1450,7 @@ func TestHandleStatements_DebDistroIdentity(t *testing.T) {
 			CVE:          "CVE-2024-26130",
 			ProductID:    "pkg:deb/ubuntu/python3-cryptography?distro=ubuntu-22.04",
 			BaseID:       "pkg:deb/ubuntu/python3-cryptography?distro=ubuntu-22.04",
-			Version:      "0:38.0.4-3ubuntu2.2",
+			Versions:     []string{"0:38.0.4-3ubuntu2.2"},
 			IDType:       "purl",
 			Status:       "fixed",
 			Updated:      "2026-04-23T00:00:00Z",
@@ -1581,7 +1581,7 @@ func TestHandleStatements_SourceFormatsFilter(t *testing.T) {
 		CVE:          "CVE-2024-1234",
 		ProductID:    "pkg:rpm/test/openssl@3.0",
 		BaseID:       "pkg:rpm/test/openssl",
-		Version:      "3.0",
+		Versions:     []string{"3.0"},
 		IDType:       "purl",
 		Status:       "fixed",
 		Updated:      "2024-07-02T00:00:00Z",

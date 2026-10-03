@@ -382,7 +382,7 @@ func analyzeCases() []Case {
 				Evidence: "SUSE cve-2017-15535.json known_not_affected ...:mongodb (no flag, so no justification) and recommended mongodb-3.4.10-5.1"}},
 		},
 		{
-			Name: "analyze/rollup/Red Hat fixed, affected and not_affected streams", Endpoint: epAnalyze, KnownBug: streamBug,
+			Name: "analyze/rollup/Red Hat fixed, affected and not_affected streams", Endpoint: epAnalyze,
 			Body:   body{"sbom": trivySBOM(image, ss(microcodeCtl), sbomVuln{"CVE-2025-20012", ss(microcodeCtl)})},
 			Status: 200, Rows: 26,
 			Vulns: []Vuln{{ID: "CVE-2025-20012", State: "not_affected", Justification: "code_not_present", Affects: ss(link(microcodeCtl)),

@@ -3,6 +3,7 @@ package dbtest
 import (
 	"fmt"
 	"math"
+	"slices"
 	"testing"
 
 	"github.com/getreeldev/reel-vex/pkg/db"
@@ -16,8 +17,10 @@ func row(adapter, cve, product, scope string) db.Statement {
 		Status: "not_affected", Updated: "2026-06-01T00:00:00Z", SourceFormat: "csaf", Scope: scope, AdapterID: adapter}
 }
 
+// key is the seen key of a row(): every row() is not_affected with no
+// justification.
 func key(cve, product, scope string) db.StatementKey {
-	return db.StatementKey{CVE: cve, ProductID: product, Scope: scope}
+	return db.StatementKey{CVE: cve, ProductID: product, Scope: scope, Status: "not_affected"}
 }
 
 // rowsOf lists every row as "owner|cve|product|scope", owner "-" for none.
@@ -242,13 +245,17 @@ func TestWithdraw(t *testing.T) {
 	}
 }
 
-// The fake's owner follows the last writer even on an unchanged re-insert
-// (Postgres keeps it); a changed one moves it in both. And QueryStatements
-// never returns the owner, as Postgres never selects it.
+// An unchanged re-insert keeps the owner and a changed one moves it, as in
+// Postgres. And QueryStatements never returns the owner, as Postgres never
+// selects it.
 func TestOwner(t *testing.T) {
 	s := seed(t, row("a", "CVE-1", "p1", ""))
+	if err := s.BulkInsert([]db.Statement{row("b", "CVE-1", "p1", "")}); err != nil {
+		t.Fatalf("BulkInsert: %v", err)
+	}
+	wantRows(t, s, "a|CVE-1|p1|")
 	changed := row("b", "CVE-1", "p1", "")
-	changed.Status = "affected"
+	changed.Versions = []string{"1.0"}
 	if err := s.BulkInsert([]db.Statement{changed}); err != nil {
 		t.Fatalf("BulkInsert: %v", err)
 	}
@@ -256,5 +263,78 @@ func TestOwner(t *testing.T) {
 	got, err := s.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-1"}})
 	if err != nil || len(got) != 1 || got[0].AdapterID != "" {
 		t.Fatalf("QueryStatements = %+v, %v; want one row with no owner", got, err)
+	}
+}
+
+// These mirror TestPG's verdict-key subtests.
+
+func TestVerdictsCoexist(t *testing.T) {
+	affected := row("a", "CVE-1", "p1", "")
+	affected.Status = "affected"
+	s := seed(t, row("a", "CVE-1", "p1", ""), affected)
+	got, err := s.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-1"}})
+	if err != nil || len(got) != 2 {
+		t.Fatalf("QueryStatements = %+v, %v; want both verdicts", got, err)
+	}
+}
+
+func TestStreamsCoexist(t *testing.T) {
+	rhel9 := row("a", "CVE-1", "p1", "")
+	rhel9.Stream = "rhel-9"
+	s := seed(t, row("a", "CVE-1", "p1", ""), rhel9)
+	if n := len(s.stmts); n != 2 {
+		t.Fatalf("%d rows, want one per stream", n)
+	}
+	got, err := s.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-1"}})
+	if err != nil || len(got) != 2 || got[0].Stream != "" || got[1].Stream != "" {
+		t.Fatalf("QueryStatements = %+v, %v; want both rows, stream not returned", got, err)
+	}
+}
+
+func TestVersionsGuard(t *testing.T) {
+	first := row("a", "CVE-1", "p1", "")
+	first.Versions = []string{"2.0", "1.0", "2.0", ""}
+	s := seed(t, first)
+	got, _ := s.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-1"}})
+	if len(got) != 1 || !slices.Equal(got[0].Versions, []string{"1.0", "2.0"}) {
+		t.Fatalf("stored = %+v; want versions [1.0 2.0]", got)
+	}
+	// The same list in another order, with a newer timestamp: not a change.
+	same := row("b", "CVE-1", "p1", "")
+	same.Versions = []string{"2.0", "1.0"}
+	same.Updated = "2026-12-31T00:00:00Z"
+	if err := s.BulkInsert([]db.Statement{same}); err != nil {
+		t.Fatalf("BulkInsert: %v", err)
+	}
+	got, _ = s.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-1"}})
+	if got[0].Updated != "2026-06-01T00:00:00Z" {
+		t.Fatalf("unchanged list rewrote the row: %+v", got[0])
+	}
+	wantRows(t, s, "a|CVE-1|p1|")
+	// A changed list is written, in place.
+	grown := same
+	grown.Versions = []string{"3.0", "1.0", "2.0"}
+	if err := s.BulkInsert([]db.Statement{grown}); err != nil {
+		t.Fatalf("BulkInsert: %v", err)
+	}
+	got, _ = s.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-1"}})
+	if len(got) != 1 || got[0].Updated != "2026-12-31T00:00:00Z" || !slices.Equal(got[0].Versions, []string{"1.0", "2.0", "3.0"}) {
+		t.Fatalf("changed list not written: %+v", got)
+	}
+	wantRows(t, s, "b|CVE-1|p1|")
+}
+
+func TestSweepVerdictKey(t *testing.T) {
+	old := row("a", "CVE-1", "p1", "")
+	old.Status = "affected"
+	s := seed(t, old, row("a", "CVE-1", "p1", ""))
+	open(t, s, "a", key("CVE-1", "p1", ""))
+	res, err := s.FinishSweep("a", db.SweepScope{All: true}, 1)
+	if err != nil || res != (db.SweepResult{Seen: 1, Owned: 2, Deleted: 1}) {
+		t.Fatalf("FinishSweep = %+v, %v", res, err)
+	}
+	got, _ := s.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-1"}})
+	if len(got) != 1 || got[0].Status != "not_affected" {
+		t.Fatalf("rows = %+v; want only the not_affected successor", got)
 	}
 }

@@ -83,6 +83,35 @@ var migrations = []migration{
 		// growing; 1% plus a 100k floor vacuums after every real sweep.
 		`ALTER TABLE statements SET (autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_threshold = 100000)`,
 	}},
+	{version: 3, statements: []string{
+		// One row per verdict. status and justification join the key, so one
+		// versionless package the vendor lists at several versions with
+		// different verdicts has one row per verdict, each carrying the sorted
+		// list of versions stated for it (versions), and a package rebuild
+		// changes a row's list instead of writing a new row. version_kind says
+		// how the list is read: '' (legacy: one version per statement, not yet
+		// converted), 'exact' or 'boundary'. stream joins the key too: a CSAF
+		// fixed-in boundary holds only within the vendor product stream it is
+		// stated for (relates_to), so one package can carry a boundary per
+		// stream. It is '' until a feed records it, and is keyed now so that
+		// doing so never changes the primary key of a populated table. Deploys
+		// start from a fresh database; the UPDATEs exist so this is also
+		// correct on a populated one.
+		//
+		// The covering index INCLUDEs version, which is dropped below;
+		// EnsureCoveringIndex rebuilds it with the new columns.
+		`DROP INDEX IF EXISTS idx_statements_broad`,
+		`ALTER TABLE statements ADD COLUMN versions TEXT[] NOT NULL DEFAULT '{}'`,
+		`UPDATE statements SET versions = ARRAY[version] WHERE version IS NOT NULL AND version <> ''`,
+		`ALTER TABLE statements ADD COLUMN version_kind TEXT NOT NULL DEFAULT ''`,
+		// A key column cannot be NULL.
+		`UPDATE statements SET justification = '' WHERE justification IS NULL`,
+		`ALTER TABLE statements ALTER COLUMN justification SET DEFAULT '', ALTER COLUMN justification SET NOT NULL`,
+		`ALTER TABLE statements ADD COLUMN stream TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE statements DROP CONSTRAINT statements_pkey`,
+		`ALTER TABLE statements ADD PRIMARY KEY (vendor, cve, product_id, source_format, scope, stream, status, justification)`,
+		`ALTER TABLE statements DROP COLUMN version`,
+	}},
 }
 
 // migrate ensures schema_version exists, then applies each pending migration in
