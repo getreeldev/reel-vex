@@ -1,0 +1,220 @@
+<oval_definitions xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5" xmlns:oval="http://oval.mitre.org/XMLSchema/oval-common-5" xmlns:oval-def="http://oval.mitre.org/XMLSchema/oval-definitions-5" xmlns:unix-def="http://oval.mitre.org/XMLSchema/oval-definitions-5#unix" xmlns:red-def="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" xmlns:ind-def="http://oval.mitre.org/XMLSchema/oval-definitions-5#independent" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://oval.mitre.org/XMLSchema/oval-common-5 oval-common-schema.xsd http://oval.mitre.org/XMLSchema/oval-definitions-5 oval-definitions-schema.xsd http://oval.mitre.org/XMLSchema/oval-definitions-5#unix unix-definitions-schema.xsd http://oval.mitre.org/XMLSchema/oval-definitions-5#linux linux-definitions-schema.xsd">
+<generator>
+<oval:product_name>Oracle Errata System</oval:product_name>
+<oval:product_version>Oracle Linux</oval:product_version>
+<oval:schema_version>5.11</oval:schema_version>
+<oval:timestamp>2026-10-02T16:09:54</oval:timestamp>
+</generator>
+<definitions>
+<definition id="oval:com.oracle.elsa:def:20240811" version="501" class="patch">
+<metadata>
+<title>
+ELSA-2024-0811:  sudo security update (MODERATE)
+</title>
+<affected family="unix">
+<platform>Oracle Linux 8</platform>
+<platform>Oracle Linux 9</platform>
+
+</affected>
+<reference source="elsa" ref_id="ELSA-2024-0811" ref_url="https://linux.oracle.com/errata/ELSA-2024-0811.html"/>
+<reference source="CVE" ref_id="CVE-2023-28487" ref_url="https://linux.oracle.com/cve/CVE-2023-28487.html"/>
+<reference source="CVE" ref_id="CVE-2023-28486" ref_url="https://linux.oracle.com/cve/CVE-2023-28486.html"/>
+<reference source="CVE" ref_id="CVE-2023-42465" ref_url="https://linux.oracle.com/cve/CVE-2023-42465.html"/>
+
+<description>
+RHEL 9.3.0.Z ERRATUM
+[1.9.5p2-10]
+- CVE-2023-28487 sudo: Sudo does not escape control characters in sudoreplay output
+Resolves: RHEL-21834
+- CVE-2023-28486 sudo: Sudo does not escape control characters in log messages
+Resolves: RHEL-21828
+- CVE-2023-42465 sudo: Targeted Corruption of Register and Stack Variables
+Resolves: RHEL-21821
+
+RHEL 8.9.0.Z ERRATUM
+[1.9.5p2-1]
+- Rebase to 1.9.5p2
+- CVE-2023-28486 sudo: Sudo does not escape control characters in log messages
+Resolves: RHEL-21825
+- CVE-2023-28487 sudo: Sudo does not escape control characters in sudoreplay output
+Resolves: RHEL-21831
+- CVE-2023-42465 sudo: Targeted Corruption of Register and Stack Variables
+Resolves: RHEL-21820
+</description>
+<!--
+ ~~~~~~~~~~~~~~~~~~~~   advisory details   ~~~~~~~~~~~~~~~~~~~ 
+-->
+<advisory>
+<severity>MODERATE</severity>
+<rights>Copyright 2024 Oracle, Inc.</rights>
+<issued date="2024-02-14"/>
+<cve cvss3="5.3/CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N" href="https://linux.oracle.com/cve/CVE-2023-28487.html" public="20230316">CVE-2023-28487</cve>
+<cve cvss3="5.3/CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N" href="https://linux.oracle.com/cve/CVE-2023-28486.html" public="20230316">CVE-2023-28486</cve>
+<cve cvss3="7/CVSS:3.0/AV:L/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2023-42465.html" public="20230905">CVE-2023-42465</cve>
+
+<affected_cpe_list>
+<cpe>cpe:/a:oracle:exadata_dbserver:23.1.13.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:24.1.3.0.0::ol8</cpe>
+<cpe>cpe:/o:oracle:linux:9::baseos_latest</cpe>
+<cpe>cpe:/o:oracle:linux:8:10:baseos_base</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:23.1.15.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:23.1.16.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:23.1.18.0.0::ol8</cpe>
+<cpe>cpe:/o:oracle:linux:8:9:baseos_patch</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:23.1.12.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:24.1.4.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:linux:9::appstream</cpe>
+<cpe>cpe:/o:oracle:linux:9:3:baseos_patch</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:23.1.17.0.0::ol8</cpe>
+<cpe>cpe:/o:oracle:linux:9:4:baseos_base</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:24.1.0.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:23.1.14.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:linux:9:4:appstream_base</cpe>
+<cpe>cpe:/o:oracle:linux:8::baseos_latest</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:24.1.2.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:24.1.1.0.0::ol8</cpe>
+</affected_cpe_list>
+</advisory>
+</metadata>
+<criteria operator="OR">
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811001" comment="Oracle Linux 8 is installed"/>
+<criteria operator="OR">
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811002" comment="Oracle Linux arch is aarch64"/>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811003" comment="sudo is earlier than 0:1.9.5p2-1.el8_9"/>
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811004" comment="sudo is signed with the Oracle Linux 8 key"/>
+</criteria>
+</criteria>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811005" comment="Oracle Linux arch is x86_64"/>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811003" comment="sudo is earlier than 0:1.9.5p2-1.el8_9"/>
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811004" comment="sudo is signed with the Oracle Linux 8 key"/>
+</criteria>
+</criteria>
+</criteria>
+</criteria>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811006" comment="Oracle Linux 9 is installed"/>
+<criteria operator="OR">
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811007" comment="Oracle Linux arch is aarch64"/>
+<criteria operator="OR">
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811008" comment="sudo is earlier than 0:1.9.5p2-10.el9_3"/>
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811009" comment="sudo is signed with the Oracle Linux 9 key"/>
+</criteria>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811010" comment="sudo-python-plugin is earlier than 0:1.9.5p2-10.el9_3"/>
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811011" comment="sudo-python-plugin is signed with the Oracle Linux 9 key"/>
+</criteria>
+</criteria>
+</criteria>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811012" comment="Oracle Linux arch is x86_64"/>
+<criteria operator="OR">
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811008" comment="sudo is earlier than 0:1.9.5p2-10.el9_3"/>
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811009" comment="sudo is signed with the Oracle Linux 9 key"/>
+</criteria>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811010" comment="sudo-python-plugin is earlier than 0:1.9.5p2-10.el9_3"/>
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811011" comment="sudo-python-plugin is signed with the Oracle Linux 9 key"/>
+</criteria>
+</criteria>
+</criteria>
+</criteria>
+</criteria>
+</criteria>
+</definition>
+</definitions>
+<tests>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811001"  version="501" comment="Oracle Linux 8 is installed" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811001" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811003" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811002"  version="501" comment="Oracle Linux arch is aarch64" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811001" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811004" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811003"  version="501" comment="sudo is earlier than 0:1.9.5p2-1.el8_9" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811002" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811005" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811004"  version="501" comment="sudo is signed with the Oracle Linux 8 key" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811002" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811001" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811005"  version="501" comment="Oracle Linux arch is x86_64" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811001" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811006" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811006"  version="501" comment="Oracle Linux 9 is installed" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811001" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811007" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811007"  version="501" comment="Oracle Linux arch is aarch64" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811001" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811004" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811008"  version="501" comment="sudo is earlier than 0:1.9.5p2-10.el9_3" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811002" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811008" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811009"  version="501" comment="sudo is signed with the Oracle Linux 9 key" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811002" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811002" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811010"  version="501" comment="sudo-python-plugin is earlier than 0:1.9.5p2-10.el9_3" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811003" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811008" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811011"  version="501" comment="sudo-python-plugin is signed with the Oracle Linux 9 key" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811003" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811002" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811012"  version="501" comment="Oracle Linux arch is x86_64" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811001" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811006" />
+</rpminfo_test>
+</tests>
+<objects>
+<rpminfo_object xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:obj:20240811002" version="501">
+<name>sudo</name>
+</rpminfo_object>
+<rpminfo_object xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:obj:20240811003" version="501">
+<name>sudo-python-plugin</name>
+</rpminfo_object>
+<rpminfo_object xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:obj:20240811001" version="501">
+<name>oraclelinux-release</name>
+</rpminfo_object>
+</objects>
+<states>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811001" version="501">
+<signature_keyid operation="equals">82562ea9ad986da3</signature_keyid>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811002" version="501">
+<signature_keyid operation="equals">bc4d06a08d8b756f</signature_keyid>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811003" version="501">
+<version operation="pattern match">^8</version>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811004" version="501">
+<arch operation="pattern match">aarch64</arch>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811005" version="501">
+<evr datatype="evr_string" operation="less than">0:1.9.5p2-1.el8_9</evr>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811006" version="501">
+<arch operation="pattern match">x86_64</arch>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811007" version="501">
+<version operation="pattern match">^9</version>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811008" version="501">
+<evr datatype="evr_string" operation="less than">0:1.9.5p2-10.el9_3</evr>
+</rpminfo_state>
+</states>
+</oval_definitions>

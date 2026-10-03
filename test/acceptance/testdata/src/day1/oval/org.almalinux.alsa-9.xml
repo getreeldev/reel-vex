@@ -1,0 +1,141 @@
+<?xml version='1.0' encoding='utf-8'?>
+<oval_definitions xmlns:oval="http://oval.mitre.org/XMLSchema/oval-common-5" xmlns:unix-def="http://oval.mitre.org/XMLSchema/oval-definitions-5#unix" xmlns:red-def="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" xmlns:ind-def="http://oval.mitre.org/XMLSchema/oval-definitions-5#independent" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5">
+  <generator>
+    <oval:product_name>AlmaLinux OS Errata System</oval:product_name>
+    <oval:product_version>0.0.1</oval:product_version>
+    <oval:schema_version>5.10</oval:schema_version>
+    <oval:timestamp>2026-10-02T13:40:35</oval:timestamp>
+  </generator>
+  <definitions>
+    <definition id="oval:org.almalinux.alsa:def:20225527" version="635" class="patch">
+      <metadata>
+        <title>ALSA-2022:5527: squid security update (Important)</title>
+        <reference ref_id="ALSA-2022:5527" source="ALSA" ref_url="https://errata.almalinux.org/9/ALSA-2022-5527.html"/>
+        <reference ref_id="RHSA-2022:5527" source="RHSA" ref_url="https://access.redhat.com/errata/RHSA-2022:5527"/>
+        <reference ref_id="CVE-2021-46784" source="CVE" ref_url="https://access.redhat.com/security/cve/CVE-2021-46784"/>
+        <description>Squid is a high-performance proxy caching server for web clients, supporting FTP, Gopher, and HTTP data objects.
+Security Fix(es):
+* squid: DoS when processing gopher server responses (CVE-2021-46784)
+For more details about the security issue(s), including the impact, a CVSS score, acknowledgments, and other related information, refer to the CVE page(s) listed in the References section.</description>
+        <advisory from="packager@almalinux.org">
+          <severity>Important</severity>
+          <rights>Copyright 2022 AlmaLinux OS</rights>
+          <issued date="2022-07-07"/>
+          <updated date="2022-07-07"/>
+          <affected_cpe_list>
+            <cpe>cpe:/a:almalinux:almalinux:9</cpe>
+            <cpe>cpe:/a:almalinux:almalinux:9::appstream</cpe>
+          </affected_cpe_list>
+          <bugzilla href="https://bugzilla.redhat.com/2100721" id="2100721"></bugzilla>
+          <cve public="20220623" href="https://access.redhat.com/security/cve/CVE-2021-46784" impact="Important" cwe="CWE-617" cvss3="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H">CVE-2021-46784</cve>
+        </advisory>
+      </metadata>
+      <criteria operator="OR">
+        <criterion test_ref="oval:org.almalinux.alba:tst:20225749024" comment="AlmaLinux must be installed"/>
+        <criteria operator="AND">
+          <criterion test_ref="oval:org.almalinux.alba:tst:20225749023" comment="AlmaLinux 9 is installed"/>
+          <criterion test_ref="oval:org.almalinux.alsa:tst:20225527001" comment="squid is earlier than 7:5.2-1.el9_0.1"/>
+          <criterion test_ref="oval:org.almalinux.alsa:tst:20225527002" comment="squid is signed with AlmaLinux OS 9 key"/>
+        </criteria>
+      </criteria>
+    </definition>
+    <definition id="oval:org.almalinux.alsa:def:20225716" version="635" class="patch">
+      <metadata>
+        <title>ALSA-2022:5716: grafana security update (Important)</title>
+        <reference ref_id="ALSA-2022:5716" source="ALSA" ref_url="https://errata.almalinux.org/9/ALSA-2022-5716.html"/>
+        <reference ref_id="RHSA-2022:5716" source="RHSA" ref_url="https://access.redhat.com/errata/RHSA-2022:5716"/>
+        <reference ref_id="CVE-2022-31107" source="CVE" ref_url="https://access.redhat.com/security/cve/CVE-2022-31107"/>
+        <description>Grafana is an open source, feature rich metrics dashboard and graph editor for
+Graphite, InfluxDB &amp; OpenTSDB.
+Security Fix(es):
+* grafana: OAuth account takeover (CVE-2022-31107)
+For more details about the security issue(s), including the impact, a CVSS
+score, acknowledgments, and other related information, refer to the CVE page(s)
+listed in the References section.</description>
+        <advisory from="packager@almalinux.org">
+          <severity>Important</severity>
+          <rights>Copyright 2022 AlmaLinux OS</rights>
+          <issued date="2022-07-26"/>
+          <updated date="2022-07-26"/>
+          <affected_cpe_list>
+            <cpe>cpe:/a:almalinux:almalinux:9</cpe>
+            <cpe>cpe:/a:almalinux:almalinux:9::appstream</cpe>
+          </affected_cpe_list>
+          <bugzilla href="https://bugzilla.redhat.com/2104367" id="2104367"></bugzilla>
+          <cve public="20220714" href="https://access.redhat.com/security/cve/CVE-2022-31107" impact="Important" cwe="CWE-287" cvss3="CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:L">CVE-2022-31107</cve>
+        </advisory>
+      </metadata>
+      <criteria operator="OR">
+        <criterion test_ref="oval:org.almalinux.alba:tst:20225749024" comment="AlmaLinux must be installed"/>
+        <criteria operator="AND">
+          <criterion test_ref="oval:org.almalinux.alba:tst:20225749023" comment="AlmaLinux 9 is installed"/>
+          <criterion test_ref="oval:org.almalinux.alsa:tst:20225716001" comment="grafana is earlier than 0:7.5.11-5.el9_0"/>
+          <criterion test_ref="oval:org.almalinux.alsa:tst:20225716002" comment="grafana is signed with AlmaLinux OS 9 key"/>
+        </criteria>
+      </criteria>
+    </definition>
+  </definitions>
+  <tests>
+    <red-def:rpmverifyfile_test check="none satisfy" comment="AlmaLinux must be installed" id="oval:org.almalinux.alba:tst:20225749024" version="635">
+      <red-def:object object_ref="oval:org.almalinux.alba:obj:20225749012"/>
+      <red-def:state state_ref="oval:org.almalinux.alba:ste:20225749005"/>
+    </red-def:rpmverifyfile_test>
+    <red-def:rpmverifyfile_test check="at least one" comment="AlmaLinux 9 is installed" id="oval:org.almalinux.alba:tst:20225749023" version="635">
+      <red-def:object object_ref="oval:org.almalinux.alba:obj:20225749012"/>
+      <red-def:state state_ref="oval:org.almalinux.alba:ste:20225749004"/>
+    </red-def:rpmverifyfile_test>
+    <red-def:rpminfo_test check="at least one" comment="grafana is signed with AlmaLinux OS 9 key" id="oval:org.almalinux.alsa:tst:20225716002" version="635">
+      <red-def:object object_ref="oval:org.almalinux.alsa:obj:20225716001"/>
+      <red-def:state state_ref="oval:org.almalinux.alba:ste:20225749002"/>
+    </red-def:rpminfo_test>
+    <red-def:rpminfo_test check="at least one" comment="squid is signed with AlmaLinux OS 9 key" id="oval:org.almalinux.alsa:tst:20225527002" version="635">
+      <red-def:object object_ref="oval:org.almalinux.alsa:obj:20225527001"/>
+      <red-def:state state_ref="oval:org.almalinux.alba:ste:20225749002"/>
+    </red-def:rpminfo_test>
+    <red-def:rpminfo_test check="at least one" comment="squid is earlier than 7:5.2-1.el9_0.1" id="oval:org.almalinux.alsa:tst:20225527001" version="635">
+      <red-def:object object_ref="oval:org.almalinux.alsa:obj:20225527001"/>
+      <red-def:state state_ref="oval:org.almalinux.alsa:ste:20225527001"/>
+    </red-def:rpminfo_test>
+    <red-def:rpminfo_test check="at least one" comment="grafana is earlier than 0:7.5.11-5.el9_0" id="oval:org.almalinux.alsa:tst:20225716001" version="635">
+      <red-def:object object_ref="oval:org.almalinux.alsa:obj:20225716001"/>
+      <red-def:state state_ref="oval:org.almalinux.alsa:ste:20225716001"/>
+    </red-def:rpminfo_test>
+  </tests>
+  <objects>
+    <red-def:rpmverifyfile_object id="oval:org.almalinux.alba:obj:20225749012" version="635">
+      <red-def:behaviors noconfigfiles="true" noghostfiles="true" nogroup="true" nolinkto="true" nomd5="true" nomode="true" nomtime="true" nordev="true" nosize="true" nouser="true"/>
+      <red-def:name operation="pattern match"/>
+      <red-def:epoch operation="pattern match"/>
+      <red-def:version operation="pattern match"/>
+      <red-def:release operation="pattern match"/>
+      <red-def:arch operation="pattern match"/>
+      <red-def:filepath>/etc/almalinux-release</red-def:filepath>
+    </red-def:rpmverifyfile_object>
+    <red-def:rpminfo_object id="oval:org.almalinux.alsa:obj:20225716001" version="635">
+      <red-def:name>grafana</red-def:name>
+    </red-def:rpminfo_object>
+    <red-def:rpminfo_object id="oval:org.almalinux.alsa:obj:20225527001" version="635">
+      <red-def:name>squid</red-def:name>
+    </red-def:rpminfo_object>
+  </objects>
+  <states>
+    <red-def:rpmverifyfile_state id="oval:org.almalinux.alba:ste:20225749005" version="635">
+      <red-def:name operation="pattern match">^almalinux-release</red-def:name>
+    </red-def:rpmverifyfile_state>
+    <red-def:rpmverifyfile_state id="oval:org.almalinux.alba:ste:20225749004" version="635">
+      <red-def:name operation="pattern match">^almalinux-release</red-def:name>
+      <red-def:version operation="pattern match">^9[^\d]</red-def:version>
+    </red-def:rpmverifyfile_state>
+    <red-def:rpminfo_state id="oval:org.almalinux.alba:ste:20225749002" version="635">
+      <red-def:signature_keyid operation="equals">d36cb86cb86b3716</red-def:signature_keyid>
+    </red-def:rpminfo_state>
+    <red-def:rpminfo_state id="oval:org.almalinux.alsa:ste:20225527001" version="635">
+      <red-def:arch operation="pattern match" datatype="string">aarch64|ppc64le|s390x|x86_64</red-def:arch>
+      <red-def:evr datatype="evr_string" operation="less than">7:5.2-1.el9_0.1</red-def:evr>
+    </red-def:rpminfo_state>
+    <red-def:rpminfo_state id="oval:org.almalinux.alsa:ste:20225716001" version="635">
+      <red-def:arch operation="pattern match" datatype="string">aarch64|ppc64le|s390x|x86_64</red-def:arch>
+      <red-def:evr datatype="evr_string" operation="less than">0:7.5.11-5.el9_0</red-def:evr>
+    </red-def:rpminfo_state>
+  </states>
+</oval_definitions>

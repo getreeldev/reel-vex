@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "packages": [
+    {
+      "id": "pkg:golang/github.com/open-policy-agent/opa",
+      "location": "pkg/golang/github.com/open-policy-agent/opa/scan.openvex.json"
+    },
+    {
+      "id": "pkg:golang/github.com/projectcalico/calico/lib/std",
+      "location": "pkg/golang/github.com/projectcalico/calico/lib/std/scan.openvex.json"
+    },
+    {
+      "id": "pkg:oci/kube-ovn?repository_url=index.docker.io%2Fkubeovn%2Fkube-ovn",
+      "location": "pkg/oci/index.docker.io/kubeovn/kube-ovn/scan.openvex.json"
+    },
+    {
+      "id": "pkg:oci/mirrored-messagebird-sachet?repository_url=index.docker.io%2Francher%2Fmirrored-messagebird-sachet",
+      "location": "pkg/oci/index.docker.io/rancher/mirrored-messagebird-sachet/scan.openvex.json"
+    },
+    {
+      "id": "pkg:oci/nginx-ingress-controller?repository_url=index.docker.io%2Francher%2Fnginx-ingress-controller",
+      "location": "pkg/oci/index.docker.io/rancher/nginx-ingress-controller/scan.openvex.json"
+    },
+    {
+      "id": "pkg:oci/mirrored-messagebird-sachet?repository_url=registry.suse.com%2Francher%2Fmirrored-messagebird-sachet",
+      "location": "pkg/oci/registry.suse.com/rancher/mirrored-messagebird-sachet/scan.openvex.json"
+    }
+  ]
+}

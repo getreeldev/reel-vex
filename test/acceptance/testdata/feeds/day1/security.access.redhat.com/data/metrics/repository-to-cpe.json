@@ -1,0 +1,73 @@
+{
+ "data": {
+  "public-hummingbird-x86_64-rpms": {
+   "cpes": [
+    "cpe:/a:redhat:hummingbird:1"
+   ],
+   "repo_relative_urls": [
+    "pulp-content/public-hummingbird/x86_64/"
+   ]
+  },
+  "rhel-10-for-x86_64-baseos-rpms": {
+   "cpes": [
+    "cpe:/o:redhat:enterprise_linux:10.0",
+    "cpe:/o:redhat:enterprise_linux:10.0::baseos",
+    "cpe:/o:redhat:enterprise_linux:10.1",
+    "cpe:/o:redhat:enterprise_linux:10.1::baseos",
+    "cpe:/o:redhat:enterprise_linux:10.2",
+    "cpe:/o:redhat:enterprise_linux:10.3",
+    "cpe:/o:redhat:enterprise_linux:10.4",
+    "cpe:/o:redhat:enterprise_linux:10::baseos"
+   ],
+   "repo_relative_urls": [
+    "content/dist/rhel10/10.0/x86_64/baseos/os",
+    "content/dist/rhel10/10.1/x86_64/baseos/os",
+    "content/dist/rhel10/10.2/x86_64/baseos/os",
+    "content/dist/rhel10/10.3/x86_64/baseos/os",
+    "content/dist/rhel10/10.4/x86_64/baseos/os",
+    "content/dist/rhel10/10/x86_64/baseos/os"
+   ]
+  },
+  "rhel-8-for-x86_64-appstream-rpms": {
+   "cpes": [
+    "cpe:/a:redhat:enterprise_linux:8::appstream"
+   ],
+   "repo_relative_urls": [
+    "content/dist/rhel8/8.10/x86_64/appstream/os",
+    "content/dist/rhel8/8.6/x86_64/appstream/os",
+    "content/dist/rhel8/8.8/x86_64/appstream/os",
+    "content/dist/rhel8/8.9/x86_64/appstream/os",
+    "content/dist/rhel8/8/x86_64/appstream/os"
+   ]
+  },
+  "rhel-8-for-x86_64-baseos-rpms": {
+   "cpes": [
+    "cpe:/o:redhat:enterprise_linux:8::baseos"
+   ],
+   "repo_relative_urls": [
+    "content/dist/rhel8/8.10/x86_64/baseos/os",
+    "content/dist/rhel8/8.6/x86_64/baseos/os",
+    "content/dist/rhel8/8.8/x86_64/baseos/os",
+    "content/dist/rhel8/8.9/x86_64/baseos/os",
+    "content/dist/rhel8/8/x86_64/baseos/os"
+   ]
+  },
+  "rhel-9-for-x86_64-baseos-eus-rpms": {
+   "cpes": [
+    "cpe:/o:redhat:rhel_eus:9.0::baseos",
+    "cpe:/o:redhat:rhel_eus:9.2::baseos",
+    "cpe:/o:redhat:rhel_eus:9.4::baseos",
+    "cpe:/o:redhat:rhel_eus:9.6::baseos",
+    "cpe:/o:redhat:rhel_eus:9.8::baseos"
+   ],
+   "repo_relative_urls": [
+    "content/eus/rhel9/9.0/x86_64/baseos/os",
+    "content/eus/rhel9/9.2/x86_64/baseos/os",
+    "content/eus/rhel9/9.4/x86_64/baseos/os",
+    "content/eus/rhel9/9.6/x86_64/baseos/os",
+    "content/eus/rhel9/9.8/x86_64/baseos/os"
+   ]
+  }
+ },
+ "last_updated": "2026-10-03T12:55:24.245Z"
+}

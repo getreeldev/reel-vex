@@ -1,0 +1,11 @@
+<repomd xmlns="http://linux.duke.edu/metadata/repo">
+  <revision>1790634617</revision>
+  <data type="updateinfo">
+    <checksum type="sha256">1f5b431cbcc50cb2e2fd3b74d7a5100e38a05c125b6d4aad09c50f288248af9d</checksum>
+    <open-checksum type="sha256">afbd7499b10952d829f2ba0ccf48471593d45fe346be2e0c9be20b2f276ac13b</open-checksum>
+    <location href="repodata/updateinfo.xml.gz" />
+    <timestamp>1790634617</timestamp>
+    <size>1696948</size>
+    <open-size>16048216</open-size>
+  </data>
+</repomd>

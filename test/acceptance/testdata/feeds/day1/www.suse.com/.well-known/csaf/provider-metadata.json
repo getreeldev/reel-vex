@@ -1,0 +1,29 @@
+{
+  "canonical_url": "https://www.suse.com/.well-known/csaf/provider-metadata.json",
+  "distributions": [
+    {
+      "directory_url": "https://ftp.suse.com/pub/projects/security/csaf/"
+    },
+    {
+      "directory_url": "https://ftp.suse.com/pub/projects/security/csaf-vex/"
+    }
+  ],
+  "last_updated": "2024-05-14T12:20:00.0Z",
+  "list_on_CSAF_aggregators": true,
+  "metadata_version": "2.0",
+  "mirror_on_CSAF_aggregators": true,
+  "public_openpgp_keys": [
+    {
+      "fingerprint":"6B62473BD771517D41E684DFD4439E7EC133994D",
+      "url": "https://ftp.suse.com/pub/projects/security/keys/security-automation.asc"
+    }
+  ],
+  "publisher": {
+    "category": "vendor",
+    "contact_details": "security@suse.de",
+    "issuing_authority": "SUSE Product Security is responsible for vulnerability handling across all SUSE Linux Enterprise offerings.",
+    "name": "SUSE Product Security",
+    "namespace": "https://www.suse.com"
+  },
+  "role": "csaf_trusted_provider"
+}

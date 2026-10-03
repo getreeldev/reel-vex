@@ -1,0 +1,393 @@
+<oval_definitions xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5" xmlns:oval="http://oval.mitre.org/XMLSchema/oval-common-5" xmlns:oval-def="http://oval.mitre.org/XMLSchema/oval-definitions-5" xmlns:unix-def="http://oval.mitre.org/XMLSchema/oval-definitions-5#unix" xmlns:red-def="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" xmlns:ind-def="http://oval.mitre.org/XMLSchema/oval-definitions-5#independent" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://oval.mitre.org/XMLSchema/oval-common-5 oval-common-schema.xsd http://oval.mitre.org/XMLSchema/oval-definitions-5 oval-definitions-schema.xsd http://oval.mitre.org/XMLSchema/oval-definitions-5#unix unix-definitions-schema.xsd http://oval.mitre.org/XMLSchema/oval-definitions-5#linux linux-definitions-schema.xsd">
+<generator>
+<oval:product_name>Oracle Errata System</oval:product_name>
+<oval:product_version>Oracle Linux</oval:product_version>
+<oval:schema_version>5.11</oval:schema_version>
+<oval:timestamp>2026-10-02T14:54:59</oval:timestamp>
+</generator>
+<definitions>
+<definition id="oval:com.oracle.elsa:def:20263516" version="501" class="patch">
+<metadata>
+<title>
+ELSA-2026-3516:  thunderbird security update (IMPORTANT)
+</title>
+<affected family="unix">
+<platform>Oracle Linux 9</platform>
+
+</affected>
+<reference source="elsa" ref_id="ELSA-2026-3516" ref_url="https://linux.oracle.com/errata/ELSA-2026-3516.html"/>
+<reference source="CVE" ref_id="CVE-2026-2447" ref_url="https://linux.oracle.com/cve/CVE-2026-2447.html"/>
+<reference source="CVE" ref_id="CVE-2026-2757" ref_url="https://linux.oracle.com/cve/CVE-2026-2757.html"/>
+<reference source="CVE" ref_id="CVE-2026-2758" ref_url="https://linux.oracle.com/cve/CVE-2026-2758.html"/>
+<reference source="CVE" ref_id="CVE-2026-2759" ref_url="https://linux.oracle.com/cve/CVE-2026-2759.html"/>
+<reference source="CVE" ref_id="CVE-2026-2760" ref_url="https://linux.oracle.com/cve/CVE-2026-2760.html"/>
+<reference source="CVE" ref_id="CVE-2026-2761" ref_url="https://linux.oracle.com/cve/CVE-2026-2761.html"/>
+<reference source="CVE" ref_id="CVE-2026-2762" ref_url="https://linux.oracle.com/cve/CVE-2026-2762.html"/>
+<reference source="CVE" ref_id="CVE-2026-2763" ref_url="https://linux.oracle.com/cve/CVE-2026-2763.html"/>
+<reference source="CVE" ref_id="CVE-2026-2764" ref_url="https://linux.oracle.com/cve/CVE-2026-2764.html"/>
+<reference source="CVE" ref_id="CVE-2026-2765" ref_url="https://linux.oracle.com/cve/CVE-2026-2765.html"/>
+<reference source="CVE" ref_id="CVE-2026-2766" ref_url="https://linux.oracle.com/cve/CVE-2026-2766.html"/>
+<reference source="CVE" ref_id="CVE-2026-2767" ref_url="https://linux.oracle.com/cve/CVE-2026-2767.html"/>
+<reference source="CVE" ref_id="CVE-2026-2768" ref_url="https://linux.oracle.com/cve/CVE-2026-2768.html"/>
+<reference source="CVE" ref_id="CVE-2026-2769" ref_url="https://linux.oracle.com/cve/CVE-2026-2769.html"/>
+<reference source="CVE" ref_id="CVE-2026-2770" ref_url="https://linux.oracle.com/cve/CVE-2026-2770.html"/>
+<reference source="CVE" ref_id="CVE-2026-2771" ref_url="https://linux.oracle.com/cve/CVE-2026-2771.html"/>
+<reference source="CVE" ref_id="CVE-2026-2772" ref_url="https://linux.oracle.com/cve/CVE-2026-2772.html"/>
+<reference source="CVE" ref_id="CVE-2026-2773" ref_url="https://linux.oracle.com/cve/CVE-2026-2773.html"/>
+<reference source="CVE" ref_id="CVE-2026-2774" ref_url="https://linux.oracle.com/cve/CVE-2026-2774.html"/>
+<reference source="CVE" ref_id="CVE-2026-2775" ref_url="https://linux.oracle.com/cve/CVE-2026-2775.html"/>
+<reference source="CVE" ref_id="CVE-2026-2776" ref_url="https://linux.oracle.com/cve/CVE-2026-2776.html"/>
+<reference source="CVE" ref_id="CVE-2026-2777" ref_url="https://linux.oracle.com/cve/CVE-2026-2777.html"/>
+<reference source="CVE" ref_id="CVE-2026-2778" ref_url="https://linux.oracle.com/cve/CVE-2026-2778.html"/>
+<reference source="CVE" ref_id="CVE-2026-2779" ref_url="https://linux.oracle.com/cve/CVE-2026-2779.html"/>
+<reference source="CVE" ref_id="CVE-2026-2780" ref_url="https://linux.oracle.com/cve/CVE-2026-2780.html"/>
+<reference source="CVE" ref_id="CVE-2026-2781" ref_url="https://linux.oracle.com/cve/CVE-2026-2781.html"/>
+<reference source="CVE" ref_id="CVE-2026-2782" ref_url="https://linux.oracle.com/cve/CVE-2026-2782.html"/>
+<reference source="CVE" ref_id="CVE-2026-2783" ref_url="https://linux.oracle.com/cve/CVE-2026-2783.html"/>
+<reference source="CVE" ref_id="CVE-2026-2784" ref_url="https://linux.oracle.com/cve/CVE-2026-2784.html"/>
+<reference source="CVE" ref_id="CVE-2026-2785" ref_url="https://linux.oracle.com/cve/CVE-2026-2785.html"/>
+<reference source="CVE" ref_id="CVE-2026-2786" ref_url="https://linux.oracle.com/cve/CVE-2026-2786.html"/>
+<reference source="CVE" ref_id="CVE-2026-2787" ref_url="https://linux.oracle.com/cve/CVE-2026-2787.html"/>
+<reference source="CVE" ref_id="CVE-2026-2788" ref_url="https://linux.oracle.com/cve/CVE-2026-2788.html"/>
+<reference source="CVE" ref_id="CVE-2026-2789" ref_url="https://linux.oracle.com/cve/CVE-2026-2789.html"/>
+<reference source="CVE" ref_id="CVE-2026-2790" ref_url="https://linux.oracle.com/cve/CVE-2026-2790.html"/>
+<reference source="CVE" ref_id="CVE-2026-2791" ref_url="https://linux.oracle.com/cve/CVE-2026-2791.html"/>
+<reference source="CVE" ref_id="CVE-2026-2792" ref_url="https://linux.oracle.com/cve/CVE-2026-2792.html"/>
+<reference source="CVE" ref_id="CVE-2026-2793" ref_url="https://linux.oracle.com/cve/CVE-2026-2793.html"/>
+
+<description>
+[140.8.0-1.0.1]
+- Fix prefs for new nss [Orabug: 37079813]
+- Add Oracle prefs
+
+[140.8.0]
+- Add OpenELA debranding
+
+[140.8.0-1]
+- Update to 140.8.0 ESR
+</description>
+<!--
+ ~~~~~~~~~~~~~~~~~~~~   advisory details   ~~~~~~~~~~~~~~~~~~~ 
+-->
+<advisory>
+<severity>IMPORTANT</severity>
+<rights>Copyright 2026 Oracle, Inc.</rights>
+<issued date="2026-03-02"/>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2447.html" public="20260216">CVE-2026-2447</cve>
+<cve cvss3="7.1/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:L" href="https://linux.oracle.com/cve/CVE-2026-2757.html" public="20260224">CVE-2026-2757</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2758.html" public="20260224">CVE-2026-2758</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2759.html" public="20260224">CVE-2026-2759</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2760.html" public="20260224">CVE-2026-2760</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2761.html" public="20260224">CVE-2026-2761</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2762.html" public="20260224">CVE-2026-2762</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2763.html" public="20260224">CVE-2026-2763</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2764.html" public="20260224">CVE-2026-2764</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2765.html" public="20260224">CVE-2026-2765</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2766.html" public="20260224">CVE-2026-2766</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2767.html" public="20260224">CVE-2026-2767</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2768.html" public="20260224">CVE-2026-2768</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2769.html" public="20260224">CVE-2026-2769</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2770.html" public="20260224">CVE-2026-2770</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2771.html" public="20260224">CVE-2026-2771</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2772.html" public="20260224">CVE-2026-2772</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2773.html" public="20260224">CVE-2026-2773</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2774.html" public="20260224">CVE-2026-2774</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2775.html" public="20260224">CVE-2026-2775</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2776.html" public="20260224">CVE-2026-2776</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2777.html" public="20260224">CVE-2026-2777</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2778.html" public="20260224">CVE-2026-2778</cve>
+<cve cvss3="6.1/CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N" href="https://linux.oracle.com/cve/CVE-2026-2779.html" public="20260224">CVE-2026-2779</cve>
+<cve cvss3="6.1/CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N" href="https://linux.oracle.com/cve/CVE-2026-2780.html" public="20260224">CVE-2026-2780</cve>
+<cve cvss3="6.1/CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N" href="https://linux.oracle.com/cve/CVE-2026-2781.html" public="20260224">CVE-2026-2781</cve>
+<cve cvss3="6.1/CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N" href="https://linux.oracle.com/cve/CVE-2026-2782.html" public="20260224">CVE-2026-2782</cve>
+<cve cvss3="6.1/CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N" href="https://linux.oracle.com/cve/CVE-2026-2783.html" public="20260224">CVE-2026-2783</cve>
+<cve cvss3="6.1/CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N" href="https://linux.oracle.com/cve/CVE-2026-2784.html" public="20260224">CVE-2026-2784</cve>
+<cve cvss3="6.1/CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N" href="https://linux.oracle.com/cve/CVE-2026-2785.html" public="20260224">CVE-2026-2785</cve>
+<cve cvss3="6.1/CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N" href="https://linux.oracle.com/cve/CVE-2026-2786.html" public="20260224">CVE-2026-2786</cve>
+<cve cvss3="6.1/CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N" href="https://linux.oracle.com/cve/CVE-2026-2787.html" public="20260224">CVE-2026-2787</cve>
+<cve cvss3="6.1/CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N" href="https://linux.oracle.com/cve/CVE-2026-2788.html" public="20260224">CVE-2026-2788</cve>
+<cve cvss3="6.1/CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N" href="https://linux.oracle.com/cve/CVE-2026-2789.html" public="20260224">CVE-2026-2789</cve>
+<cve cvss3="3.4/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:L/I:N/A:N" href="https://linux.oracle.com/cve/CVE-2026-2790.html" public="20260224">CVE-2026-2790</cve>
+<cve cvss3="3.4/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:L/I:N/A:N" href="https://linux.oracle.com/cve/CVE-2026-2791.html" public="20260224">CVE-2026-2791</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2792.html" public="20260224">CVE-2026-2792</cve>
+<cve cvss3="7.5/CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2026-2793.html" public="20260224">CVE-2026-2793</cve>
+
+<affected_cpe_list>
+<cpe>cpe:/a:oracle:linux:9::appstream</cpe>
+</affected_cpe_list>
+</advisory>
+</metadata>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20263516001" comment="Oracle Linux 9 is installed"/>
+<criteria operator="OR">
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20263516002" comment="Oracle Linux arch is aarch64"/>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20263516003" comment="thunderbird is earlier than 0:140.8.0-1.0.1.el9_7"/>
+<criterion test_ref="oval:com.oracle.elsa:tst:20263516004" comment="thunderbird is signed with the Oracle Linux 9 key"/>
+</criteria>
+</criteria>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20263516005" comment="Oracle Linux arch is x86_64"/>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20263516003" comment="thunderbird is earlier than 0:140.8.0-1.0.1.el9_7"/>
+<criterion test_ref="oval:com.oracle.elsa:tst:20263516004" comment="thunderbird is signed with the Oracle Linux 9 key"/>
+</criteria>
+</criteria>
+</criteria>
+</criteria>
+
+</definition>
+<definition id="oval:com.oracle.elsa:def:20240811" version="501" class="patch">
+<metadata>
+<title>
+ELSA-2024-0811:  sudo security update (MODERATE)
+</title>
+<affected family="unix">
+<platform>Oracle Linux 8</platform>
+<platform>Oracle Linux 9</platform>
+
+</affected>
+<reference source="elsa" ref_id="ELSA-2024-0811" ref_url="https://linux.oracle.com/errata/ELSA-2024-0811.html"/>
+<reference source="CVE" ref_id="CVE-2023-28487" ref_url="https://linux.oracle.com/cve/CVE-2023-28487.html"/>
+<reference source="CVE" ref_id="CVE-2023-28486" ref_url="https://linux.oracle.com/cve/CVE-2023-28486.html"/>
+<reference source="CVE" ref_id="CVE-2023-42465" ref_url="https://linux.oracle.com/cve/CVE-2023-42465.html"/>
+
+<description>
+RHEL 9.3.0.Z ERRATUM
+[1.9.5p2-10]
+- CVE-2023-28487 sudo: Sudo does not escape control characters in sudoreplay output
+Resolves: RHEL-21834
+- CVE-2023-28486 sudo: Sudo does not escape control characters in log messages
+Resolves: RHEL-21828
+- CVE-2023-42465 sudo: Targeted Corruption of Register and Stack Variables
+Resolves: RHEL-21821
+
+RHEL 8.9.0.Z ERRATUM
+[1.9.5p2-1]
+- Rebase to 1.9.5p2
+- CVE-2023-28486 sudo: Sudo does not escape control characters in log messages
+Resolves: RHEL-21825
+- CVE-2023-28487 sudo: Sudo does not escape control characters in sudoreplay output
+Resolves: RHEL-21831
+- CVE-2023-42465 sudo: Targeted Corruption of Register and Stack Variables
+Resolves: RHEL-21820
+</description>
+<!--
+ ~~~~~~~~~~~~~~~~~~~~   advisory details   ~~~~~~~~~~~~~~~~~~~ 
+-->
+<advisory>
+<severity>MODERATE</severity>
+<rights>Copyright 2024 Oracle, Inc.</rights>
+<issued date="2024-02-14"/>
+<cve cvss3="5.3/CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N" href="https://linux.oracle.com/cve/CVE-2023-28487.html" public="20230316">CVE-2023-28487</cve>
+<cve cvss3="5.3/CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N" href="https://linux.oracle.com/cve/CVE-2023-28486.html" public="20230316">CVE-2023-28486</cve>
+<cve cvss3="7/CVSS:3.0/AV:L/AC:H/PR:L/UI:N/S:U/C:H/I:H/A:H" href="https://linux.oracle.com/cve/CVE-2023-42465.html" public="20230905">CVE-2023-42465</cve>
+
+<affected_cpe_list>
+<cpe>cpe:/a:oracle:exadata_dbserver:23.1.13.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:24.1.3.0.0::ol8</cpe>
+<cpe>cpe:/o:oracle:linux:9::baseos_latest</cpe>
+<cpe>cpe:/o:oracle:linux:8:10:baseos_base</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:23.1.15.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:23.1.16.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:23.1.18.0.0::ol8</cpe>
+<cpe>cpe:/o:oracle:linux:8:9:baseos_patch</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:23.1.12.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:24.1.4.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:linux:9::appstream</cpe>
+<cpe>cpe:/o:oracle:linux:9:3:baseos_patch</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:23.1.17.0.0::ol8</cpe>
+<cpe>cpe:/o:oracle:linux:9:4:baseos_base</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:24.1.0.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:23.1.14.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:linux:9:4:appstream_base</cpe>
+<cpe>cpe:/o:oracle:linux:8::baseos_latest</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:24.1.2.0.0::ol8</cpe>
+<cpe>cpe:/a:oracle:exadata_dbserver:24.1.1.0.0::ol8</cpe>
+</affected_cpe_list>
+</advisory>
+</metadata>
+<criteria operator="OR">
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811001" comment="Oracle Linux 8 is installed"/>
+<criteria operator="OR">
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811002" comment="Oracle Linux arch is aarch64"/>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811003" comment="sudo is earlier than 0:1.9.5p2-1.el8_9"/>
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811004" comment="sudo is signed with the Oracle Linux 8 key"/>
+</criteria>
+</criteria>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811005" comment="Oracle Linux arch is x86_64"/>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811003" comment="sudo is earlier than 0:1.9.5p2-1.el8_9"/>
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811004" comment="sudo is signed with the Oracle Linux 8 key"/>
+</criteria>
+</criteria>
+</criteria>
+</criteria>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811006" comment="Oracle Linux 9 is installed"/>
+<criteria operator="OR">
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811007" comment="Oracle Linux arch is aarch64"/>
+<criteria operator="OR">
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811008" comment="sudo is earlier than 0:1.9.5p2-10.el9_3"/>
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811009" comment="sudo is signed with the Oracle Linux 9 key"/>
+</criteria>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811010" comment="sudo-python-plugin is earlier than 0:1.9.5p2-10.el9_3"/>
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811011" comment="sudo-python-plugin is signed with the Oracle Linux 9 key"/>
+</criteria>
+</criteria>
+</criteria>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811012" comment="Oracle Linux arch is x86_64"/>
+<criteria operator="OR">
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811008" comment="sudo is earlier than 0:1.9.5p2-10.el9_3"/>
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811009" comment="sudo is signed with the Oracle Linux 9 key"/>
+</criteria>
+<criteria operator="AND">
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811010" comment="sudo-python-plugin is earlier than 0:1.9.5p2-10.el9_3"/>
+<criterion test_ref="oval:com.oracle.elsa:tst:20240811011" comment="sudo-python-plugin is signed with the Oracle Linux 9 key"/>
+</criteria>
+</criteria>
+</criteria>
+</criteria>
+</criteria>
+</criteria>
+</definition>
+</definitions>
+<tests>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20263516001"  version="501" comment="Oracle Linux 9 is installed" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20263516001" />
+<state state_ref="oval:com.oracle.elsa:ste:20263516002" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20263516002"  version="501" comment="Oracle Linux arch is aarch64" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20263516001" />
+<state state_ref="oval:com.oracle.elsa:ste:20263516003" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20263516003"  version="501" comment="thunderbird is earlier than 0:140.8.0-1.0.1.el9_7" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20263516002" />
+<state state_ref="oval:com.oracle.elsa:ste:20263516004" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20263516004"  version="501" comment="thunderbird is signed with the Oracle Linux 9 key" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20263516002" />
+<state state_ref="oval:com.oracle.elsa:ste:20263516001" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20263516005"  version="501" comment="Oracle Linux arch is x86_64" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20263516001" />
+<state state_ref="oval:com.oracle.elsa:ste:20263516005" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811001"  version="501" comment="Oracle Linux 8 is installed" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811001" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811003" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811002"  version="501" comment="Oracle Linux arch is aarch64" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811001" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811004" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811003"  version="501" comment="sudo is earlier than 0:1.9.5p2-1.el8_9" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811002" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811005" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811004"  version="501" comment="sudo is signed with the Oracle Linux 8 key" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811002" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811001" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811005"  version="501" comment="Oracle Linux arch is x86_64" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811001" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811006" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811006"  version="501" comment="Oracle Linux 9 is installed" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811001" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811007" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811007"  version="501" comment="Oracle Linux arch is aarch64" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811001" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811004" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811008"  version="501" comment="sudo is earlier than 0:1.9.5p2-10.el9_3" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811002" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811008" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811009"  version="501" comment="sudo is signed with the Oracle Linux 9 key" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811002" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811002" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811010"  version="501" comment="sudo-python-plugin is earlier than 0:1.9.5p2-10.el9_3" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811003" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811008" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811011"  version="501" comment="sudo-python-plugin is signed with the Oracle Linux 9 key" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811003" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811002" />
+</rpminfo_test>
+<rpminfo_test id="oval:com.oracle.elsa:tst:20240811012"  version="501" comment="Oracle Linux arch is x86_64" check="at least one" xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux">
+<object object_ref="oval:com.oracle.elsa:obj:20240811001" />
+<state state_ref="oval:com.oracle.elsa:ste:20240811006" />
+</rpminfo_test>
+</tests>
+<objects>
+<rpminfo_object xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:obj:20263516002" version="501">
+<name>thunderbird</name>
+</rpminfo_object>
+<rpminfo_object xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:obj:20263516001" version="501">
+<name>oraclelinux-release</name>
+</rpminfo_object>
+<rpminfo_object xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:obj:20240811002" version="501">
+<name>sudo</name>
+</rpminfo_object>
+<rpminfo_object xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:obj:20240811003" version="501">
+<name>sudo-python-plugin</name>
+</rpminfo_object>
+<rpminfo_object xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:obj:20240811001" version="501">
+<name>oraclelinux-release</name>
+</rpminfo_object>
+</objects>
+<states>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20263516001" version="501">
+<signature_keyid operation="equals">bc4d06a08d8b756f</signature_keyid>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20263516002" version="501">
+<version operation="pattern match">^9</version>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20263516003" version="501">
+<arch operation="pattern match">aarch64</arch>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20263516004" version="501">
+<evr datatype="evr_string" operation="less than">0:140.8.0-1.0.1.el9_7</evr>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20263516005" version="501">
+<arch operation="pattern match">x86_64</arch>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811001" version="501">
+<signature_keyid operation="equals">82562ea9ad986da3</signature_keyid>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811002" version="501">
+<signature_keyid operation="equals">bc4d06a08d8b756f</signature_keyid>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811003" version="501">
+<version operation="pattern match">^8</version>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811004" version="501">
+<arch operation="pattern match">aarch64</arch>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811005" version="501">
+<evr datatype="evr_string" operation="less than">0:1.9.5p2-1.el8_9</evr>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811006" version="501">
+<arch operation="pattern match">x86_64</arch>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811007" version="501">
+<version operation="pattern match">^9</version>
+</rpminfo_state>
+<rpminfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux" id="oval:com.oracle.elsa:ste:20240811008" version="501">
+<evr datatype="evr_string" operation="less than">0:1.9.5p2-10.el9_3</evr>
+</rpminfo_state>
+</states>
+</oval_definitions>
