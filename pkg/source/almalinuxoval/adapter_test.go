@@ -84,7 +84,7 @@ func TestAdapter_Lifecycle(t *testing.T) {
 	}
 
 	var stmts []source.Statement
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+	if _, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		stmts = append(stmts, s)
 		return nil
 	}); err != nil {
@@ -148,7 +148,7 @@ func TestAdapter_HEADShortCircuit(t *testing.T) {
 
 	a, _ := New(source.AdapterConfig{Type: Type, ID: "alma", URL: server.URL + "/org.almalinux.alsa-9.xml.bz2"})
 	var emitCount int
-	if err := a.Sync(context.Background(), since, func(s source.Statement) error { emitCount++; return nil }); err != nil {
+	if _, err := a.Sync(context.Background(), since, func(s source.Statement) error { emitCount++; return nil }); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if emitCount != 0 {

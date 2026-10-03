@@ -1,18 +1,15 @@
 package ranchervex
 
 import (
-	"context"
 	"os"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/getreeldev/reel-vex/pkg/source"
 )
 
 // TestAdapter_RealSample runs the adapter over a trimmed real-feed fixture
-// (testdata/rancher-sample.openvex.json) carved straight from the published
-// rancher.openvex.json. It guards against upstream restructuring: the real
+// (testdata/rancher-sample.openvex.json) carved from Rancher's published
+// statements. It guards against upstream restructuring: the real
 // shapes — golang product+subcomponent, stdlib@version subcomponents, the
 // repository_url-qualified OCI product, and the non-CVE (SUSE-SU / GHSA) tail
 // we skip — exercise the parser as published, not just hand-authored fixtures.
@@ -22,17 +19,16 @@ func TestAdapter_RealSample(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Serve the trimmed real-feed fixture as a single per-package file behind a
-	// one-entry index — exercises the index path against real shapes.
-	files := map[string][]byte{"pkg/sample/scan.openvex.json": payload}
-	server, _ := serveRepo(t, files, nil)
+	// one-entry index in a snapshot — exercises the snapshot path against real
+	// shapes.
+	server, _ := serveRepo(t, snapEntry{"pkg/sample/scan.openvex.json", payload})
 	defer server.Close()
-	a := newAdapter(t, server)
-	var stmts []source.Statement
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
-		stmts = append(stmts, s)
-		return nil
-	}); err != nil {
+	stmts, res, err := syncAll(t, newAdapter(t, server), time.Time{})
+	if err != nil {
 		t.Fatalf("Sync: %v", err)
+	}
+	if !res.Complete {
+		t.Error("the real sample parsed whole; want Complete")
 	}
 
 	// The 4 CVE-named statements emit (one subcomponent each); the SUSE-SU and

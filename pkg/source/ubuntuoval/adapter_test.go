@@ -84,7 +84,7 @@ func TestAdapter_Lifecycle(t *testing.T) {
 	}
 
 	var stmts []source.Statement
-	err = a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+	_, err = a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		stmts = append(stmts, s)
 		return nil
 	})
@@ -149,7 +149,7 @@ func TestAdapter_HEADShortCircuit(t *testing.T) {
 
 	a, _ := New(source.AdapterConfig{Type: Type, ID: "ub", URL: server.URL + "/oci.com.ubuntu.noble.usn.oval.xml.bz2"})
 	var emitCount int
-	err := a.Sync(context.Background(), since, func(s source.Statement) error {
+	_, err := a.Sync(context.Background(), since, func(s source.Statement) error {
 		emitCount++
 		return nil
 	})

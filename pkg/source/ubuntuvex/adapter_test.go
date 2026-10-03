@@ -220,11 +220,15 @@ func TestAdapter_Lifecycle(t *testing.T) {
 	}
 
 	var stmts []source.Statement
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+	res, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		stmts = append(stmts, s)
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Sync: %v", err)
+	}
+	if !res.Complete {
+		t.Error("a clean full walk must report Complete")
 	}
 
 	if len(stmts) != 3 {
@@ -276,7 +280,7 @@ func TestAdapter_HEADShortCircuit(t *testing.T) {
 
 	a, _ := New(source.AdapterConfig{Type: Type, ID: "ubuntu-vex", URL: server.URL + "/vex-all.tar.xz"})
 	var emitted int
-	if err := a.Sync(context.Background(), since, func(s source.Statement) error {
+	if _, err := a.Sync(context.Background(), since, func(s source.Statement) error {
 		emitted++
 		return nil
 	}); err != nil {
@@ -309,7 +313,7 @@ func TestAdapter_FilterEntryTypes(t *testing.T) {
 
 	a, _ := New(source.AdapterConfig{Type: Type, ID: "ubuntu-vex", URL: server.URL + "/vex-all.tar.xz"})
 	var stmts []source.Statement
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+	if _, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		stmts = append(stmts, s)
 		return nil
 	}); err != nil {
@@ -336,14 +340,20 @@ func TestAdapter_SkipsMalformed(t *testing.T) {
 
 	a, _ := New(source.AdapterConfig{Type: Type, ID: "ubuntu-vex", URL: server.URL + "/vex-all.tar.xz"})
 	var stmts []source.Statement
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+	res, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		stmts = append(stmts, s)
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Sync should not error on a malformed entry: %v", err)
 	}
 	if len(stmts) != 1 {
 		t.Fatalf("expected 1 statement (good one survives), got %d", len(stmts))
+	}
+	// The malformed CVE's rows were not re-emitted, so the run must not claim
+	// to hold the feed's whole set.
+	if res.Complete {
+		t.Error("a run that skipped a malformed entry must report Complete=false")
 	}
 }
 
@@ -376,7 +386,7 @@ func TestAdapter_DedupAcrossESMTracks(t *testing.T) {
 
 	a, _ := New(source.AdapterConfig{Type: Type, ID: "ubuntu-vex", URL: server.URL + "/vex-all.tar.xz"})
 	var stmts []source.Statement
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+	if _, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		stmts = append(stmts, s)
 		return nil
 	}); err != nil {

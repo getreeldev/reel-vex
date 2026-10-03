@@ -59,20 +59,26 @@ adapters:
     url: https://www.debian.org/security/oval/oval-definitions-trixie.xml.bz2
   # SUSE Rancher VEX Hub (contributed via issue #1): not_affected suppressions
   # for SUSE cloud-native product images (Rancher, RKE2, K3s, Harvester,
-  # Longhorn). The URL points at the repo's index.json manifest; the adapter
-  # walks it to the small per-package OpenVEX files (since v0.6.4 — the old
-  # consolidated reports/rancher.openvex.json is Git-LFS-backed and must NOT be
-  # used). Statements are subcomponent-scoped: the matchable package rides in
-  # subcomponents[] and becomes the row's product_id, while the product
-  # image/module is stored as the row's `scope` and gated at query time (a
-  # verdict scoped to one image never suppresses the same package elsewhere).
+  # Longhorn). The URL is the repository snapshot the hub's vex-repository.json
+  # names (VEX Repository spec): the main-branch archive tarball, one ~8 MB
+  # request per sync and one consistent commit, read whole every sync. The
+  # adapter reads index.json from it and parses each per-package OpenVEX file
+  # it lists. Use the bare .tar.gz URL, not the spec's go-getter form
+  # (`main.tar.gz//vexhub-main`): the adapter strips the archive's single
+  # top-level directory itself. Never point it at the old index.json walk (one
+  # request per file, mixed commits) or the Git-LFS-backed consolidated
+  # reports/rancher.openvex.json. Statements are subcomponent-scoped: the
+  # matchable package rides in subcomponents[] and becomes the row's
+  # product_id, while the product image/module is stored as the row's `scope`
+  # and gated at query time (a verdict scoped to one image never suppresses the
+  # same package elsewhere).
   # Non-CVE-named statements (~3%, mostly SUSE-SU advisories with no CVE alias)
   # are skipped — we key and serve by CVE. Vendor "rancher", distinct from
   # SUSE CSAF's "suse".
   - type: rancher-vex
     id: rancher-vex
     name: SUSE Rancher (OpenVEX)
-    url: https://raw.githubusercontent.com/rancher/vexhub/refs/heads/main/index.json
+    url: https://github.com/rancher/vexhub/archive/refs/heads/main.tar.gz
   # Alpine Linux secdb: Alpine's own security database, one tiny uncompressed
   # JSON per (branch × repository). secfixes maps fixed apk versions to advisory
   # ids (version key "0" = the CVE does not apply to the package, stored

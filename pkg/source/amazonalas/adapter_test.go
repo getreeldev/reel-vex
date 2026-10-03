@@ -161,7 +161,7 @@ func TestAdapter_Sync_amzn2(t *testing.T) {
 	}
 
 	var stmts []source.Statement
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+	if _, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		stmts = append(stmts, s)
 		return nil
 	}); err != nil {
@@ -255,7 +255,7 @@ func TestAdapter_Sync_al2023(t *testing.T) {
 	}
 
 	var stmts []source.Statement
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+	if _, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		stmts = append(stmts, s)
 		return nil
 	}); err != nil {
@@ -321,7 +321,7 @@ func TestAdapter_Sync_MirrorFallthrough(t *testing.T) {
 		t.Fatal(err)
 	}
 	var n int
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+	if _, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		n++
 		return nil
 	}); err != nil {
@@ -347,7 +347,7 @@ func TestAdapter_Sync_AllMirrorsFail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error { return nil }); err == nil {
+	if _, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error { return nil }); err == nil {
 		t.Fatal("expected error when all mirrors fail")
 	}
 }
@@ -366,7 +366,7 @@ func TestAdapter_Sync_EmptyMirrorList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error { return nil }); err == nil {
+	if _, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error { return nil }); err == nil {
 		t.Fatal("expected error on empty mirror.list")
 	}
 }

@@ -25,14 +25,13 @@ func TestCommittedConfigBuilds(t *testing.T) {
 	}
 }
 
-// TestRancherURLIsIndexNotConsolidated guards the v0.6.4 switch — and the
-// config drift that left the committed file on the old URL through several
-// releases. The Rancher adapter must point at index.json (the per-package
-// walk), never the Git-LFS-backed consolidated reports/rancher.openvex.json.
-// The danger is silent: repoCoords accepts the old URL and fetchIndex parses
-// the OpenVEX doc as an empty index manifest, so a stale URL yields zero
-// Rancher coverage with no error — exactly what a fresh deploy would do.
-func TestRancherURLIsIndexNotConsolidated(t *testing.T) {
+// TestRancherURLIsSnapshotTarball guards the rancher-vex url in the committed
+// config: the adapter reads the repository snapshot tarball the hub's
+// vex-repository.json names, and a URL still pointing at the old index.json
+// walk (or the Git-LFS-backed consolidated rancher.openvex.json) fails every
+// Rancher sync. It must be the bare .tar.gz, not the spec's go-getter form
+// ending in //vexhub-main.
+func TestRancherURLIsSnapshotTarball(t *testing.T) {
 	data, err := os.ReadFile(committedConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -48,11 +47,8 @@ func TestRancherURLIsIndexNotConsolidated(t *testing.T) {
 			continue
 		}
 		found = true
-		if !strings.HasSuffix(a.URL, "/index.json") {
-			t.Errorf("rancher-vex url = %q; must end in /index.json (per-package walk)", a.URL)
-		}
-		if strings.Contains(a.URL, "rancher.openvex.json") {
-			t.Errorf("rancher-vex url = %q points at the deprecated LFS consolidated doc", a.URL)
+		if !strings.HasSuffix(a.URL, ".tar.gz") {
+			t.Errorf("rancher-vex url = %q; must end in .tar.gz (the repository snapshot)", a.URL)
 		}
 	}
 	if !found {

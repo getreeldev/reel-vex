@@ -84,12 +84,15 @@ func TestAdapter_Lifecycle(t *testing.T) {
 	}
 
 	var stmts []source.Statement
-	err = a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+	res, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		stmts = append(stmts, s)
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
+	}
+	if !res.Complete {
+		t.Error("a fully emitted file must report Complete")
 	}
 
 	// Fixture: 4 defs → 2 fixed statements (CVE-2021-44228, CVE-2022-0778)
@@ -161,12 +164,15 @@ func TestAdapter_HEADShortCircuit(t *testing.T) {
 
 	a, _ := New(source.AdapterConfig{Type: Type, ID: "deb", URL: server.URL + "/oval-definitions-bookworm.xml.bz2"})
 	var emitCount int
-	err := a.Sync(context.Background(), since, func(s source.Statement) error {
+	res, err := a.Sync(context.Background(), since, func(s source.Statement) error {
 		emitCount++
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
+	}
+	if res.Complete {
+		t.Error("an up-to-date skip emitted nothing and must not report Complete")
 	}
 	if emitCount != 0 {
 		t.Errorf("expected no emit on short-circuit, got %d", emitCount)

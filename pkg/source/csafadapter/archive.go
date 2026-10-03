@@ -31,25 +31,30 @@ const archiveHTTPTimeout = 10 * time.Minute
 // vendor's full CSAF VEX archive (one ~300 MB tar.zst instead of ~317K
 // per-document GETs that take hours), walks it locally, and emits every
 // statement. Returns the archive's date — the floor for the follow-up
-// changes.csv delta — and ok=true if an archive was found and processed.
+// changes.csv delta — ok=true if an archive was found and processed, and how
+// many archive entries were skipped because they failed to extract.
+// refreshed is called with the path of every entry fully emitted, including
+// entries that yield no statements; it is called as the walk goes, so the
+// entries read before a part-way failure have already been reported.
 //
 // ok=false with nil error means no archive is published for this feed; the
 // caller falls back to the full changes.csv crawl. A non-nil error means an
-// archive existed but processing failed; the caller may also fall back.
-func (a *Adapter) syncFromArchive(ctx context.Context, emit func(source.Statement) error) (archiveDate time.Time, ok bool, err error) {
+// archive existed but processing failed; the caller may also fall back. An
+// error from emit is returned as is.
+func (a *Adapter) syncFromArchive(ctx context.Context, emit func(source.Statement) error, refreshed func(docPath string)) (archiveDate time.Time, ok bool, skipped int, err error) {
 	name, err := a.fetchArchiveName(ctx)
 	if err != nil {
-		return time.Time{}, false, err
+		return time.Time{}, false, 0, err
 	}
 	if name == "" {
-		return time.Time{}, false, nil // no archive published -> caller crawls
+		return time.Time{}, false, 0, nil // no archive published -> caller crawls
 	}
 	archiveDate = parseArchiveDate(name)
 
 	slog.Info("csaf bulk archive: downloading", "adapter", a.id, "file", name)
 	body, lastModified, err := a.fetchArchiveBytes(ctx, a.feedURL+name)
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("download archive %s: %w", name, err)
+		return time.Time{}, false, 0, fmt.Errorf("download archive %s: %w", name, err)
 	}
 	// Prefer the filename date; fall back to the archive's Last-Modified so a
 	// filename-format change can't silently zero the delta floor (which would
@@ -61,7 +66,7 @@ func (a *Adapter) syncFromArchive(ctx context.Context, emit func(source.Statemen
 
 	zr, err := zstd.NewReader(bytes.NewReader(body))
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("zstd reader: %w", err)
+		return time.Time{}, false, 0, fmt.Errorf("zstd reader: %w", err)
 	}
 	defer zr.Close()
 	tr := tar.NewReader(zr)
@@ -77,25 +82,26 @@ func (a *Adapter) syncFromArchive(ctx context.Context, emit func(source.Statemen
 	var docs, emitted int
 	for {
 		if err := ctx.Err(); err != nil {
-			return time.Time{}, false, err
+			return time.Time{}, false, 0, err
 		}
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return time.Time{}, false, fmt.Errorf("tar walk: %w", err)
+			return time.Time{}, false, 0, fmt.Errorf("tar walk: %w", err)
 		}
 		if hdr.Typeflag != tar.TypeReg || !strings.HasSuffix(hdr.Name, ".json") {
 			continue
 		}
 		data, err := io.ReadAll(tr)
 		if err != nil {
-			return time.Time{}, false, fmt.Errorf("read %s: %w", hdr.Name, err)
+			return time.Time{}, false, 0, fmt.Errorf("read %s: %w", hdr.Name, err)
 		}
 		stmts, err := csaf.Extract(data)
 		if err != nil {
 			slog.Warn("csaf archive extract failed", "adapter", a.id, "entry", hdr.Name, "error", err)
+			skipped++
 			continue
 		}
 		docs++
@@ -110,16 +116,17 @@ func (a *Adapter) syncFromArchive(ctx context.Context, emit func(source.Statemen
 				Justification: s.Justification,
 				Updated:       updated,
 			}); err != nil {
-				return time.Time{}, false, err
+				return time.Time{}, false, 0, err
 			}
 			emitted++
 		}
+		refreshed(hdr.Name)
 		if docs%20000 == 0 {
 			slog.Info("csaf bulk archive progress", "adapter", a.id, "docs", docs, "emitted", emitted)
 		}
 	}
-	slog.Info("csaf bulk archive: done", "adapter", a.id, "docs", docs, "emitted", emitted, "archive_date", archiveDate.Format("2006-01-02"))
-	return archiveDate, true, nil
+	slog.Info("csaf bulk archive: done", "adapter", a.id, "docs", docs, "emitted", emitted, "skipped", skipped, "archive_date", archiveDate.Format("2006-01-02"))
+	return archiveDate, true, skipped, nil
 }
 
 // fetchArchiveName reads archive_latest.txt; "" (nil error) means not published.

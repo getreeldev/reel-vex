@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/getreeldev/reel-vex/pkg/aliases"
@@ -135,9 +136,14 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 		return nil
 	}
 
-	err = a.Sync(ctx, since, emit)
-	if err != nil && !errors.Is(err, errLimitReached) {
-		return fmt.Errorf("sync: %w", err)
+	res, err := a.Sync(ctx, since, emit)
+	if err != nil {
+		if !errors.Is(err, errLimitReached) {
+			return fmt.Errorf("sync: %w", err)
+		}
+		// Options.Limit cut the stream short: whatever the adapter would have
+		// reported, this run did not emit its whole set.
+		res = source.SyncResult{}
 	}
 	if err := flush(); err != nil {
 		return fmt.Errorf("flush: %w", err)
@@ -154,6 +160,11 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 	if err := database.UpsertAdapterState(a.ID(), feed.FeedURL, newestStr); err != nil {
 		return fmt.Errorf("update adapter state: %w", err)
 	}
-	slog.Info("adapter done", "adapter", a.ID(), "processed", processed)
+	live := "none"
+	if res.LiveCVEs != nil {
+		live = strconv.Itoa(len(res.LiveCVEs))
+	}
+	slog.Info("adapter done", "adapter", a.ID(), "processed", processed,
+		"complete", res.Complete, "refreshed", len(res.RefreshedCVEs), "live", live)
 	return nil
 }

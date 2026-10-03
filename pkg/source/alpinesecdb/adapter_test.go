@@ -94,7 +94,7 @@ func TestAdapter_Lifecycle(t *testing.T) {
 	}
 
 	var stmts []source.Statement
-	err = a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+	_, err = a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		stmts = append(stmts, s)
 		return nil
 	})
@@ -242,7 +242,7 @@ func TestAdapter_HEADShortCircuit(t *testing.T) {
 
 	a, _ := New(source.AdapterConfig{Type: Type, ID: "alpine", URL: server.URL + "/v3.21/main.json"})
 	var emitCount int
-	err := a.Sync(context.Background(), since, func(s source.Statement) error {
+	_, err := a.Sync(context.Background(), since, func(s source.Statement) error {
 		emitCount++
 		return nil
 	})
@@ -275,7 +275,7 @@ func syncBody(t *testing.T, body string) []source.Statement {
 		t.Fatal(err)
 	}
 	var stmts []source.Statement
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+	if _, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		stmts = append(stmts, s)
 		return nil
 	}); err != nil {

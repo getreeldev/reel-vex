@@ -109,18 +109,18 @@ func (a *Adapter) Discover(ctx context.Context) (*source.FeedInfo, error) {
 // USN-keyed entries (`vex/usn/...`), directory entries, and any other paths
 // are skipped silently. Malformed entries are logged and skipped — a single
 // bad file should not abort the whole sync.
-func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.Statement) error) error {
+func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.Statement) error) (source.SyncResult, error) {
 	headReq, err := http.NewRequestWithContext(ctx, http.MethodHead, a.url, nil)
 	if err != nil {
-		return err
+		return source.SyncResult{}, err
 	}
 	headResp, err := a.http.Do(headReq)
 	if err != nil {
-		return fmt.Errorf("HEAD %s: %w", a.url, err)
+		return source.SyncResult{}, fmt.Errorf("HEAD %s: %w", a.url, err)
 	}
 	headResp.Body.Close()
 	if headResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HEAD %s: HTTP %d", a.url, headResp.StatusCode)
+		return source.SyncResult{}, fmt.Errorf("HEAD %s: HTTP %d", a.url, headResp.StatusCode)
 	}
 
 	lastModified, _ := http.ParseTime(headResp.Header.Get("Last-Modified"))
@@ -128,20 +128,20 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 		slog.Warn("no Last-Modified header on Canonical OpenVEX feed", "adapter", a.id)
 	} else if !since.IsZero() && !lastModified.After(since) {
 		slog.Info("ubuntu-vex up to date, skipping GET", "adapter", a.id, "last_modified", lastModified, "since", since)
-		return nil
+		return source.SyncResult{}, nil
 	}
 
 	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, a.url, nil)
 	if err != nil {
-		return err
+		return source.SyncResult{}, err
 	}
 	getResp, err := a.http.Do(getReq)
 	if err != nil {
-		return fmt.Errorf("GET %s: %w", a.url, err)
+		return source.SyncResult{}, fmt.Errorf("GET %s: %w", a.url, err)
 	}
 	if getResp.StatusCode != http.StatusOK {
 		getResp.Body.Close()
-		return fmt.Errorf("GET %s: HTTP %d", a.url, getResp.StatusCode)
+		return source.SyncResult{}, fmt.Errorf("GET %s: HTTP %d", a.url, getResp.StatusCode)
 	}
 
 	// Buffer the tarball fully into memory before walking. The xz+tar walk
@@ -154,12 +154,12 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 	body, err := io.ReadAll(getResp.Body)
 	getResp.Body.Close()
 	if err != nil {
-		return fmt.Errorf("read body: %w", err)
+		return source.SyncResult{}, fmt.Errorf("read body: %w", err)
 	}
 
 	xzReader, err := xz.NewReader(bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("xz reader: %w", err)
+		return source.SyncResult{}, fmt.Errorf("xz reader: %w", err)
 	}
 	tarReader := tar.NewReader(xzReader)
 
@@ -175,14 +175,14 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 	)
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			return source.SyncResult{}, err
 		}
 		hdr, err := tarReader.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("tar next: %w", err)
+			return source.SyncResult{}, fmt.Errorf("tar next: %w", err)
 		}
 		if !isCVEEntry(hdr.Name, hdr.Typeflag) {
 			continue
@@ -197,12 +197,12 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 		}
 		n, err := emitDoc(doc, fallbackTime, emit)
 		if err != nil {
-			return err
+			return source.SyncResult{}, err
 		}
 		emitted += n
 	}
 	slog.Info("ubuntu-vex sync complete", "adapter", a.id, "entries", entries, "statements", emitted, "skipped", skipped)
-	return nil
+	return source.SyncResult{Complete: skipped == 0}, nil
 }
 
 // isCVEEntry returns true for tar headers that point at one of Canonical's

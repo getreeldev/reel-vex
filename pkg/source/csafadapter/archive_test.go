@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -94,7 +95,7 @@ func TestSync_BulkArchiveColdStart(t *testing.T) {
 	var count int
 	var sawBaseCPE bool
 	var updated time.Time
-	err = a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+	res, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		count++
 		updated = s.Updated
 		if s.ProductID == "cpe:/o:redhat:enterprise_linux:8" {
@@ -117,6 +118,80 @@ func TestSync_BulkArchiveColdStart(t *testing.T) {
 	if docFetched {
 		t.Error("delta should not re-fetch a pre-archive-date doc — full crawl was not avoided")
 	}
+	if !res.Complete {
+		t.Error("archive cold start with no failed entry must report Complete")
+	}
+	if len(res.RefreshedCVEs) != 1 || res.RefreshedCVEs[0] != "CVE-2024-0217" {
+		t.Errorf("archive-parsed documents count as refreshed: got %v", res.RefreshedCVEs)
+	}
+}
+
+// TestSync_ArchiveEmitErrorIsReturned: an error from emit while walking the
+// archive is the orchestrator's (a full disk, a closed pool), not the
+// archive's; the cold start must return it, not fall back to the hours-long
+// changes.csv crawl. Also: an archive entry that fails to extract is counted
+// and makes the run incomplete.
+func TestSync_ArchiveEmitErrorIsReturned(t *testing.T) {
+	fixture, err := os.ReadFile(fixturePath(t, "secdata-1220-cve-2024-0217.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	const archiveName = "csaf_vex_2026-05-23.tar.zst"
+	newServer := func(files map[string][]byte) (*httptest.Server, *int) {
+		archive := buildZstdTar(t, files)
+		mux := http.NewServeMux()
+		server := httptest.NewServer(mux)
+		mux.HandleFunc("/provider-metadata.json", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, `{"publisher":{"name":"Test Vendor"},"distributions":[{"directory_url":"%s/vex/"}]}`, server.URL)
+		})
+		mux.HandleFunc("/vex/archive_latest.txt", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, archiveName) })
+		mux.HandleFunc("/vex/"+archiveName, func(w http.ResponseWriter, r *http.Request) { w.Write(archive) })
+		crawls := 0
+		mux.HandleFunc("/vex/changes.csv", func(w http.ResponseWriter, r *http.Request) { crawls++ })
+		return server, &crawls
+	}
+
+	t.Run("emit error", func(t *testing.T) {
+		server, crawls := newServer(map[string][]byte{"csaf_vex_2026-05-23/2024/cve-2024-0217.json": fixture})
+		defer server.Close()
+		a, err := New(source.AdapterConfig{Type: Type, ID: "test", URL: server.URL + "/provider-metadata.json"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sentinel := errors.New("disk full")
+		res, err := a.Sync(context.Background(), time.Time{}, func(source.Statement) error { return sentinel })
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("want the emit error back, got %v", err)
+		}
+		if *crawls != 0 {
+			t.Errorf("an emit error fell back to the changes.csv crawl (%d request(s))", *crawls)
+		}
+		if res.Complete || res.RefreshedCVEs != nil || res.LiveCVEs != nil {
+			t.Errorf("a failed Sync must return a zero SyncResult, got %+v", res)
+		}
+	})
+
+	t.Run("failed entry", func(t *testing.T) {
+		server, _ := newServer(map[string][]byte{
+			"csaf_vex_2026-05-23/2024/cve-2024-0217.json": fixture,
+			"csaf_vex_2026-05-23/2024/cve-2024-0001.json": []byte("{not json"),
+		})
+		defer server.Close()
+		a, err := New(source.AdapterConfig{Type: Type, ID: "test", URL: server.URL + "/provider-metadata.json"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := a.Sync(context.Background(), time.Time{}, func(source.Statement) error { return nil })
+		if err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		if res.Complete {
+			t.Error("an archive entry that failed to extract must make the run incomplete")
+		}
+		if len(res.RefreshedCVEs) != 1 || res.RefreshedCVEs[0] != "CVE-2024-0217" {
+			t.Errorf("RefreshedCVEs: got %v, want only the parsed document", res.RefreshedCVEs)
+		}
+	})
 }
 
 // TestSync_NoArchiveFallsBackToCrawl verifies that a feed without
@@ -150,7 +225,7 @@ func TestSync_NoArchiveFallsBackToCrawl(t *testing.T) {
 		t.Fatalf("Discover: %v", err)
 	}
 	var count int
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error { count++; return nil }); err != nil {
+	if _, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error { count++; return nil }); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if !docFetched {

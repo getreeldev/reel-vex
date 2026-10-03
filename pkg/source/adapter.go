@@ -47,8 +47,38 @@ type Adapter interface {
 	// `emit` once per statement; returning an error from emit stops the
 	// sync and propagates that error back. Transient per-document errors
 	// (network, parse) should be logged by the adapter and skipped rather
-	// than returned — partial coverage is more useful than aborting.
-	Sync(ctx context.Context, since time.Time, emit func(Statement) error) error
+	// than returned — partial coverage is more useful than aborting — but a
+	// run that skipped anything on error must report itself incomplete and
+	// leave the skipped document out of RefreshedCVEs (see SyncResult). On
+	// error Sync returns a zero SyncResult.
+	Sync(ctx context.Context, since time.Time, emit func(Statement) error) (SyncResult, error)
+}
+
+// SyncResult reports what one successful Sync covered, so the orchestrator
+// can tell which stored rows the vendor no longer publishes.
+type SyncResult struct {
+	// Complete is true when this call emitted the adapter's entire current
+	// set: every statement the vendor publishes now went through emit, and
+	// nothing was skipped on error (failed fetch, malformed entry, failed
+	// extract). Skips by design — non-CVE names, missing or invalid
+	// subcomponent identifiers, packages with no name — do not make a run
+	// incomplete. A run that found the feed unchanged and fetched nothing
+	// ("up to date, skipping GET") is not complete: it emitted nothing.
+	Complete bool
+
+	// RefreshedCVEs lists, for per-CVE document feeds (CSAF), the CVE ids of
+	// the documents fetched and fully parsed this call, including documents
+	// that yielded no statements. Each listed document's statements were all
+	// emitted, so its stored rows that were not are no longer published. A
+	// document that failed to fetch or parse is left out. Nil for whole-file
+	// feeds.
+	RefreshedCVEs []string
+
+	// LiveCVEs is the vendor's manifest of live documents as CVE ids, when
+	// the adapter read one this call (CSAF's index.txt). Nil when the
+	// adapter has no manifest or could not read it — never an empty slice
+	// standing in for "unknown".
+	LiveCVEs []string
 }
 
 // FeedInfo is the post-discovery metadata about an adapter's feed.

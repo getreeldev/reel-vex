@@ -31,13 +31,13 @@ func (m *mockAdapter) Discover(ctx context.Context) (*FeedInfo, error) {
 	return &FeedInfo{FeedURL: "mock://feed"}, nil
 }
 
-func (m *mockAdapter) Sync(ctx context.Context, since time.Time, emit func(Statement) error) error {
+func (m *mockAdapter) Sync(ctx context.Context, since time.Time, emit func(Statement) error) (SyncResult, error) {
 	for _, s := range m.stmts {
 		if err := emit(s); err != nil {
-			return err
+			return SyncResult{}, err
 		}
 	}
-	return nil
+	return SyncResult{Complete: true}, nil
 }
 
 func TestRegistry_Unknown(t *testing.T) {
@@ -109,7 +109,7 @@ func TestAdapterLifecycle(t *testing.T) {
 	}
 
 	var collected []Statement
-	err = a.Sync(context.Background(), time.Time{}, func(s Statement) error {
+	res, err := a.Sync(context.Background(), time.Time{}, func(s Statement) error {
 		collected = append(collected, s)
 		return nil
 	})
@@ -119,13 +119,19 @@ func TestAdapterLifecycle(t *testing.T) {
 	if len(collected) != 2 {
 		t.Errorf("collected %d, want 2", len(collected))
 	}
+	if !res.Complete {
+		t.Error("a full emit should report Complete")
+	}
 
 	// Returning error from emit stops the sync and propagates.
 	sentinel := errors.New("stop")
-	err = a.Sync(context.Background(), time.Time{}, func(s Statement) error {
+	res, err = a.Sync(context.Background(), time.Time{}, func(s Statement) error {
 		return sentinel
 	})
 	if !errors.Is(err, sentinel) {
 		t.Errorf("expected sentinel error, got %v", err)
+	}
+	if res.Complete {
+		t.Error("a failed Sync must return a zero SyncResult")
 	}
 }

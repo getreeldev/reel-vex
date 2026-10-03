@@ -132,18 +132,18 @@ type secdb struct {
 
 // Sync fetches the secdb JSON, parses it, and emits one statement per
 // (package × CVE id), in sorted order. Incremental via Last-Modified.
-func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.Statement) error) error {
+func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.Statement) error) (source.SyncResult, error) {
 	headReq, err := http.NewRequestWithContext(ctx, http.MethodHead, a.url, nil)
 	if err != nil {
-		return err
+		return source.SyncResult{}, err
 	}
 	headResp, err := a.http.Do(headReq)
 	if err != nil {
-		return fmt.Errorf("HEAD %s: %w", a.url, err)
+		return source.SyncResult{}, fmt.Errorf("HEAD %s: %w", a.url, err)
 	}
 	headResp.Body.Close()
 	if headResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HEAD %s: HTTP %d", a.url, headResp.StatusCode)
+		return source.SyncResult{}, fmt.Errorf("HEAD %s: HTTP %d", a.url, headResp.StatusCode)
 	}
 
 	lastModified, _ := http.ParseTime(headResp.Header.Get("Last-Modified"))
@@ -151,29 +151,29 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 		slog.Warn("no Last-Modified header on Alpine secdb feed", "adapter", a.id)
 	} else if !since.IsZero() && !lastModified.After(since) {
 		slog.Info("alpine-secdb up to date, skipping GET", "adapter", a.id, "last_modified", lastModified, "since", since)
-		return nil
+		return source.SyncResult{}, nil
 	}
 
 	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, a.url, nil)
 	if err != nil {
-		return err
+		return source.SyncResult{}, err
 	}
 	getResp, err := a.http.Do(getReq)
 	if err != nil {
-		return fmt.Errorf("GET %s: %w", a.url, err)
+		return source.SyncResult{}, fmt.Errorf("GET %s: %w", a.url, err)
 	}
 	defer getResp.Body.Close()
 	if getResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: HTTP %d", a.url, getResp.StatusCode)
+		return source.SyncResult{}, fmt.Errorf("GET %s: HTTP %d", a.url, getResp.StatusCode)
 	}
 
 	body, err := io.ReadAll(getResp.Body)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", a.url, err)
+		return source.SyncResult{}, fmt.Errorf("read %s: %w", a.url, err)
 	}
 	var feed secdb
 	if err := json.Unmarshal(body, &feed); err != nil {
-		return fmt.Errorf("parse secdb %s: %w", a.url, err)
+		return source.SyncResult{}, fmt.Errorf("parse secdb %s: %w", a.url, err)
 	}
 
 	updated := lastModified
@@ -242,7 +242,7 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 		sort.Strings(cves)
 		for _, cve := range cves {
 			if err := ctx.Err(); err != nil {
-				return err
+				return source.SyncResult{}, err
 			}
 			status, justification := "fixed", ""
 			version, isFixed := fixes[cve]
@@ -260,7 +260,7 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 				Scope:         "",
 				Updated:       updated,
 			}); err != nil {
-				return err
+				return source.SyncResult{}, err
 			}
 			emitted++
 		}
@@ -268,7 +268,7 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 
 	slog.Info("alpine-secdb sync complete", "adapter", a.id,
 		"distroversion", feed.DistroVersion, "statements", emitted, "skipped_non_cve", skippedNonCVE)
-	return nil
+	return source.SyncResult{Complete: true}, nil
 }
 
 // laterFix reports whether fixed version a outranks b: higher by apk version

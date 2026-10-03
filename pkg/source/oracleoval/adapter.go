@@ -105,18 +105,18 @@ func (a *Adapter) Discover(ctx context.Context) (*source.FeedInfo, error) {
 
 // Sync fetches the OVAL file, decompresses bz2, translates to VEX statements,
 // and emits each one. Incremental via Last-Modified.
-func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.Statement) error) error {
+func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.Statement) error) (source.SyncResult, error) {
 	headReq, err := http.NewRequestWithContext(ctx, http.MethodHead, a.url, nil)
 	if err != nil {
-		return err
+		return source.SyncResult{}, err
 	}
 	headResp, err := a.http.Do(headReq)
 	if err != nil {
-		return fmt.Errorf("HEAD %s: %w", a.url, err)
+		return source.SyncResult{}, fmt.Errorf("HEAD %s: %w", a.url, err)
 	}
 	headResp.Body.Close()
 	if headResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HEAD %s: HTTP %d", a.url, headResp.StatusCode)
+		return source.SyncResult{}, fmt.Errorf("HEAD %s: HTTP %d", a.url, headResp.StatusCode)
 	}
 
 	lastModified, _ := http.ParseTime(headResp.Header.Get("Last-Modified"))
@@ -124,25 +124,25 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 		slog.Warn("no Last-Modified header on Oracle OVAL feed", "adapter", a.id)
 	} else if !since.IsZero() && !lastModified.After(since) {
 		slog.Info("oracle-oval up to date, skipping GET", "adapter", a.id, "last_modified", lastModified, "since", since)
-		return nil
+		return source.SyncResult{}, nil
 	}
 
 	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, a.url, nil)
 	if err != nil {
-		return err
+		return source.SyncResult{}, err
 	}
 	getResp, err := a.http.Do(getReq)
 	if err != nil {
-		return fmt.Errorf("GET %s: %w", a.url, err)
+		return source.SyncResult{}, fmt.Errorf("GET %s: %w", a.url, err)
 	}
 	defer getResp.Body.Close()
 	if getResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: HTTP %d", a.url, getResp.StatusCode)
+		return source.SyncResult{}, fmt.Errorf("GET %s: HTTP %d", a.url, getResp.StatusCode)
 	}
 
 	stmts, err := translator.FromOracleOVAL(bzip2.NewReader(getResp.Body))
 	if err != nil {
-		return fmt.Errorf("translate OVAL: %w", err)
+		return source.SyncResult{}, fmt.Errorf("translate OVAL: %w", err)
 	}
 
 	updated := lastModified
@@ -153,7 +153,7 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 	var emitted, otherRelease int
 	for _, s := range stmts {
 		if err := ctx.Err(); err != nil {
-			return err
+			return source.SyncResult{}, err
 		}
 		if !strings.HasSuffix(s.BaseID, own) {
 			otherRelease++
@@ -169,11 +169,11 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 			Justification: s.Justification,
 			Updated:       updated,
 		}); err != nil {
-			return err
+			return source.SyncResult{}, err
 		}
 		emitted++
 	}
 	slog.Info("oracle-oval sync complete", "adapter", a.id, "release", a.release,
 		"statements", emitted, "skipped_other_release", otherRelease)
-	return nil
+	return source.SyncResult{Complete: true}, nil
 }

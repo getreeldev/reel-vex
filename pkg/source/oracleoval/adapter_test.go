@@ -94,7 +94,7 @@ func TestAdapter_Lifecycle(t *testing.T) {
 	}
 
 	var stmts []source.Statement
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+	if _, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		stmts = append(stmts, s)
 		return nil
 	}); err != nil {
@@ -156,7 +156,7 @@ func TestAdapter_HEADShortCircuit(t *testing.T) {
 
 	a, _ := New(source.AdapterConfig{Type: Type, ID: "oracle", URL: server.URL + "/com.oracle.elsa-ol9.xml.bz2"})
 	var emitCount int
-	if err := a.Sync(context.Background(), since, func(s source.Statement) error { emitCount++; return nil }); err != nil {
+	if _, err := a.Sync(context.Background(), since, func(s source.Statement) error { emitCount++; return nil }); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if emitCount != 0 {
@@ -199,7 +199,7 @@ func TestAdapter_OwnReleaseOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	var emitted int
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
+	if _, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		emitted++
 		if !strings.HasSuffix(s.BaseID, "?distro=oracle-9") {
 			t.Errorf("%s: ol9 adapter emitted %q", s.CVE, s.BaseID)

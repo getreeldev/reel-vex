@@ -29,9 +29,12 @@ func (f *fakeAdapter) Discover(ctx context.Context) (*source.FeedInfo, error) {
 	return &source.FeedInfo{FeedURL: f.feedURL}, nil
 }
 
-func (f *fakeAdapter) Sync(ctx context.Context, since time.Time, emit func(source.Statement) error) error {
+func (f *fakeAdapter) Sync(ctx context.Context, since time.Time, emit func(source.Statement) error) (source.SyncResult, error) {
 	f.gotSince = since
-	return f.emitFn(emit)
+	if err := f.emitFn(emit); err != nil {
+		return source.SyncResult{}, err
+	}
+	return source.SyncResult{Complete: true}, nil
 }
 
 // TestRun_StoresTimestampsAsUTC is the regression guard for the lexicographic

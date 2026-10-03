@@ -123,33 +123,33 @@ func (a *Adapter) Discover(ctx context.Context) (*source.FeedInfo, error) {
 // re-parse the (small) feed each cycle and let the conditional upsert make the
 // redundant rows cheap. Per-statement Updated still reflects each advisory's
 // own <updated> date, so ?since= filtering on the API stays correct.
-func (a *Adapter) Sync(ctx context.Context, _ time.Time, emit func(source.Statement) error) error {
+func (a *Adapter) Sync(ctx context.Context, _ time.Time, emit func(source.Statement) error) (source.SyncResult, error) {
 	bases, err := a.fetchMirrorBases(ctx)
 	if err != nil {
-		return err
+		return source.SyncResult{}, err
 	}
 	if len(bases) == 0 {
-		return fmt.Errorf("mirror.list %s returned no usable mirror bases", a.mirrorURL)
+		return source.SyncResult{}, fmt.Errorf("mirror.list %s returned no usable mirror bases", a.mirrorURL)
 	}
 
 	data, base, err := a.fetchUpdateInfo(ctx, bases)
 	if err != nil {
-		return err
+		return source.SyncResult{}, err
 	}
 
 	ui, err := parseUpdateInfo(data)
 	if err != nil {
-		return fmt.Errorf("parse updateinfo from %s: %w", base, err)
+		return source.SyncResult{}, fmt.Errorf("parse updateinfo from %s: %w", base, err)
 	}
 
 	c, err := emitStatements(ui, a.distro, emit)
 	if err != nil {
-		return err
+		return source.SyncResult{}, err
 	}
 	slog.Info("amazon-alas sync complete", "adapter", a.id, "mirror", base,
 		"advisories", len(ui.ALASList), "statements", c.emitted,
 		"skipped_no_cve", c.skippedNoCVE, "undated_advisories", c.undatedAdvisories)
-	return nil
+	return source.SyncResult{Complete: true}, nil
 }
 
 // fetchMirrorBases GETs mirror.list and returns the base URLs, each normalised

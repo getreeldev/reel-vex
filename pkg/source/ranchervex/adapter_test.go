@@ -1,8 +1,12 @@
 package ranchervex
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,9 +17,9 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/source"
 )
 
-// repoPrefix is the owner/repo/ref path layout the adapter parses out of the
-// configured index URL.
-const repoPrefix = "/rancher/vexhub/refs/heads/main"
+// snapshotPath is where the test server serves the repository snapshot — the
+// same path GitHub's archive URL has.
+const snapshotPath = "/rancher/vexhub/archive/refs/heads/main.tar.gz"
 
 func mustJSON(t *testing.T, doc openvex.Document) []byte {
 	t.Helper()
@@ -26,76 +30,110 @@ func mustJSON(t *testing.T, doc openvex.Document) []byte {
 	return b
 }
 
-// serveRepo mounts the index.json repo layout: an index.json listing every file
-// in `files` (keyed by repo-relative location), the per-package docs themselves,
-// and a stub GitHub commits+compare API. `changed` is the set of locations the
-// compare API reports as modified (the incremental path); empty means "no
-// commits since the watermark". The returned counter tracks per-package GETs.
-func serveRepo(t *testing.T, files map[string][]byte, changed []string) (*httptest.Server, *int) {
-	t.Helper()
-	fileGets := 0
-	mux := http.NewServeMux()
-
-	mux.HandleFunc(repoPrefix+"/index.json", func(w http.ResponseWriter, r *http.Request) {
-		type pkg struct {
-			ID       string `json:"id"`
-			Location string `json:"location"`
-		}
-		idx := struct {
-			Version  int   `json:"version"`
-			Packages []pkg `json:"packages"`
-		}{Version: 1}
-		for loc := range files {
-			idx.Packages = append(idx.Packages, pkg{ID: "pkg:test/" + loc, Location: loc})
-		}
-		_ = json.NewEncoder(w).Encode(idx)
-	})
-
-	for loc, body := range files {
-		l, b := loc, body
-		mux.HandleFunc(repoPrefix+"/"+l, func(w http.ResponseWriter, r *http.Request) {
-			fileGets++
-			w.Write(b)
-		})
-	}
-
-	// Stub GitHub commits API: a non-empty `changed` ⇒ one commit; else none.
-	mux.HandleFunc("/repos/rancher/vexhub/commits", func(w http.ResponseWriter, r *http.Request) {
-		if len(changed) == 0 {
-			w.Write([]byte("[]"))
-			return
-		}
-		w.Write([]byte(`[{"sha":"head","parents":[{"sha":"base"}]}]`))
-	})
-	// Stub compare API: report `changed` files as modified.
-	mux.HandleFunc("/repos/rancher/vexhub/compare/", func(w http.ResponseWriter, r *http.Request) {
-		type f struct {
-			Filename string `json:"filename"`
-			Status   string `json:"status"`
-		}
-		var out struct {
-			Files []f `json:"files"`
-		}
-		for _, loc := range changed {
-			out.Files = append(out.Files, f{Filename: loc, Status: "modified"})
-		}
-		_ = json.NewEncoder(w).Encode(out)
-	})
-
-	return httptest.NewServer(mux), &fileGets
+// snapEntry is one file in a test snapshot, at its repo-relative path.
+type snapEntry struct {
+	name string
+	body []byte
 }
 
-// newAdapter builds an adapter pointed at the mock repo, redirecting apiBase to
-// the same server so the commits/compare stub is hit instead of github.com.
-func newAdapter(t *testing.T, server *httptest.Server) *Adapter {
+// indexJSON builds an index.json listing the given locations.
+func indexJSON(t *testing.T, locs ...string) []byte {
 	t.Helper()
-	a, err := New(source.AdapterConfig{Type: Type, ID: "rancher-vex", URL: server.URL + repoPrefix + "/index.json"})
+	type pkg struct {
+		ID       string `json:"id"`
+		Location string `json:"location"`
+	}
+	idx := struct {
+		Version  int   `json:"version"`
+		Packages []pkg `json:"packages"`
+	}{Version: 1, Packages: []pkg{}}
+	for _, loc := range locs {
+		idx.Packages = append(idx.Packages, pkg{ID: "pkg:test/" + loc, Location: loc})
+	}
+	b, err := json.Marshal(idx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ra := a.(*Adapter)
-	ra.apiBase = server.URL
-	return ra
+	return b
+}
+
+// buildSnapshot packs entries, in order, into a gzipped tar laid out like a
+// GitHub archive: a pax global header carrying the commit, then everything
+// under one top-level vexhub-main/ directory.
+func buildSnapshot(t *testing.T, entries ...snapEntry) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(zw)
+	if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeXGlobalHeader, Name: "pax_global_header",
+		PAXRecords: map[string]string{"comment": "0123456789abcdef"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: "vexhub-main/", Mode: 0o755}); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: "vexhub-main/" + e.name, Mode: 0o644, Size: int64(len(e.body))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(e.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// serveSnapshot serves the tarball at snapshotPath. The returned counter
+// tracks GETs of it.
+func serveSnapshot(t *testing.T, tarball []byte) (*httptest.Server, *int) {
+	t.Helper()
+	gets := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc(snapshotPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			gets++
+		}
+		w.Write(tarball)
+	})
+	return httptest.NewServer(mux), &gets
+}
+
+// serveRepo serves a snapshot whose index.json lists every file, followed by
+// the files themselves.
+func serveRepo(t *testing.T, files ...snapEntry) (*httptest.Server, *int) {
+	t.Helper()
+	locs := make([]string, 0, len(files))
+	for _, f := range files {
+		locs = append(locs, f.name)
+	}
+	entries := append([]snapEntry{{"index.json", indexJSON(t, locs...)}}, files...)
+	return serveSnapshot(t, buildSnapshot(t, entries...))
+}
+
+func newAdapter(t *testing.T, server *httptest.Server) *Adapter {
+	t.Helper()
+	a, err := New(source.AdapterConfig{Type: Type, ID: "rancher-vex", URL: server.URL + snapshotPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a.(*Adapter)
+}
+
+// syncAll runs Sync with an emit that collects every statement.
+func syncAll(t *testing.T, a *Adapter, since time.Time) ([]source.Statement, source.SyncResult, error) {
+	t.Helper()
+	var stmts []source.Statement
+	res, err := a.Sync(context.Background(), since, func(s source.Statement) error {
+		stmts = append(stmts, s)
+		return nil
+	})
+	return stmts, res, err
 }
 
 // scopedProduct builds a product Component with subcomponents.
@@ -116,9 +154,18 @@ func stmt(cve, status, justification string, products ...openvex.Component) open
 	}
 }
 
+// oneStatementDoc is a valid per-package document with a single emitted row.
+func oneStatementDoc(t *testing.T, cve string) []byte {
+	return mustJSON(t, openvex.Document{Context: openvex.Context, Version: 1,
+		Statements: []openvex.Statement{
+			stmt(cve, "not_affected", "vulnerable_code_not_present",
+				scopedProduct("pkg:golang/github.com/x/y", "pkg:golang/z@v1.0.0")),
+		}})
+}
+
 func TestNew(t *testing.T) {
 	t.Run("requires id", func(t *testing.T) {
-		if _, err := New(source.AdapterConfig{Type: Type, URL: "https://x/index.json"}); err == nil {
+		if _, err := New(source.AdapterConfig{Type: Type, URL: "https://x/main.tar.gz"}); err == nil {
 			t.Fatal("expected error for empty id")
 		}
 	})
@@ -128,7 +175,7 @@ func TestNew(t *testing.T) {
 		}
 	})
 	t.Run("default name", func(t *testing.T) {
-		a, err := New(source.AdapterConfig{Type: Type, ID: "rancher-vex", URL: "https://x/index.json"})
+		a, err := New(source.AdapterConfig{Type: Type, ID: "rancher-vex", URL: "https://x/main.tar.gz"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -139,7 +186,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestAdapter_Identity(t *testing.T) {
-	a, err := New(source.AdapterConfig{Type: Type, ID: "rancher-vex", URL: "https://x/index.json"})
+	a, err := New(source.AdapterConfig{Type: Type, ID: "rancher-vex", URL: "https://x/main.tar.gz"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,9 +206,10 @@ func TestAdapter_Identity(t *testing.T) {
 	}
 }
 
-// TestAdapter_Sync covers a first (full) ingest: walk the index, fetch every
-// per-package file, and emit one row per (product-scope × subcomponent) for the
-// CVE-named, subcomponent-bearing statements only.
+// TestAdapter_Sync covers a full ingest from the snapshot: read index.json,
+// parse every listed per-package file, and emit one row per (product-scope ×
+// subcomponent) for the CVE-named, subcomponent-bearing statements only. A
+// file index.json does not list is not read.
 func TestAdapter_Sync(t *testing.T) {
 	const ociID = "pkg:oci/longhorn-engine?repository_url=registry.suse.com/rancher/longhorn-engine"
 	ociDoc := openvex.Document{Context: openvex.Context, Author: "SUSE Rancher Security", Version: 1,
@@ -187,11 +235,12 @@ func TestAdapter_Sync(t *testing.T) {
 			stmt("CVE-2024-4", "not_affected", "vulnerable_code_not_present",
 				scopedProduct("", "pkg:golang/x@v1.0.0")),
 		}}
-	files := map[string][]byte{
-		"pkg/oci/longhorn-engine/scan.openvex.json": mustJSON(t, ociDoc),
-		"pkg/golang/harvester/scan.openvex.json":    mustJSON(t, golangDoc),
-	}
-	server, _ := serveRepo(t, files, nil)
+	server, gets := serveSnapshot(t, buildSnapshot(t,
+		snapEntry{"index.json", indexJSON(t, "pkg/oci/longhorn-engine/scan.openvex.json", "pkg/golang/harvester/scan.openvex.json")},
+		snapEntry{"pkg/oci/longhorn-engine/scan.openvex.json", mustJSON(t, ociDoc)},
+		snapEntry{"pkg/golang/harvester/scan.openvex.json", mustJSON(t, golangDoc)},
+		snapEntry{"pkg/golang/unlisted/scan.openvex.json", oneStatementDoc(t, "CVE-2024-8")},
+	))
 	defer server.Close()
 	a := newAdapter(t, server)
 
@@ -203,12 +252,16 @@ func TestAdapter_Sync(t *testing.T) {
 		t.Error("expected FeedURL set")
 	}
 
-	var stmts []source.Statement
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
-		stmts = append(stmts, s)
-		return nil
-	}); err != nil {
+	stmts, res, err := syncAll(t, a, time.Time{})
+	if err != nil {
 		t.Fatalf("Sync: %v", err)
+	}
+	// Skips by design (non-CVE, no or bad subcomponent) leave the run complete.
+	if !res.Complete {
+		t.Error("a snapshot whose every listed file parsed must report Complete")
+	}
+	if *gets != 1 {
+		t.Errorf("snapshot GETs: got %d, want 1", *gets)
 	}
 
 	// Only the two CVE-named, subcomponent-bearing statements emit.
@@ -248,7 +301,7 @@ func TestAdapter_Sync(t *testing.T) {
 	}
 
 	for _, s := range stmts {
-		if s.CVE == "SUSE-SU-2026:1432-1" || s.CVE == "CVE-2024-2" || s.CVE == "CVE-2024-4" || s.CVE == "CVE-2024-5" {
+		if s.CVE == "SUSE-SU-2026:1432-1" || s.CVE == "CVE-2024-2" || s.CVE == "CVE-2024-4" || s.CVE == "CVE-2024-5" || s.CVE == "CVE-2024-8" {
 			t.Errorf("a skipped statement leaked: %q", s.CVE)
 		}
 	}
@@ -264,84 +317,154 @@ func TestAdapter_DocTimestamp(t *testing.T) {
 			stmt("CVE-2024-7", "not_affected", "vulnerable_code_not_present",
 				scopedProduct("pkg:golang/github.com/x/y", "pkg:golang/z@v1.0.0")),
 		}}
-	files := map[string][]byte{"pkg/golang/x/scan.openvex.json": mustJSON(t, doc)}
-	server, _ := serveRepo(t, files, nil)
+	server, _ := serveRepo(t, snapEntry{"pkg/golang/x/scan.openvex.json", mustJSON(t, doc)})
 	defer server.Close()
-	a := newAdapter(t, server)
 
-	var got source.Statement
-	if err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
-		got = s
-		return nil
-	}); err != nil {
+	stmts, _, err := syncAll(t, newAdapter(t, server), time.Time{})
+	if err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
+	if len(stmts) != 1 {
+		t.Fatalf("emitted %d rows, want 1", len(stmts))
+	}
 	want, _ := time.Parse(time.RFC3339, "2026-05-12T09:52:44Z")
-	if !got.Updated.Equal(want) {
-		t.Errorf("Updated: got %v, want doc timestamp %v", got.Updated, want)
+	if !stmts[0].Updated.Equal(want) {
+		t.Errorf("Updated: got %v, want doc timestamp %v", stmts[0].Updated, want)
 	}
 }
 
-// TestAdapter_Incremental covers the commits-API incremental path: nothing
-// changed → skip with zero per-file fetches; a changed file → fetch only it.
-func TestAdapter_Incremental(t *testing.T) {
-	doc := openvex.Document{Context: openvex.Context, Version: 1,
-		Statements: []openvex.Statement{
-			stmt("CVE-2024-9", "not_affected", "vulnerable_code_not_present",
-				scopedProduct("pkg:golang/github.com/x/y", "pkg:golang/z@v1.0.0")),
-		}}
-	loc := "pkg/golang/github.com/x/y/scan.openvex.json"
-	files := map[string][]byte{loc: mustJSON(t, doc)}
-	watermark := time.Now().Add(-time.Hour)
-
-	t.Run("no commits since watermark skips", func(t *testing.T) {
-		server, fileGets := serveRepo(t, files, nil)
-		defer server.Close()
-		a := newAdapter(t, server)
-		emitted := 0
-		if err := a.Sync(context.Background(), watermark, func(source.Statement) error { emitted++; return nil }); err != nil {
-			t.Fatal(err)
-		}
-		if emitted != 0 {
-			t.Errorf("no-change cycle emitted %d, want 0", emitted)
-		}
-		if *fileGets != 0 {
-			t.Errorf("no-change cycle fetched %d files, want 0", *fileGets)
-		}
-	})
-
-	t.Run("changed file is fetched", func(t *testing.T) {
-		server, fileGets := serveRepo(t, files, []string{loc})
-		defer server.Close()
-		a := newAdapter(t, server)
-		var stmts []source.Statement
-		if err := a.Sync(context.Background(), watermark, func(s source.Statement) error {
-			stmts = append(stmts, s)
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if len(stmts) != 1 {
-			t.Fatalf("changed cycle emitted %d, want 1", len(stmts))
-		}
-		if *fileGets != 1 {
-			t.Errorf("changed cycle fetched %d files, want exactly 1", *fileGets)
-		}
-	})
+// TestAdapter_IgnoresSince: every sync reads the whole snapshot, so a
+// watermark changes nothing — the same rows, one GET, Complete.
+func TestAdapter_IgnoresSince(t *testing.T) {
+	server, gets := serveRepo(t, snapEntry{"pkg/golang/github.com/x/y/scan.openvex.json", oneStatementDoc(t, "CVE-2024-9")})
+	defer server.Close()
+	stmts, res, err := syncAll(t, newAdapter(t, server), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stmts) != 1 || !res.Complete || *gets != 1 {
+		t.Errorf("got %d rows, complete=%v, %d GETs; want 1, true, 1", len(stmts), res.Complete, *gets)
+	}
 }
 
-// TestAdapter_Sync_LFSPointerError: if index.json itself comes back as a Git LFS
-// pointer (quota exhausted), fail with a clear message, not a JSON parse error.
-func TestAdapter_Sync_LFSPointerError(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc(repoPrefix+"/index.json", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 123\n"))
-	})
-	server := httptest.NewServer(mux)
+// TestAdapter_TarOrder: files are emitted in the order the snapshot holds
+// them, not the order index.json lists them, and statements inside a file in
+// file order — so of two statements with the same key the later one lands
+// last and wins the upsert.
+func TestAdapter_TarOrder(t *testing.T) {
+	first := openvex.Document{Context: openvex.Context, Version: 1,
+		Statements: []openvex.Statement{
+			stmt("CVE-2024-1", "not_affected", "vulnerable_code_not_present",
+				scopedProduct("pkg:golang/github.com/a/a", "pkg:golang/z@v1.0.0")),
+			stmt("CVE-2024-1", "not_affected", "inline_mitigations_already_exist",
+				scopedProduct("pkg:golang/github.com/a/a", "pkg:golang/z@v1.0.0")),
+		}}
+	server, _ := serveSnapshot(t, buildSnapshot(t,
+		snapEntry{"index.json", indexJSON(t, "pkg/b/scan.openvex.json", "pkg/a/scan.openvex.json")},
+		snapEntry{"pkg/a/scan.openvex.json", mustJSON(t, first)},
+		snapEntry{"pkg/b/scan.openvex.json", oneStatementDoc(t, "CVE-2024-2")},
+	))
 	defer server.Close()
-	a := newAdapter(t, server)
-	err := a.Sync(context.Background(), time.Time{}, func(source.Statement) error { return nil })
-	if err == nil || !strings.Contains(err.Error(), "Git LFS pointer") {
-		t.Fatalf("want a clear LFS-pointer error, got: %v", err)
+	stmts, _, err := syncAll(t, newAdapter(t, server), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, s := range stmts {
+		got = append(got, s.CVE+"/"+s.Justification)
+	}
+	want := []string{
+		"CVE-2024-1/vulnerable_code_not_present",
+		"CVE-2024-1/inline_mitigations_already_exist",
+		"CVE-2024-2/vulnerable_code_not_present",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("emit order: got %v, want %v", got, want)
+	}
+}
+
+// TestAdapter_Incomplete: a listed file the snapshot lacks, or one that does
+// not parse, is skipped and makes the run incomplete; the rest still emit.
+func TestAdapter_Incomplete(t *testing.T) {
+	good := oneStatementDoc(t, "CVE-2024-9")
+	for name, entries := range map[string][]snapEntry{
+		"listed file missing": {
+			{"index.json", indexJSON(t, "pkg/good/scan.openvex.json", "pkg/gone/scan.openvex.json")},
+			{"pkg/good/scan.openvex.json", good},
+		},
+		"listed file unparseable": {
+			{"index.json", indexJSON(t, "pkg/good/scan.openvex.json", "pkg/bad/scan.openvex.json")},
+			{"pkg/good/scan.openvex.json", good},
+			{"pkg/bad/scan.openvex.json", []byte(`{"statements": [ {not json`)},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, _ := serveSnapshot(t, buildSnapshot(t, entries...))
+			defer server.Close()
+			stmts, res, err := syncAll(t, newAdapter(t, server), time.Time{})
+			if err != nil {
+				t.Fatalf("Sync: %v", err)
+			}
+			if res.Complete {
+				t.Error("want Complete=false")
+			}
+			if len(stmts) != 1 {
+				t.Errorf("emitted %d rows, want the good file's 1", len(stmts))
+			}
+		})
+	}
+}
+
+// TestAdapter_SnapshotErrors: a snapshot that cannot say what Rancher
+// publishes is an error, never an empty Complete run — that would read as the
+// vendor withdrawing every statement.
+func TestAdapter_SnapshotErrors(t *testing.T) {
+	doc := oneStatementDoc(t, "CVE-2024-9")
+	for name, tc := range map[string]struct {
+		entries []snapEntry
+		want    string
+	}{
+		"no index.json": {[]snapEntry{{"pkg/a/scan.openvex.json", doc}}, "no index.json"},
+		"LFS pointer index.json": {[]snapEntry{
+			{"index.json", []byte("version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 123\n")},
+		}, "Git LFS pointer"},
+		"index lists no packages": {[]snapEntry{{"index.json", indexJSON(t)}, {"pkg/a/scan.openvex.json", doc}}, "lists no packages"},
+		"no listed file parses": {[]snapEntry{
+			{"index.json", indexJSON(t, "pkg/a/scan.openvex.json", "pkg/b/scan.openvex.json")},
+			{"pkg/a/scan.openvex.json", []byte("not json")},
+		}, "none of the 2 files"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, _ := serveSnapshot(t, buildSnapshot(t, tc.entries...))
+			defer server.Close()
+			_, res, err := syncAll(t, newAdapter(t, server), time.Time{})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want an error containing %q, got %v", tc.want, err)
+			}
+			if res.Complete {
+				t.Error("a failed Sync must not report Complete")
+			}
+		})
+	}
+}
+
+// TestAdapter_EmitErrorStops: an error from emit is the orchestrator's and
+// stops the sync; it is not one more unparseable file.
+func TestAdapter_EmitErrorStops(t *testing.T) {
+	server, _ := serveRepo(t,
+		snapEntry{"pkg/a/scan.openvex.json", oneStatementDoc(t, "CVE-2024-9")},
+		snapEntry{"pkg/b/scan.openvex.json", oneStatementDoc(t, "CVE-2024-10")})
+	defer server.Close()
+	sentinel := errors.New("disk full")
+	calls := 0
+	_, err := newAdapter(t, server).Sync(context.Background(), time.Time{}, func(source.Statement) error {
+		calls++
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("want the emit error, got %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("emit called %d times, want 1 (the sync must stop at the first error)", calls)
 	}
 }
