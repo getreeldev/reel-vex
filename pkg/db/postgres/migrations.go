@@ -64,6 +64,25 @@ var migrations = []migration{
 		// and the create no-ops. Creating it on the empty table here would force
 		// the slow maintain-during-bulk-load path.
 	}},
+	{version: 2, statements: []string{
+		// adapter_id: the adapter that last inserted or changed the row (an
+		// unchanged re-insert keeps the owner); never part of the primary key.
+		// It is what lets a sweep delete only one adapter's rows. Rows that
+		// exist before this migration keep a NULL owner until their verdict
+		// changes, so they are never removed — acceptable only because every
+		// deploy starts from a fresh database.
+		`ALTER TABLE statements ADD COLUMN IF NOT EXISTS adapter_id TEXT`,
+		// (adapter_id, cve) rather than (adapter_id): Withdraw's held-CVE set
+		// and the CVE-scoped sweep read the index instead of scanning every row
+		// an adapter owns (~11M for Red Hat CSAF, every cycle). A plain CREATE
+		// INDEX is fine: production applies this to an empty table.
+		`CREATE INDEX IF NOT EXISTS idx_statements_adapter ON statements (adapter_id, cve)`,
+		// Removal deletes millions of rows per cycle. With the default scale
+		// factor (0.2 of ~200M+ rows) autovacuum would not run for about a
+		// month, so freed space would not be reused and the table would keep
+		// growing; 1% plus a 100k floor vacuums after every real sweep.
+		`ALTER TABLE statements SET (autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_threshold = 100000)`,
+	}},
 }
 
 // migrate ensures schema_version exists, then applies each pending migration in

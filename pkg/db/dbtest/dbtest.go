@@ -11,6 +11,8 @@
 package dbtest
 
 import (
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -31,11 +33,20 @@ type Store struct {
 	// statsErr, when set, is returned by Stats instead of a computed result.
 	// See SetStatsErr.
 	statsErr error
+	// sweeps holds the open sweep sessions, by adapter id.
+	sweeps map[string]*sweep
+}
+
+// sweep is one open sweep session: the distinct keys recorded, and the count
+// of keys recorded including duplicates (SweepResult.Seen).
+type sweep struct {
+	keys map[db.StatementKey]struct{}
+	seen int64
 }
 
 // New returns an empty in-memory Store.
 func New() *Store {
-	return &Store{vendors: map[string]string{}, adapters: map[string]adapterState{}}
+	return &Store{vendors: map[string]string{}, adapters: map[string]adapterState{}, sweeps: map[string]*sweep{}}
 }
 
 var _ db.Store = (*Store)(nil)
@@ -107,8 +118,11 @@ func samePK(a, b db.Statement) bool {
 }
 
 // BulkInsert replaces-or-appends each statement by primary key. (The real
-// backends' conditional-upsert skip only affects whether `updated` is rewritten
-// on a no-op; for test data correctness a replace is equivalent.)
+// backends' conditional-upsert skip only affects whether `updated` and
+// AdapterID are rewritten on a no-op; for test data correctness a replace is
+// equivalent.) One consequence differs from Postgres: here a row's AdapterID
+// follows the last writer even when nothing changed, where Postgres keeps the
+// owner of an unchanged re-insert.
 func (s *Store) BulkInsert(stmts []db.Statement) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -188,6 +202,7 @@ func (s *Store) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 		} else if st.Scope != "" && !contains(f.Scopes, st.Scope) {
 			continue
 		}
+		st.AdapterID = "" // never selected by the Postgres query
 		out = append(out, st)
 	}
 
@@ -328,4 +343,151 @@ func archLikeAny(productID string, allow []string) bool {
 		}
 	}
 	return false
+}
+
+// StartSweep opens a sweep session, discarding any open one.
+func (s *Store) StartSweep(adapterID string) error {
+	if adapterID == "" {
+		return errors.New("start sweep: empty adapter id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweeps[adapterID] = &sweep{keys: map[db.StatementKey]struct{}{}}
+	return nil
+}
+
+// RecordSeen adds keys to the open session.
+func (s *Store) RecordSeen(adapterID string, keys []db.StatementKey) error {
+	if adapterID == "" {
+		return errors.New("record seen: empty adapter id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sw, ok := s.sweeps[adapterID]
+	if !ok {
+		return fmt.Errorf("record seen: no open sweep for %s", adapterID)
+	}
+	for _, k := range keys {
+		sw.keys[k] = struct{}{}
+	}
+	sw.seen += int64(len(keys))
+	return nil
+}
+
+// FinishSweep mirrors the Postgres backend: the same checks in the same order,
+// the same guard on Owned, and the session ends whatever the outcome.
+func (s *Store) FinishSweep(adapterID string, scope db.SweepScope, maxFraction float64) (db.SweepResult, error) {
+	if adapterID == "" {
+		return db.SweepResult{}, errors.New("finish sweep: empty adapter id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sw, ok := s.sweeps[adapterID]
+	if !ok {
+		return db.SweepResult{}, fmt.Errorf("finish sweep: no open sweep for %s", adapterID)
+	}
+	delete(s.sweeps, adapterID)
+
+	res := db.SweepResult{Seen: sw.seen}
+	if !(maxFraction > 0) {
+		res.Refused, res.Reason = true, "sweep disabled"
+		return res, nil
+	}
+	if scope.All {
+		if sw.seen == 0 {
+			res.Refused, res.Reason = true, "nothing seen"
+			return res, nil
+		}
+	} else if len(scope.CVEs) == 0 {
+		return res, nil
+	}
+
+	keep := make([]db.Statement, 0, len(s.stmts))
+	for _, st := range s.stmts {
+		if st.AdapterID == adapterID && (scope.All || contains(scope.CVEs, st.CVE)) {
+			res.Owned++
+			if _, seen := sw.keys[db.StatementKey{CVE: st.CVE, ProductID: st.ProductID, Scope: st.Scope}]; !seen {
+				res.Deleted++
+				continue
+			}
+		}
+		keep = append(keep, st)
+	}
+	if scope.All && maxFraction < 1 && float64(res.Deleted) > maxFraction*float64(res.Owned) {
+		res.Refused = true
+		res.Reason = fmt.Sprintf("would delete %d of %d owned rows (%.2f%%), over the %.2f%% limit",
+			res.Deleted, res.Owned, 100*float64(res.Deleted)/float64(res.Owned), 100*maxFraction)
+		return res, nil
+	}
+	s.stmts = keep
+	return res, nil
+}
+
+// AbortSweep ends the session without deleting anything.
+func (s *Store) AbortSweep(adapterID string) error {
+	if adapterID == "" {
+		return errors.New("abort sweep: empty adapter id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.sweeps, adapterID)
+	return nil
+}
+
+// Withdraw mirrors the Postgres backend.
+func (s *Store) Withdraw(adapterID string, liveCVEs []string, maxFraction float64) (db.WithdrawResult, error) {
+	if adapterID == "" {
+		return db.WithdrawResult{}, errors.New("withdraw: empty adapter id")
+	}
+	live := map[string]struct{}{}
+	for _, c := range liveCVEs {
+		live[c] = struct{}{}
+	}
+	res := db.WithdrawResult{Live: int64(len(live))}
+	if !(maxFraction > 0) {
+		res.Refused, res.Reason = true, "withdraw disabled"
+		return res, nil
+	}
+	if len(live) == 0 {
+		res.Refused, res.Reason = true, "empty manifest"
+		return res, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	held := map[string]struct{}{}
+	gone := map[string]struct{}{}
+	for _, st := range s.stmts {
+		if st.AdapterID != adapterID {
+			continue
+		}
+		held[st.CVE] = struct{}{}
+		if _, ok := live[st.CVE]; !ok {
+			gone[st.CVE] = struct{}{}
+		}
+	}
+	res.HeldCVEs, res.WithdrawnCVEs = int64(len(held)), int64(len(gone))
+	if maxFraction < 1 && float64(len(gone)) > maxFraction*float64(len(held)) {
+		res.Refused = true
+		res.Reason = fmt.Sprintf("would withdraw %d of %d held CVEs (%.2f%%), over the %.2f%% limit",
+			len(gone), len(held), 100*float64(len(gone))/float64(len(held)), 100*maxFraction)
+		return res, nil
+	}
+	keep := make([]db.Statement, 0, len(s.stmts))
+	for _, st := range s.stmts {
+		if _, ok := gone[st.CVE]; ok && st.AdapterID == adapterID {
+			res.Deleted++
+			continue
+		}
+		keep = append(keep, st)
+	}
+	s.stmts = keep
+	return res, nil
+}
+
+// ResetSweeps ends every open session.
+func (s *Store) ResetSweeps() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweeps = map[string]*sweep{}
+	return nil
 }

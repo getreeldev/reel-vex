@@ -33,11 +33,51 @@ type Statement struct {
 	// QueryStatements only returns scoped rows when QueryFilters.Scopes names
 	// a match.
 	Scope string
+	// AdapterID is the adapter that last inserted or changed the row (an
+	// unchanged re-insert keeps the owner). Never part of the primary key, and
+	// never returned by QueryStatements: it exists so a sweep or a withdrawal
+	// can delete only the rows one adapter is responsible for. Empty is stored
+	// as NULL, and a NULL-owned row is never swept.
+	AdapterID string
 	// Notes is transient conversion provenance (e.g. "converted_from=cyclonedx-vex;
 	// original_justification=...; fidelity=lossy") for user-uploaded VEX that was
 	// normalised on the way in. Never a DB column — empty for every stored row,
 	// set only on in-memory user rows and appended to status_notes by the encoder.
 	Notes string
+}
+
+// StatementKey identifies a statement within one adapter's rows. Vendor and
+// source_format are fixed per adapter, so (cve, product_id, scope) is the rest
+// of the primary key.
+type StatementKey struct{ CVE, ProductID, Scope string }
+
+// SweepScope says which of an adapter's rows a sweep may delete.
+type SweepScope struct {
+	// All sweeps the whole adapter (after a complete sync).
+	All bool
+	// CVEs, when All is false, restricts the sweep to these CVEs (the documents
+	// an incremental sync refreshed). An empty list sweeps nothing.
+	CVEs []string
+}
+
+// SweepResult reports a FinishSweep. Seen counts the keys recorded (duplicates
+// included); Owned is the rows the adapter owned within the scope before the
+// delete; Deleted is the rows removed, or on a guard refusal the rows that
+// would have been. Refused means nothing was deleted, and Reason says why.
+type SweepResult struct {
+	Seen, Owned, Deleted int64
+	Refused              bool
+	Reason               string
+}
+
+// WithdrawResult reports a Withdraw. Live is the distinct CVEs in the vendor's
+// manifest, HeldCVEs the distinct CVEs the adapter owns, WithdrawnCVEs the
+// held CVEs absent from the manifest, and Deleted the rows removed. Refused
+// means nothing was deleted, and Reason says why.
+type WithdrawResult struct {
+	Live, HeldCVEs, WithdrawnCVEs, Deleted int64
+	Refused                                bool
+	Reason                                 string
 }
 
 // Stats holds database coverage statistics.

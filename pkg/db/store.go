@@ -14,6 +14,39 @@ type Store interface {
 	BulkInsert(stmts []Statement) error
 	BulkUpsertAliases(aliases []Alias) error
 
+	// Removal: what a sync no longer emits. Every method taking adapterID
+	// errors on an empty one, and none touches a row with no owner or another
+	// adapter's row.
+	//
+	// StartSweep opens a sweep session for the adapter, discarding any leftover
+	// one, with nothing seen yet.
+	StartSweep(adapterID string) error
+	// RecordSeen adds keys the sync emitted to the open session (duplicates are
+	// fine and count towards Seen). Errors when no session is open.
+	RecordSeen(adapterID string, keys []StatementKey) error
+	// FinishSweep deletes the adapter's rows within scope whose key was not
+	// recorded, then ends the session — on success, refusal and error alike.
+	// Errors when no session is open. maxFraction not > 0 refuses ("sweep
+	// disabled"). Scope All refuses when nothing was seen, and refuses (deleting
+	// nothing) when more than maxFraction of the rows it owned would go;
+	// maxFraction >= 1 disables that guard. Scope CVEs has no guard and needs
+	// nothing seen: a refreshed document is authoritative, so its CVEs keep
+	// exactly the rows this sync emitted — that is what replacing a document
+	// means. An empty CVE list does nothing. When only ending the session
+	// fails, the result still stands and the error says so.
+	FinishSweep(adapterID string, scope SweepScope, maxFraction float64) (SweepResult, error)
+	// AbortSweep ends the session without deleting anything. No open session is
+	// not an error.
+	AbortSweep(adapterID string) error
+	// Withdraw deletes the adapter's rows of every CVE it holds that is absent
+	// from liveCVEs, the vendor's manifest. It refuses when maxFraction is not
+	// > 0, when the manifest is empty, and when more than maxFraction of the
+	// held CVEs would be withdrawn.
+	Withdraw(adapterID string, liveCVEs []string, maxFraction float64) (WithdrawResult, error)
+	// ResetSweeps ends every open session and discards every leftover one,
+	// including those a crashed process left behind.
+	ResetSweeps() error
+
 	// Query path.
 	QueryStatements(f QueryFilters) ([]Statement, error)
 	LookupAliases(sourceNS, sourceID, targetNS string) ([]string, error)
