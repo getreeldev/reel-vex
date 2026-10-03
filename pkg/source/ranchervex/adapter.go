@@ -25,6 +25,21 @@
 // scoped to one image never suppresses the same package in an unrelated image
 // (see pkg/csaf.NormalizeScope and pkg/db.QueryFilters.Scopes).
 //
+// Version lists: within each per-package file, rows are grouped by (CVE,
+// subcomponent without its @version, scope, status, justification), and each
+// group is ONE row (version_kind 'exact') carrying every subcomponent version
+// stated for that verdict; a subcomponent without a version (every deb, rpm
+// and apk one today) or a CPE gives an empty list, which matches any queried
+// version. A file's rows are emitted only once the whole file has parsed, so
+// a file that fails part-way emits nothing rather than partial lists. Keys
+// that repeat inside a file with conflicting justifications (1,072 in the
+// 2026-10-03 snapshot) are separate rows, since the verdict is part of the
+// key. The store replaces a list on upsert rather than merging it, so a key
+// must be emitted once per sync with its complete list: every sync reads the
+// whole snapshot, and no key spans two files (none in the 2026-10-03
+// snapshot) — if one ever did, the two files' lists would overwrite each
+// other.
+//
 // Three classes of statement are skipped, by design:
 //   - Non-CVE-named (~3%: mostly SUSE-SU advisories, a few GHSA). They carry no
 //     CVE alias, and reel-vex keys and serves by CVE, so they would be dead
@@ -42,6 +57,7 @@ package ranchervex
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -50,6 +66,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -365,10 +382,13 @@ type syncCounts struct {
 }
 
 // streamStatements walks the top-level JSON object, decodes the `statements`
-// array element-by-element, and emits a row per (product-scope × subcomponent).
-// Other top-level fields (@context, author, timestamp, …) are skipped.
+// array element-by-element, groups the file's (product-scope × subcomponent)
+// pairs by verdict and, once the whole file has parsed, emits one row per
+// group. Other top-level fields (@context, author, timestamp, …) are skipped.
+// A file that fails to parse emits nothing.
 func (a *Adapter) streamStatements(ctx context.Context, r io.Reader, fallback time.Time, emit func(source.Statement) error) (syncCounts, error) {
 	var counts syncCounts
+	groups := make(fileGroups)
 	dec := json.NewDecoder(r)
 
 	tok, err := dec.Token()
@@ -409,25 +429,92 @@ func (a *Adapter) streamStatements(ctx context.Context, r io.Reader, fallback ti
 			if err := dec.Decode(&st); err != nil {
 				return counts, fmt.Errorf("decode statement: %w", err)
 			}
-			if err := a.emitStatement(st, fallback, emit, &counts); err != nil {
-				return counts, err
-			}
+			collectStatement(st, fallback, groups, &counts)
 		}
 		if _, err := dec.Token(); err != nil { // closing ']'
 			return counts, fmt.Errorf("read statements array end: %w", err)
 		}
 	}
-	return counts, nil
+	n, err := groups.emit(emit)
+	counts.emitted += n
+	return counts, err
 }
 
-// emitStatement turns one OpenVEX statement into zero or more source.Statements
-// — one per (product, subcomponent) pair — and updates counters. CVE-only and
-// subcomponent-bearing statements are emitted; everything else is skipped.
-func (a *Adapter) emitStatement(st openvex.Statement, fallback time.Time, emit func(source.Statement) error, counts *syncCounts) error {
+// groupKey is one exact-list row of a per-package file: a subcomponent
+// without its @version, under one scope, with one verdict.
+type groupKey struct{ cve, product, scope, status, justification string }
+
+type versionGroup struct {
+	versions []string
+	updated  time.Time
+}
+
+// fileGroups collects one per-package file's rows by verdict.
+type fileGroups map[groupKey]*versionGroup
+
+func (g fileGroups) add(k groupKey, version string, ts time.Time) {
+	vg := g[k]
+	if vg == nil {
+		vg = &versionGroup{}
+		g[k] = vg
+	}
+	if version != "" {
+		// Stored percent-decoded, as a caller's version is compared.
+		vg.versions = append(vg.versions, csaf.UnescapeVersion(version))
+	}
+	if ts.After(vg.updated) {
+		vg.updated = ts
+	}
+}
+
+// emit sends one statement per group, in key order so a file always emits the
+// same sequence whatever the order of its statements, and returns how many it
+// sent.
+func (g fileGroups) emit(emit func(source.Statement) error) (int, error) {
+	keys := make([]groupKey, 0, len(g))
+	for k := range g {
+		keys = append(keys, k)
+	}
+	slices.SortFunc(keys, func(a, b groupKey) int {
+		return cmp.Or(cmp.Compare(a.cve, b.cve), cmp.Compare(a.product, b.product), cmp.Compare(a.scope, b.scope),
+			cmp.Compare(a.status, b.status), cmp.Compare(a.justification, b.justification))
+	})
+	n := 0
+	for _, k := range keys {
+		vg := g[k]
+		slices.Sort(vg.versions)
+		idType := "purl"
+		if strings.HasPrefix(k.product, "cpe:") {
+			idType = "cpe"
+		}
+		base, _ := csaf.SplitPURL(k.product)
+		if err := emit(source.Statement{
+			CVE:           k.cve,
+			ProductID:     k.product,
+			BaseID:        base,
+			Versions:      slices.Compact(vg.versions),
+			VersionKind:   "exact",
+			IDType:        idType,
+			Status:        k.status,
+			Justification: k.justification,
+			Scope:         k.scope,
+			Updated:       vg.updated,
+		}); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+// collectStatement adds one OpenVEX statement's (product, subcomponent) pairs
+// to the file's groups and updates the skip counters. CVE-named,
+// subcomponent-bearing statements are kept; everything else is skipped.
+func collectStatement(st openvex.Statement, fallback time.Time, groups fileGroups, counts *syncCounts) {
 	cve := st.Vulnerability.Name
 	if !strings.HasPrefix(cve, "CVE-") {
 		counts.skippedNonCVE++
-		return nil
+		return
 	}
 	ts := parseRFC3339(st.Timestamp, fallback)
 
@@ -442,30 +529,12 @@ func (a *Adapter) emitStatement(st openvex.Statement, fallback time.Time, emit f
 			continue
 		}
 		for _, sub := range openvex.CollectIdentifiers(product.Subcomponents) {
-			idType := "purl"
-			switch {
-			case strings.HasPrefix(sub, "pkg:"):
-			case strings.HasPrefix(sub, "cpe:"):
-				idType = "cpe"
-			default:
+			if !strings.HasPrefix(sub, "pkg:") && !strings.HasPrefix(sub, "cpe:") {
 				bad++
 				continue
 			}
-			base, version := csaf.SplitPURL(sub)
-			if err := emit(source.Statement{
-				CVE:           cve,
-				ProductID:     sub,
-				BaseID:        base,
-				Version:       version,
-				IDType:        idType,
-				Status:        st.Status,
-				Justification: st.Justification,
-				Scope:         scope,
-				Updated:       ts,
-			}); err != nil {
-				return err
-			}
-			counts.emitted++
+			versionless, version := csaf.StripPURLVersion(sub)
+			groups.add(groupKey{cve, versionless, scope, st.Status, st.Justification}, version, ts)
 			rows++
 		}
 	}
@@ -473,7 +542,6 @@ func (a *Adapter) emitStatement(st openvex.Statement, fallback time.Time, emit f
 	if rows == 0 && bad == 0 {
 		counts.skippedNoSub++
 	}
-	return nil
 }
 
 // parseRFC3339 returns the RFC3339-parsed override, or the fallback when the

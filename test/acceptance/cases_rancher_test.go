@@ -91,15 +91,7 @@ func rancherCases() []Case {
 			// the resolver adds it for every PURL carrying a distro, and this
 			// answer depends on it for deb: the Rancher subcomponent has no
 			// distro, a scanner's deb PURL always does.
-			Name: "rancher/purl/a scanner's deb PURL reaches a distro-less subcomponent (distro-stripped candidate)", Superseded: "phase 5", Endpoint: epStatements,
-			Body: body{"cves": ss("CVE-2026-24061"), "scopes": ss(scopeKubeOVN),
-				"products": ss("pkg:deb/ubuntu/inetutils-ping@2.5-3ubuntu4?arch=amd64&distro=ubuntu-24.04&epoch=2")},
-			Status: 200, Rows: 1,
-			Want: []Stmt{{CVE: "CVE-2026-24061", Supplier: "rancher", Status: "not_affected", Justification: "vulnerable_code_not_in_execute_path",
-				Timestamp: tsRVKube, Notes: scoped(notes("openvex", "direct"), scopeKubeOVN), Products: ss("pkg:deb/ubuntu/inetutils-ping?distro=ubuntu-24.04"), Evidence: evKubeOVN}},
-		},
-		{
-			Name: "rancher/exact/a scanner's deb PURL reaches a distro-less subcomponent", Pending: "phase 5", Endpoint: epStatements,
+			Name: "rancher/exact/a scanner's deb PURL reaches a distro-less subcomponent", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2026-24061"), "scopes": ss(scopeKubeOVN),
 				"products": ss("pkg:deb/ubuntu/inetutils-ping@2.5-3ubuntu4?arch=amd64&distro=ubuntu-24.04&epoch=2")},
 			Status: 200, Rows: 1,
@@ -130,52 +122,24 @@ func rancherCases() []Case {
 
 		// Exact versions (Phase 5).
 		{
-			Name: "rancher/purl/versioned golang query, scope given with its version", Superseded: "phase 5", Endpoint: epStatements,
-			Body:   body{"cves": ss("CVE-2025-22870"), "products": ss("pkg:golang/golang.org/x/net@v0.35.0"), "scopes": ss("pkg:golang/github.com/open-policy-agent/opa@v1.2.0")},
-			Status: 200, Rows: 1,
-			Want: []Stmt{rancherOPA(opaDirect, "pkg:golang/golang.org/x/net")},
-		},
-		{
-			Name: "rancher/exact/listed version", Pending: "phase 5", Endpoint: epStatements,
+			Name: "rancher/exact/listed version", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2025-22870"), "products": ss("pkg:golang/golang.org/x/net@v0.35.0"), "scopes": ss(scopeOPA)},
 			Status: 200, Rows: 1,
 			Want: []Stmt{rancherOPA(opaDirect, "pkg:golang/golang.org/x/net@v0.35.0")},
 		},
 		{
-			Name: "rancher/purl/unlisted version is answered version-blind", Superseded: "phase 5", Endpoint: epStatements,
-			Body:   body{"cves": ss("CVE-2025-22870"), "products": ss("pkg:golang/golang.org/x/net@v0.36.0"), "scopes": ss(scopeOPA)},
-			Status: 200, Rows: 1,
-			Want: []Stmt{rancherOPA(opaDirect, "pkg:golang/golang.org/x/net")},
-		},
-		{
-			Name: "rancher/exact/unlisted version gets nothing", Pending: "phase 5", Endpoint: epStatements,
+			Name: "rancher/exact/unlisted version gets nothing", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2025-22870"), "products": ss("pkg:golang/golang.org/x/net@v0.36.0"), "scopes": ss(scopeOPA)},
 			Status: 204, Rows: 0,
 		},
 		{
-			Name: "rancher/purl/versionless query echoes the caller's base", Superseded: "phase 5", Endpoint: epStatements,
-			Body:   body{"cves": ss("CVE-2025-22870"), "products": ss("pkg:golang/golang.org/x/net"), "scopes": ss(scopeOPA)},
-			Status: 200, Rows: 1,
-			Want: []Stmt{rancherOPA(opaDirect, "pkg:golang/golang.org/x/net")},
-		},
-		{
-			Name: "rancher/exact/versionless query gets the listed version", Pending: "phase 5", Endpoint: epStatements,
+			Name: "rancher/exact/versionless query gets the listed version", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2025-22870"), "products": ss("pkg:golang/golang.org/x/net"), "scopes": ss(scopeOPA)},
 			Status: 200, Rows: 1,
 			Want: []Stmt{rancherOPA(opaDirect, "pkg:golang/golang.org/x/net@v0.35.0")},
 		},
 		{
-			Name: "rancher/broad/products only, with the scope", Superseded: "phase 5", Endpoint: epStatements,
-			Body:   body{"products": ss("pkg:golang/golang.org/x/net@v0.35.0"), "scopes": ss(scopeOPA)},
-			Status: 200, Rows: 2,
-			Want: []Stmt{
-				rancherOPA(opaDirect, "pkg:golang/golang.org/x/net"),
-				{CVE: "CVE-2025-22872", Supplier: "rancher", Status: "not_affected", Justification: "vulnerable_code_not_present", Timestamp: tsRVOPA, Notes: opaDirect,
-					Products: ss("pkg:golang/golang.org/x/net"), Evidence: evOPANet22872},
-			},
-		},
-		{
-			Name: "rancher/exact/broad products only, with the scope", Pending: "phase 5", Endpoint: epStatements,
+			Name: "rancher/exact/broad products only, with the scope", Endpoint: epStatements,
 			Body:   body{"products": ss("pkg:golang/golang.org/x/net@v0.35.0"), "scopes": ss(scopeOPA)},
 			Status: 200, Rows: 2,
 			Want: []Stmt{
@@ -185,18 +149,11 @@ func rancherCases() []Case {
 			},
 		},
 		{
-			Name: "rancher/purl/a subcomponent without a version", Superseded: "phase 5", Endpoint: epStatements,
-			Body:   body{"cves": ss("CVE-2022-37434"), "vendors": ss("rancher"), "products": ss("pkg:apk/alpine/zlib@1.2.12-r3?arch=x86_64&distro=3.16.2"), "scopes": ss(scopeSachetDocker)},
-			Status: 200, Rows: 1,
-			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "rancher", Status: "not_affected", Justification: "vulnerable_code_not_in_execute_path",
-				Timestamp: tsRVSachet, Notes: scoped(notes("openvex", "direct"), scopeSachetDocker), Products: ss("pkg:apk/alpine/zlib?distro=3.16.2"), Evidence: evSachetDocker}},
-		},
-		{
 			// An empty list means the vendor stated the verdict with no version:
 			// it matches any version (§2), and is rendered as the vendor's
 			// versionless product_id, never the caller's identifier
 			// (PLAN-VEX-SWEEP.md Phase 5 step 4, decided 2026-10-03).
-			Name: "rancher/exact/an empty version list matches any version", Pending: "phase 5", Endpoint: epStatements,
+			Name: "rancher/exact/an empty version list matches any version", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2022-37434"), "vendors": ss("rancher"), "products": ss("pkg:apk/alpine/zlib@1.2.12-r3?arch=x86_64&distro=3.16.2"), "scopes": ss(scopeSachetDocker)},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "rancher", Status: "not_affected", Justification: "vulnerable_code_not_in_execute_path",

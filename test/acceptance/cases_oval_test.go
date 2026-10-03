@@ -51,20 +51,7 @@ func ubuntuOVALCases() []Case {
 		{
 			// The same CVE and package from Canonical's two feeds stay two
 			// statements (source_format differs).
-			Name: "ubuntu/cross-format/OpenVEX and OVAL for one package", Superseded: "phase 5", Endpoint: epStatements,
-			Body:   body{"cves": ss("CVE-2022-37434"), "products": ss("pkg:deb/ubuntu/libklibc@2.0.13-4ubuntu0.2?arch=amd64&distro=ubuntu-24.04")},
-			Status: 200, Rows: 8,
-			Want: []Stmt{
-				{CVE: "CVE-2022-37434", Supplier: "ubuntu", Status: "fixed", Timestamp: tsUV37434, Notes: notes("openvex", "direct"),
-					Products: ss("pkg:deb/ubuntu/libklibc?distro=ubuntu-24.04"),
-					Evidence: "UV vex/cve/2022/CVE-2022-37434.json statements[0] fixed: libklibc@2.0.13-4ubuntu0.2 distro=noble (7 arches)"},
-				{CVE: "CVE-2022-37434", Supplier: "ubuntu", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"),
-					Products: ss("pkg:deb/ubuntu/libklibc?distro=ubuntu-24.04"),
-					Evidence: "UO definition oval:com.ubuntu.noble:def:673620000000 (USN-6736-2): libklibc < 2.0.13-4ubuntu0.1"},
-			},
-		},
-		{
-			Name: "ubuntu/exact/OpenVEX and OVAL for one package", Pending: "phase 5", Endpoint: epStatements,
+			Name: "ubuntu/exact/OpenVEX and OVAL for one package", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2022-37434"), "products": ss("pkg:deb/ubuntu/libklibc@2.0.13-4ubuntu0.2?arch=amd64&distro=ubuntu-24.04")},
 			Status: 200, Rows: 8,
 			Want: []Stmt{

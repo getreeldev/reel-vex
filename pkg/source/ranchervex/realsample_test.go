@@ -31,13 +31,15 @@ func TestAdapter_RealSample(t *testing.T) {
 		t.Error("the real sample parsed whole; want Complete")
 	}
 
-	// The 4 CVE-named statements emit (one subcomponent each); the SUSE-SU and
-	// GHSA statements are skipped.
-	if len(stmts) != 4 {
-		t.Fatalf("emitted %d rows, want 4: %+v", len(stmts), stmts)
+	// The 4 CVE-named statements (one subcomponent each) make 3 rows: the two
+	// kube-api-auth statements state one verdict for two versions of one
+	// module, so they are one exact-list row. The SUSE-SU and GHSA statements
+	// are skipped.
+	if len(stmts) != 3 {
+		t.Fatalf("emitted %d rows, want 3: %+v", len(stmts), stmts)
 	}
 
-	var sawHarvester, sawStdlib bool
+	var sawHarvester, sawStdlib, sawKubeAPIAuth bool
 	for _, s := range stmts {
 		if !strings.HasPrefix(s.CVE, "CVE-") {
 			t.Errorf("emitted a non-CVE row: %q", s.CVE)
@@ -64,16 +66,28 @@ func TestAdapter_RealSample(t *testing.T) {
 			if s.BaseID != "pkg:golang/github.com/rancher/rancher" {
 				t.Errorf("harvester-scoped base_id: got %q", s.BaseID)
 			}
-			if !strings.HasPrefix(s.Version, "v0.0.0") {
-				t.Errorf("harvester-scoped version: got %q", s.Version)
+			if len(s.Versions) != 1 || !strings.HasPrefix(s.Versions[0], "v0.0.0") {
+				t.Errorf("harvester-scoped versions: got %v", s.Versions)
 			}
 		}
 		if s.BaseID == "pkg:golang/stdlib" {
 			sawStdlib = true
-			if s.Version != "v1.19.2" {
-				t.Errorf("stdlib version: got %q", s.Version)
+			if strings.Join(s.Versions, ",") != "v1.19.2" {
+				t.Errorf("stdlib versions: got %v", s.Versions)
 			}
 		}
+		if s.Scope == "pkg:golang/github.com/rancher/kube-api-auth" {
+			sawKubeAPIAuth = true
+			if len(s.Versions) != 2 {
+				t.Errorf("kube-api-auth: want one row carrying both versions, got %v", s.Versions)
+			}
+		}
+		if s.VersionKind != "exact" || s.Version != "" {
+			t.Errorf("want an exact-list row with no single Version: %+v", s)
+		}
+	}
+	if !sawKubeAPIAuth {
+		t.Error("expected the kube-api-auth row")
 	}
 	if !sawHarvester {
 		t.Error("expected the harvester-scoped CVE-2019-11881 row")

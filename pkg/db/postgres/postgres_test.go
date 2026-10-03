@@ -179,6 +179,155 @@ func TestPG(t *testing.T) {
 	}
 
 	testSweeps(t, d, dsn)
+	testExactLists(t, d)
+}
+
+// exactRow builds an exact-list Ubuntu row for CVE-2024-1234 on 22.04.
+func exactRow(cve, name, arch, status, justification string, versions ...string) db.Statement {
+	return db.Statement{Vendor: "ubuntu", CVE: cve,
+		ProductID: "pkg:deb/ubuntu/" + name + "?arch=" + arch + "&distro=ubuntu-22.04",
+		BaseID:    "pkg:deb/ubuntu/" + name + "?distro=ubuntu-22.04", Versions: versions, VersionKind: "exact",
+		IDType: "purl", Status: status, Justification: justification, Updated: "2026-06-01T00:00:00Z",
+		SourceFormat: "openvex", AdapterID: "ubuntu-vex"}
+}
+
+func ubuntuBase(name string) string { return "pkg:deb/ubuntu/" + name + "?distro=ubuntu-22.04" }
+
+// testExactLists covers strict matching of exact-list rows in SQL: the
+// canonical example, the passthrough of every other row, honest LIMIT, and a
+// plan that stays on the covering index.
+func testExactLists(t *testing.T, d *DB) {
+	ctx := t.Context()
+	if _, err := d.pool.Exec(ctx, `TRUNCATE statements`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	const cve = "CVE-2024-1234"
+	rows := []db.Statement{
+		exactRow(cve, "openssl", "amd64", "fixed", "", "1.10", "1.11"),
+		exactRow(cve, "zlib", "amd64", "not_affected", "vulnerable_code_not_present", "1.2", "1.3"),
+		exactRow(cve, "curl", "amd64", "affected", "", "7.81"),
+		exactRow(cve, "glibc", "amd64", "affected", "", "2.35-1"),
+		exactRow(cve, "glibc", "amd64", "fixed", "", "2.35-2"),
+		// The same package on arm64 lists another build; another CVE lists
+		// another version; a verdict stated with no version has an empty list.
+		exactRow(cve, "openssl", "arm64", "fixed", "", "1.12"),
+		exactRow("CVE-2024-9999", "openssl", "amd64", "fixed", "", "1.09"),
+		exactRow(cve, "bash", "amd64", "not_affected", "component_not_present"),
+		// A kind '' row passes through whatever version is asked.
+		{Vendor: "debian", CVE: cve, ProductID: "pkg:deb/ubuntu/openssl?distro=ubuntu-22.04",
+			BaseID: ubuntuBase("openssl"), Versions: []string{"0.9"}, IDType: "purl", Status: "fixed",
+			Updated: "2026-06-01T00:00:00Z", SourceFormat: "oval"},
+	}
+	// Filler so the planner faces a table where the covering index matters.
+	for i := 0; i < 30000; i++ {
+		f := exactRow(fmt.Sprintf("CVE-2023-%d", i%500), fmt.Sprintf("pkg%d", i/500), "amd64", "fixed", "", fmt.Sprintf("1.%d", i%7))
+		rows = append(rows, f)
+	}
+	if err := d.BulkInsert(rows); err != nil {
+		t.Fatalf("BulkInsert: %v", err)
+	}
+	if err := d.EnsureCoveringIndex(); err != nil {
+		t.Fatalf("EnsureCoveringIndex: %v", err)
+	}
+	// VACUUM sets the visibility map, as autovacuum does in production;
+	// without it an index-only scan looks no cheaper than a heap scan.
+	if _, err := d.pool.Exec(ctx, `VACUUM ANALYZE statements`); err != nil {
+		t.Fatalf("vacuum: %v", err)
+	}
+
+	pv := func(base, version string) db.BaseVersion { return db.BaseVersion{Base: base, Version: version} }
+	render := func(got []db.Statement) []string {
+		var out []string
+		for _, s := range got {
+			out = append(out, fmt.Sprintf("%s %s %s %s %v", s.Vendor, s.CVE, s.ProductID, s.Status, s.Versions))
+		}
+		return out
+	}
+	query := func(t *testing.T, f db.QueryFilters, want ...string) {
+		t.Helper()
+		got, err := d.QueryStatements(f)
+		if err != nil {
+			t.Fatalf("QueryStatements: %v", err)
+		}
+		if g := render(got); strings.Join(g, "\n") != strings.Join(want, "\n") {
+			t.Errorf("got:\n%s\nwant:\n%s", strings.Join(g, "\n"), strings.Join(want, "\n"))
+		}
+	}
+	amd := func(name string) string { return "pkg:deb/ubuntu/" + name + "?arch=amd64&distro=ubuntu-22.04" }
+	arm := func(name string) string { return "pkg:deb/ubuntu/" + name + "?arch=arm64&distro=ubuntu-22.04" }
+
+	t.Run("a versioned query gets only the verdict listing that version, narrowed to it", func(t *testing.T) {
+		query(t, db.QueryFilters{CVEs: []string{cve, "CVE-2024-9999"}, ProductBaseIDs: []string{ubuntuBase("openssl")},
+			ExactVersions: []db.BaseVersion{pv(ubuntuBase("openssl"), "1.11")}},
+			"ubuntu "+cve+" "+amd("openssl")+" fixed [1.11]",
+			"debian "+cve+" pkg:deb/ubuntu/openssl?distro=ubuntu-22.04 fixed [0.9]")
+	})
+	t.Run("an unlisted version matches nothing exact", func(t *testing.T) {
+		query(t, db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{ubuntuBase("openssl")},
+			ExactVersions: []db.BaseVersion{pv(ubuntuBase("openssl"), "1.09")}},
+			"debian "+cve+" pkg:deb/ubuntu/openssl?distro=ubuntu-22.04 fixed [0.9]")
+	})
+	t.Run("no version keeps every list whole", func(t *testing.T) {
+		query(t, db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{ubuntuBase("openssl"), ubuntuBase("glibc")},
+			ExactVersions: []db.BaseVersion{pv(ubuntuBase("openssl"), ""), pv(ubuntuBase("glibc"), "")}},
+			"ubuntu "+cve+" "+amd("glibc")+" affected [2.35-1]",
+			"ubuntu "+cve+" "+amd("glibc")+" fixed [2.35-2]",
+			"ubuntu "+cve+" "+amd("openssl")+" fixed [1.10 1.11]",
+			"ubuntu "+cve+" "+arm("openssl")+" fixed [1.12]",
+			"debian "+cve+" pkg:deb/ubuntu/openssl?distro=ubuntu-22.04 fixed [0.9]")
+	})
+	t.Run("glibc at one build gets its own verdict only", func(t *testing.T) {
+		query(t, db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{ubuntuBase("glibc")},
+			ExactVersions: []db.BaseVersion{pv(ubuntuBase("glibc"), "2.35-1")}},
+			"ubuntu "+cve+" "+amd("glibc")+" affected [2.35-1]")
+	})
+	t.Run("a base also named without a version is not narrowed", func(t *testing.T) {
+		query(t, db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{ubuntuBase("glibc")},
+			ExactVersions: []db.BaseVersion{pv(ubuntuBase("glibc"), "2.35-1"), pv(ubuntuBase("glibc"), "")}},
+			"ubuntu "+cve+" "+amd("glibc")+" affected [2.35-1]",
+			"ubuntu "+cve+" "+amd("glibc")+" fixed [2.35-2]")
+	})
+	t.Run("each product is paired with its own version; an empty list matches any", func(t *testing.T) {
+		query(t, db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{ubuntuBase("curl"), ubuntuBase("zlib"), ubuntuBase("bash")},
+			ExactVersions: []db.BaseVersion{pv(ubuntuBase("curl"), "1.2"), pv(ubuntuBase("zlib"), "1.3"), pv(ubuntuBase("bash"), "5.1")}},
+			"ubuntu "+cve+" "+amd("bash")+" not_affected []",
+			"ubuntu "+cve+" "+amd("zlib")+" not_affected [1.3]")
+	})
+	t.Run("an arm64 list never admits an amd64 row", func(t *testing.T) {
+		query(t, db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{ubuntuBase("openssl")},
+			ExactVersions: []db.BaseVersion{pv(ubuntuBase("openssl"), "1.12")}},
+			"ubuntu "+cve+" "+arm("openssl")+" fixed [1.12]",
+			"debian "+cve+" pkg:deb/ubuntu/openssl?distro=ubuntu-22.04 fixed [0.9]")
+	})
+	t.Run("limit counts the rows kept", func(t *testing.T) {
+		// Without the filter in SQL, the first row by order (glibc affected)
+		// would fill the page and then be dropped.
+		query(t, db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{ubuntuBase("glibc")},
+			ExactVersions: []db.BaseVersion{pv(ubuntuBase("glibc"), "2.35-2")}, Limit: 1},
+			"ubuntu "+cve+" "+amd("glibc")+" fixed [2.35-2]")
+	})
+
+	t.Run("plan stays on the indexes the query used without it", func(t *testing.T) {
+		bases := []string{ubuntuBase("openssl"), ubuntuBase("glibc"), ubuntuBase("pkg3")}
+		versions := []db.BaseVersion{pv(bases[0], "1.11"), pv(bases[1], "2.35-1"), pv(bases[2], "1.3")}
+		for name, f := range map[string]db.QueryFilters{
+			"cve":   {CVEs: []string{cve}, ProductBaseIDs: bases},
+			"broad": {ProductBaseIDs: bases, Limit: 50001},
+		} {
+			q, args, _ := statementsQuery(f)
+			without := explain(t, d, q, args...)
+			f.ExactVersions = versions
+			q, args, _ = statementsQuery(f)
+			with := explain(t, d, q, args...)
+			t.Logf("%s plan without exact versions:\n%s\n%s plan with:\n%s", name, without, name, with)
+			if scanNodes(with) != scanNodes(without) || strings.Contains(with, "Seq Scan") || strings.Contains(with, "SubPlan") {
+				t.Errorf("%s: the exact-list filter changed the access path or added a seq scan or SubPlan:\nwithout:\n%s\nwith:\n%s", name, without, with)
+			}
+			if name == "broad" && !strings.Contains(with, "Index Only Scan using idx_statements_broad") {
+				t.Errorf("broad: want an index-only scan of the covering index:\n%s", with)
+			}
+		}
+	})
 }
 
 // sweepRow builds a statement owned by adapter (empty = NULL owner). Every row
@@ -859,6 +1008,21 @@ func testSweeps(t *testing.T, d *DB, dsn string) {
 			t.Fatalf("QueryStatements on v3 = %+v, %v; want the fixed and the affected row", got2, err)
 		}
 	})
+}
+
+// scanNodes is a plan's access path: its scan nodes, in order, without costs.
+func scanNodes(plan string) string {
+	var out []string
+	for _, l := range strings.Split(plan, "\n") {
+		if i := strings.Index(l, "Scan"); i >= 0 {
+			l = strings.TrimSpace(l)
+			if j := strings.Index(l, "  (cost="); j >= 0 {
+				l = l[:j]
+			}
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // explain returns the text plan of q run with args on the pool.

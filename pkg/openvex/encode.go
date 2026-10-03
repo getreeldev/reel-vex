@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
 )
 
@@ -207,7 +208,8 @@ func stmtKey(s db.Statement) string {
 //   - Products come from baseToInputs[stmt.BaseID]; these are the user's
 //     original inputs (base form) that expanded to match this row. Fallback
 //     to the statement's own ProductID when the map is empty (defensive —
-//     the join shouldn't allow it in practice).
+//     the join shouldn't allow it in practice). An exact-list row is the
+//     exception: it is rendered per version (see rowProducts).
 //   - PURL inputs land in identifiers.purl AND @id (Trivy matches on PURL).
 //   - CPE inputs land in identifiers.cpe23 only (Trivy ignores CPEs; other
 //     consumers can still use them).
@@ -218,16 +220,10 @@ func stmtKey(s db.Statement) string {
 //     source_format + match_reason (+ scope for product-scoped rows) for
 //     diagnostics (reel-vex fields with no direct OpenVEX equivalent).
 func toStatement(s db.Statement, baseToInputs map[string][]string, baseToReason map[string]string) Statement {
-	rawInputs := baseToInputs[s.BaseID]
-	if len(rawInputs) == 0 {
-		rawInputs = []string{s.ProductID}
-	}
-	inputs := make([]string, len(rawInputs))
-	copy(inputs, rawInputs)
-	sort.Strings(inputs)
-	products := make([]Component, 0, len(inputs))
-	for _, in := range inputs {
-		products = append(products, componentFor(in))
+	ids := rowProducts(s, baseToInputs)
+	products := make([]Component, 0, len(ids))
+	for _, id := range ids {
+		products = append(products, componentFor(id))
 	}
 
 	// status_notes carries diagnostic provenance reel-vex wants to surface
@@ -273,6 +269,39 @@ func toStatement(s db.Statement, baseToInputs map[string][]string, baseToReason 
 		out.ActionStatement = "Follow vendor advisory for remediation."
 	}
 	return out
+}
+
+// rowProducts returns the identifiers a row is rendered under, sorted.
+//
+// An exact-list row (db.VersionKindExact) is rendered as the vendor published
+// it: its versionless product_id with each listed version put back before the
+// qualifiers, one identifier per version, or the versionless product_id itself
+// when the list is empty (the vendor stated no version). The store has already
+// narrowed the list to the version a versioned query matched, so a no-version
+// query gets every listed version under its own verdict and a versioned one
+// only its own. The caller's identifier is never echoed for such a row: its
+// base form carries no version, and two verdicts of one package would read as
+// contradictory statements about the same name.
+//
+// Every other row echoes the caller's inputs that expanded to its base_id
+// (baseToInputs), falling back to its own product_id when there are none.
+func rowProducts(s db.Statement, baseToInputs map[string][]string) []string {
+	var ids []string
+	switch {
+	case s.VersionKind == db.VersionKindExact && len(s.Versions) > 0:
+		ids = make([]string, 0, len(s.Versions))
+		for _, v := range s.Versions {
+			ids = append(ids, csaf.InsertPURLVersion(s.ProductID, v))
+		}
+	case s.VersionKind == db.VersionKindExact:
+		ids = []string{s.ProductID}
+	case len(baseToInputs[s.BaseID]) > 0:
+		ids = append([]string(nil), baseToInputs[s.BaseID]...)
+	default:
+		ids = []string{s.ProductID}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // componentFor classifies an identifier and places it in the right

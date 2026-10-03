@@ -133,3 +133,94 @@ func ArchIndependent(arch string) bool {
 	}
 	return false
 }
+
+// StripPURLVersion splits a PURL into the identifier without its @version and
+// the version itself. Unlike SplitPURL, every qualifier and the subpath are
+// kept, as written:
+//
+//	pkg:deb/ubuntu/openssl@3.0.2-0ubuntu1.10?arch=amd64&distro=ubuntu-22.04
+//	    → pkg:deb/ubuntu/openssl?arch=amd64&distro=ubuntu-22.04, 3.0.2-0ubuntu1.10
+//
+// The version is the text after the first '@' of the last path segment (a
+// namespace may carry an '@', a name may not), returned as written. Non-PURL
+// identifiers and PURLs without a version are returned unchanged with an
+// empty version.
+func StripPURLVersion(id string) (versionless, version string) {
+	if !strings.HasPrefix(id, "pkg:") {
+		return id, ""
+	}
+	end := len(id)
+	if i := strings.IndexAny(id, "?#"); i >= 0 {
+		end = i
+	}
+	start := strings.LastIndexByte(id[:end], '/') + 1
+	at := strings.IndexByte(id[start:end], '@')
+	if at < 0 {
+		return id, ""
+	}
+	at += start
+	return id[:at] + id[end:], id[at+1 : end]
+}
+
+// InsertPURLVersion is the inverse of StripPURLVersion: it puts @version into
+// a versionless PURL before its qualifiers and subpath. An empty version, or
+// an identifier that is not a PURL, is returned unchanged.
+func InsertPURLVersion(versionless, version string) string {
+	if version == "" || !strings.HasPrefix(versionless, "pkg:") {
+		return versionless
+	}
+	end := len(versionless)
+	if i := strings.IndexAny(versionless, "?#"); i >= 0 {
+		end = i
+	}
+	return versionless[:end] + "@" + version + versionless[end:]
+}
+
+// MatchVersion returns the version a caller's PURL names, in the form an
+// exact-list row stores it: percent-decoded (UnescapeVersion), and with a
+// non-zero `epoch` qualifier folded in as "<epoch>:<version>" when the version
+// carries no epoch of its own — Canonical writes epochs inline
+// (bind9@1:9.11.3+dfsg-1ubuntu1.17), scanners write them as a qualifier.
+// Empty for a non-PURL or a PURL without a version.
+func MatchVersion(id string) string {
+	_, v := StripPURLVersion(id)
+	if v == "" {
+		return ""
+	}
+	v = UnescapeVersion(v)
+	if strings.Contains(v, ":") {
+		return v
+	}
+	q := strings.IndexByte(id, '?')
+	if q < 0 {
+		return v
+	}
+	qualifiers := id[q+1:]
+	if i := strings.IndexByte(qualifiers, '#'); i >= 0 {
+		qualifiers = qualifiers[:i]
+	}
+	for _, kv := range strings.Split(qualifiers, "&") {
+		k, val, ok := strings.Cut(kv, "=")
+		if !ok || k != "epoch" {
+			continue
+		}
+		if val = UnescapeVersion(val); strings.Trim(val, "0") != "" {
+			return val + ":" + v
+		}
+	}
+	return v
+}
+
+// UnescapeVersion percent-decodes a PURL version with url.PathUnescape, so
+// "%2B" and a literal '+' compare equal. Never url.QueryUnescape, which reads
+// the '+' of "+dfsg" as a space. A version that does not decode is returned
+// as written.
+func UnescapeVersion(v string) string {
+	if !strings.Contains(v, "%") {
+		return v
+	}
+	if u, err := url.PathUnescape(v); err == nil {
+		return u
+	}
+	return v
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -598,4 +599,56 @@ func TestSweep_PanicOutOfSyncAborts(t *testing.T) {
 	}
 	wantRows(t, s, "CVE-1", 1, 2)
 	oneLine(t, logs, "sweep", "scope=cves:0", "skipped=aborted")
+}
+
+// TestExactLists_ChurnAcrossCompleteSyncs: an exact-list feed emits one row per
+// verdict carrying its whole list, every complete sync. Across two syncs a
+// version dropped from a list updates the row in place, a version whose verdict
+// changed moves between rows, and a verdict whose list emptied is not emitted
+// and the whole-feed sweep removes it.
+func TestExactLists_ChurnAcrossCompleteSyncs(t *testing.T) {
+	logs := captureLogs(t)
+	s := dbtest.New()
+	row := func(product, status string, versions ...string) source.Statement {
+		return source.Statement{CVE: "CVE-1", ProductID: "pkg:deb/ubuntu/" + product + "?arch=amd64&distro=ubuntu-22.04",
+			BaseID: "pkg:deb/ubuntu/" + product + "?distro=ubuntu-22.04", Versions: versions, VersionKind: "exact",
+			Status: status, Updated: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)}
+	}
+	sync := func(stmts ...source.Statement) {
+		t.Helper()
+		if err := runAdapter(context.Background(), fake("ubuntu-vex", source.SyncResult{Complete: true}, emitting(stmts...)), s,
+			Options{SweepMaxFraction: 0.5}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stored := func() []string {
+		t.Helper()
+		got, err := s.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-1"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, r := range got {
+			out = append(out, fmt.Sprintf("%s %s %v", r.ProductID[len("pkg:deb/ubuntu/"):strings.IndexByte(r.ProductID, '?')], r.Status, r.Versions))
+		}
+		return out
+	}
+
+	sync(row("openssl", "fixed", "1.10", "1.11"), row("glibc", "affected", "2.35-1"), row("glibc", "fixed", "2.35-2"),
+		row("curl", "affected", "7.81"))
+	want := []string{"curl affected [7.81]", "glibc affected [2.35-1]", "glibc fixed [2.35-2]", "openssl fixed [1.10 1.11]"}
+	if got := stored(); !slices.Equal(got, want) {
+		t.Fatalf("after the first sync: %v, want %v", got, want)
+	}
+
+	// openssl 1.10 is dropped; glibc 2.35-1 is now fixed, so the affected list
+	// is empty and that verdict is not emitted at all. Only that row is
+	// deleted: the other two changed in place.
+	logs.Reset()
+	sync(row("openssl", "fixed", "1.11"), row("glibc", "fixed", "2.35-1", "2.35-2"), row("curl", "affected", "7.81"))
+	want = []string{"curl affected [7.81]", "glibc fixed [2.35-1 2.35-2]", "openssl fixed [1.11]"}
+	if got := stored(); !slices.Equal(got, want) {
+		t.Fatalf("after the second sync: %v, want %v", got, want)
+	}
+	oneLine(t, logs, "sweep", "scope=all", "seen=3", "owned=4", "deleted=1")
 }

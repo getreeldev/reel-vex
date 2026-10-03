@@ -350,25 +350,13 @@ func analyzeCases() []Case {
 		// most actionable state over every matched row of the CVE
 		// (not_affected > resolved > in_triage > exploitable).
 		{
-			Name: "analyze/rollup/Ubuntu fixed and affected builds of one release", Superseded: "phase 5", Endpoint: epAnalyze,
-			Body:   body{"sbom": trivySBOM(image, ss(microcodeAffected), sbomVuln{"CVE-2022-33972", ss(microcodeAffected)})},
-			Status: 200, Rows: 6,
-			Vulns: []Vuln{{ID: "CVE-2022-33972", State: "resolved", Affects: ss(link(microcodeAffected)), Evidence: evMicrocodeFixed + "; " + evMicrocodeAffected}},
-		},
-		{
-			Name: "analyze/exact/the version's own verdict", Pending: "phase 5", Endpoint: epAnalyze,
+			Name: "analyze/exact/the version's own verdict", Endpoint: epAnalyze,
 			Body:   body{"sbom": trivySBOM(image, ss(microcodeAffected), sbomVuln{"CVE-2022-33972", ss(microcodeAffected)})},
 			Status: 200, Rows: 3,
 			Vulns: []Vuln{{ID: "CVE-2022-33972", State: "exploitable", Affects: ss(link(microcodeAffected)), Evidence: evMicrocodeAffected}},
 		},
 		{
-			Name: "analyze/rollup/an unlisted Ubuntu version is answered version-blind", Superseded: "phase 5", Endpoint: epAnalyze,
-			Body:   body{"sbom": trivySBOM(image, ss(microcodeUnlisted), sbomVuln{"CVE-2022-33972", ss(microcodeUnlisted)})},
-			Status: 200, Rows: 6,
-			Vulns: []Vuln{{ID: "CVE-2022-33972", State: "resolved", Affects: ss(link(microcodeUnlisted)), Evidence: evMicrocodeFixed + "; " + evMicrocodeAffected}},
-		},
-		{
-			Name: "analyze/exact/an unlisted version leaves no analysis", Pending: "phase 5", Endpoint: epAnalyze,
+			Name: "analyze/exact/an unlisted version leaves no analysis", Endpoint: epAnalyze,
 			Body:   body{"sbom": trivySBOM(image, ss(microcodeUnlisted), sbomVuln{"CVE-2022-33972", ss(microcodeUnlisted)})},
 			Status: 200, Rows: 0,
 			Vulns: []Vuln{{ID: "CVE-2022-33972", Affects: ss(link(microcodeUnlisted)),
@@ -436,14 +424,7 @@ func analyzeCases() []Case {
 				Evidence: "AL amzn2 updateinfo <update> ALAS2-2023-1957: ca-certificates"}},
 		},
 		{
-			Name: "statements/sbom/the SBOM root opts in its scoped rows", Superseded: "phase 5", Endpoint: epStatements,
-			Body:   body{"sbom": trivySBOM(sachetRoot, ss(zlibApk), sbomVuln{"CVE-2022-37434", ss(zlibApk)})},
-			Status: 200, Rows: 1,
-			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "rancher", Status: "not_affected", Justification: "vulnerable_code_not_in_execute_path",
-				Timestamp: tsRVSachet, Notes: scoped(notes("openvex", "direct"), scopeSachetDocker), Products: ss("pkg:apk/alpine/zlib?distro=3.16.2"), Evidence: evSachetDocker}},
-		},
-		{
-			Name: "statements/sbom/exact: the SBOM root opts in its scoped rows", Pending: "phase 5", Endpoint: epStatements,
+			Name: "statements/sbom/exact: the SBOM root opts in its scoped rows", Endpoint: epStatements,
 			Body:   body{"sbom": trivySBOM(sachetRoot, ss(zlibApk), sbomVuln{"CVE-2022-37434", ss(zlibApk)})},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "rancher", Status: "not_affected", Justification: "vulnerable_code_not_in_execute_path",

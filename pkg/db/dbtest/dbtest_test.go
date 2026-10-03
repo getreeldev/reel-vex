@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/getreeldev/reel-vex/pkg/db"
@@ -336,5 +337,74 @@ func TestSweepVerdictKey(t *testing.T) {
 	got, _ := s.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-1"}})
 	if len(got) != 1 || got[0].Status != "not_affected" {
 		t.Fatalf("rows = %+v; want only the not_affected successor", got)
+	}
+}
+
+// TestExactVersions mirrors TestPG's exact-list subtests (pkg/db/postgres), so
+// the fake and Postgres cannot drift on which rows a versioned query keeps.
+func TestExactVersions(t *testing.T) {
+	const cve = "CVE-2024-1234"
+	base := func(name string) string { return "pkg:deb/ubuntu/" + name + "?distro=ubuntu-22.04" }
+	exact := func(cve, name, arch, status string, versions ...string) db.Statement {
+		return db.Statement{Vendor: "ubuntu", CVE: cve, ProductID: "pkg:deb/ubuntu/" + name + "?arch=" + arch + "&distro=ubuntu-22.04",
+			BaseID: base(name), Versions: versions, VersionKind: "exact", IDType: "purl", Status: status,
+			Updated: "2026-06-01T00:00:00Z", SourceFormat: "openvex"}
+	}
+	s := seed(t,
+		exact(cve, "openssl", "amd64", "fixed", "1.10", "1.11"),
+		exact(cve, "openssl", "arm64", "fixed", "1.12"),
+		exact("CVE-2024-9999", "openssl", "amd64", "fixed", "1.09"),
+		exact(cve, "glibc", "amd64", "affected", "2.35-1"),
+		exact(cve, "glibc", "amd64", "fixed", "2.35-2"),
+		exact(cve, "bash", "amd64", "not_affected"),
+		db.Statement{Vendor: "debian", CVE: cve, ProductID: "pkg:deb/ubuntu/openssl?distro=ubuntu-22.04", BaseID: base("openssl"),
+			Versions: []string{"0.9"}, IDType: "purl", Status: "fixed", Updated: "2026-06-01T00:00:00Z", SourceFormat: "oval"},
+	)
+	pv := func(b, v string) db.BaseVersion { return db.BaseVersion{Base: b, Version: v} }
+	for _, c := range []struct {
+		name string
+		f    db.QueryFilters
+		want []string
+	}{
+		{"versioned", db.QueryFilters{CVEs: []string{cve, "CVE-2024-9999"}, ProductBaseIDs: []string{base("openssl")},
+			ExactVersions: []db.BaseVersion{pv(base("openssl"), "1.11")}},
+			[]string{"ubuntu amd64 fixed [1.11]", "debian - fixed [0.9]"}},
+		{"unlisted", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{base("openssl")},
+			ExactVersions: []db.BaseVersion{pv(base("openssl"), "1.09")}},
+			[]string{"debian - fixed [0.9]"}},
+		{"no version", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{base("glibc")},
+			ExactVersions: []db.BaseVersion{pv(base("glibc"), "")}},
+			[]string{"ubuntu amd64 affected [2.35-1]", "ubuntu amd64 fixed [2.35-2]"}},
+		{"glibc build", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{base("glibc")},
+			ExactVersions: []db.BaseVersion{pv(base("glibc"), "2.35-1")}},
+			[]string{"ubuntu amd64 affected [2.35-1]"}},
+		{"versioned and unversioned", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{base("glibc")},
+			ExactVersions: []db.BaseVersion{pv(base("glibc"), "2.35-1"), pv(base("glibc"), "")}},
+			[]string{"ubuntu amd64 affected [2.35-1]", "ubuntu amd64 fixed [2.35-2]"}},
+		{"empty list", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{base("bash")},
+			ExactVersions: []db.BaseVersion{pv(base("bash"), "5.1")}},
+			[]string{"ubuntu amd64 not_affected []"}},
+		{"arch", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{base("openssl")},
+			ExactVersions: []db.BaseVersion{pv(base("openssl"), "1.12")}},
+			[]string{"ubuntu arm64 fixed [1.12]", "debian - fixed [0.9]"}},
+		{"limit", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{base("glibc")},
+			ExactVersions: []db.BaseVersion{pv(base("glibc"), "2.35-2")}, Limit: 1},
+			[]string{"ubuntu amd64 fixed [2.35-2]"}},
+	} {
+		got, err := s.QueryStatements(c.f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var g []string
+		for _, st := range got {
+			arch := "-"
+			if i := strings.Index(st.ProductID, "arch="); i >= 0 {
+				arch = st.ProductID[i+5 : strings.IndexByte(st.ProductID, '&')]
+			}
+			g = append(g, fmt.Sprintf("%s %s %s %v", st.Vendor, arch, st.Status, st.Versions))
+		}
+		if !slices.Equal(g, c.want) {
+			t.Errorf("%s: got %v, want %v", c.name, g, c.want)
+		}
 	}
 }

@@ -15,13 +15,29 @@
 // Identifier translation: Canonical emits the `?distro=` qualifier in four
 // shapes (`ubuntu/<codename>`, `esm-apps/<codename>`, `esm-infra/<codename>`,
 // `esm-infra-legacy/<codename>`); scanners speak `ubuntu-<version>`.
-// Normalize() in distro.go rewrites the qualifier; the loop below dedupes
-// the resulting many-to-one collisions before emit.
+// Normalize() in distro.go rewrites the qualifier, folding the tracks of one
+// release onto one identifier.
+//
+// Version lists: every product carries the binary's current archive version,
+// and one CVE can list the same package, arch and release at several versions
+// with different verdicts. So each document's rows are grouped by (CVE,
+// identifier without its @version — every qualifier and the subpath kept,
+// status, justification), and each group is ONE row (version_kind 'exact')
+// whose versions are every version Canonical listed for that verdict; a
+// product listed without a version gives an empty list. A rebuild changes a
+// row's list instead of adding a row. Where normalisation folds two ESM/FIPS
+// tracks of one release onto one identifier with different verdicts, the
+// verdicts are now two rows; before, they shared a key and the last one
+// written won. The store replaces a list on upsert rather than merging it, so
+// a key must be emitted once per sync with its complete list: each sync reads
+// the whole tarball, and one CVE is one document, so grouping per document is
+// grouping per key. Never add an incremental path that emits partial lists.
 package ubuntuvex
 
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -29,6 +45,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -224,57 +241,80 @@ func isCVEEntry(name string, typeflag byte) bool {
 }
 
 // emitDoc walks one OpenVEX document and emits one source.Statement per
-// (statement × unique normalized identifier). Returns the number of rows
-// emitted. fallback is used when the document carries no per-statement and
-// no doc-level timestamp.
+// verdict: the document's (statement × normalized identifier) pairs are
+// grouped by (CVE, identifier without its @version, status, justification),
+// and each group is one exact-list row carrying every version Canonical
+// listed for that verdict, dated by the latest timestamp in the group (see
+// the package doc). The output does not depend on the order of the
+// document's statements or products. Returns the number of rows emitted.
+// fallback is used when the document carries no per-statement and no
+// doc-level timestamp.
 func emitDoc(doc openvex.Document, fallback time.Time, emit func(source.Statement) error) (int, error) {
+	type key struct{ cve, product, status, justification string }
+	type group struct {
+		versions []string
+		updated  time.Time
+	}
+	groups := make(map[key]*group)
 	docTime := parseRFC3339(doc.Timestamp, fallback)
-	count := 0
 	for _, stmt := range doc.Statements {
 		if stmt.Vulnerability.Name == "" {
 			continue
 		}
 		ts := parseRFC3339(stmt.Timestamp, docTime)
+		// Normalize ESM/distro qualifiers before grouping: Canonical often
+		// lists one product under three ESM tracks of one release, and
+		// normalisation folds them onto one identifier.
+		for _, id := range openvex.CollectIdentifiers(stmt.Products) {
+			product, version := csaf.StripPURLVersion(Normalize(id))
+			k := key{stmt.Vulnerability.Name, product, stmt.Status, stmt.Justification}
+			g := groups[k]
+			if g == nil {
+				g = &group{}
+				groups[k] = g
+			}
+			if version != "" {
+				// Stored percent-decoded, as a caller's version is compared.
+				g.versions = append(g.versions, csaf.UnescapeVersion(version))
+			}
+			if ts.After(g.updated) {
+				g.updated = ts
+			}
+		}
+	}
 
-		ids := openvex.CollectIdentifiers(stmt.Products)
-		if len(ids) == 0 {
-			continue
+	keys := make([]key, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, k)
+	}
+	slices.SortFunc(keys, func(a, b key) int {
+		return cmp.Or(cmp.Compare(a.cve, b.cve), cmp.Compare(a.product, b.product),
+			cmp.Compare(a.status, b.status), cmp.Compare(a.justification, b.justification))
+	})
+	count := 0
+	for _, k := range keys {
+		g := groups[k]
+		slices.Sort(g.versions)
+		base, _ := csaf.SplitPURL(k.product)
+		idType := "purl"
+		if !strings.HasPrefix(k.product, "pkg:") {
+			idType = "cpe"
 		}
-		// Normalize ESM/distro qualifiers, then re-dedup. Canonical
-		// often emits the same product under three ESM tracks for one
-		// release; normalisation collapses them to one entry.
-		seen := make(map[string]bool, len(ids))
-		normalized := make([]string, 0, len(ids))
-		for _, id := range ids {
-			n := Normalize(id)
-			if seen[n] {
-				continue
-			}
-			seen[n] = true
-			normalized = append(normalized, n)
+		out := source.Statement{
+			CVE:           k.cve,
+			ProductID:     k.product,
+			BaseID:        base,
+			Versions:      slices.Compact(g.versions),
+			VersionKind:   "exact",
+			IDType:        idType,
+			Status:        k.status,
+			Justification: k.justification,
+			Updated:       g.updated,
 		}
-
-		for _, id := range normalized {
-			base, version := csaf.SplitPURL(id)
-			idType := "purl"
-			if !strings.HasPrefix(id, "pkg:") {
-				idType = "cpe"
-			}
-			out := source.Statement{
-				CVE:           stmt.Vulnerability.Name,
-				ProductID:     id,
-				BaseID:        base,
-				Version:       version,
-				IDType:        idType,
-				Status:        stmt.Status,
-				Justification: stmt.Justification,
-				Updated:       ts,
-			}
-			if err := emit(out); err != nil {
-				return count, err
-			}
-			count++
+		if err := emit(out); err != nil {
+			return count, err
 		}
+		count++
 	}
 	return count, nil
 }

@@ -8,11 +8,10 @@ package acceptance
 // (esm-apps/, esm-infra/, esm-infra-legacy/, fips/, fips-updates/, ...); the hub
 // serves it in the scanner convention ubuntu-<version> (CLAUDE.md, config.yaml).
 //
-// Phase 5 replaces today's version-blind answer to a product query (every row of
-// the versionless package, echoed under the caller's base identifier) with the
-// verdict Canonical stated for the version asked about, under the vendor's own
-// per-version identifiers (PLAN-VEX-SWEEP.md §2, "Version lists per verdict").
-// The cases marked Superseded hold today's answer and go when Phase 5 lands.
+// A product query is answered with the verdict Canonical stated for the version
+// asked about, under the vendor's own per-version identifiers, and a versionless
+// query with every listed version under its own verdict (PLAN-VEX-SWEEP.md §2,
+// "Version lists per verdict").
 
 const (
 	tsUV2060  = "2022-06-13T09:15:00Z" // UV vex/cve/2022/CVE-2022-2060.json statements[0].timestamp
@@ -60,7 +59,6 @@ func uvMicrocode(status, notes, ev string, products []string) Stmt {
 }
 
 func ubuntuCases() []Case {
-	echo1604 := ss("pkg:deb/ubuntu/intel-microcode?distro=ubuntu-16.04")
 	direct := notes("openvex", "direct")
 	return []Case{
 		{
@@ -132,36 +130,18 @@ func ubuntuCases() []Case {
 
 		// One package, one release, two verdicts at two versions.
 		{
-			Name: "ubuntu/purl/versioned query is answered version-blind", Superseded: "phase 5", Endpoint: epStatements,
-			Body:   body{"cves": ss("CVE-2022-33972"), "products": ss("pkg:deb/ubuntu/intel-microcode@3.20210216.0ubuntu0.16.04.1?arch=amd64&distro=ubuntu-16.04")},
-			Status: 200, Rows: 6,
-			Want: []Stmt{uvMicrocode("fixed", direct, evMicrocodeFixed, echo1604), uvMicrocode("affected", direct, evMicrocodeAffected, echo1604)},
-		},
-		{
-			Name: "ubuntu/exact/listed version gets only its own verdict", Pending: "phase 5", Endpoint: epStatements,
+			Name: "ubuntu/exact/listed version gets only its own verdict", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2022-33972"), "products": ss("pkg:deb/ubuntu/intel-microcode@3.20210216.0ubuntu0.16.04.1?arch=amd64&distro=ubuntu-16.04")},
 			Status: 200, Rows: 3,
 			Want: []Stmt{uvMicrocode("affected", direct, evMicrocodeAffected, uvMicrocode1604Affected)},
 		},
 		{
-			Name: "ubuntu/purl/unlisted version is answered version-blind", Superseded: "phase 5", Endpoint: epStatements,
-			Body:   body{"cves": ss("CVE-2022-33972"), "products": ss("pkg:deb/ubuntu/intel-microcode@3.20230214.0ubuntu0.16.04.1?arch=amd64&distro=ubuntu-16.04")},
-			Status: 200, Rows: 6,
-			Want: []Stmt{uvMicrocode("fixed", direct, evMicrocodeFixed, echo1604), uvMicrocode("affected", direct, evMicrocodeAffected, echo1604)},
-		},
-		{
-			Name: "ubuntu/exact/unlisted version gets nothing", Pending: "phase 5", Endpoint: epStatements,
+			Name: "ubuntu/exact/unlisted version gets nothing", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2022-33972"), "products": ss("pkg:deb/ubuntu/intel-microcode@3.20230214.0ubuntu0.16.04.1?arch=amd64&distro=ubuntu-16.04")},
 			Status: 204, Rows: 0,
 		},
 		{
-			Name: "ubuntu/purl/versionless query echoes the caller's base", Superseded: "phase 5", Endpoint: epStatements,
-			Body:   body{"cves": ss("CVE-2022-33972"), "products": ss("pkg:deb/ubuntu/intel-microcode?distro=ubuntu-16.04")},
-			Status: 200, Rows: 6,
-			Want: []Stmt{uvMicrocode("fixed", direct, evMicrocodeFixed, echo1604), uvMicrocode("affected", direct, evMicrocodeAffected, echo1604)},
-		},
-		{
-			Name: "ubuntu/exact/versionless query gets every version under its own verdict", Pending: "phase 5", Endpoint: epStatements,
+			Name: "ubuntu/exact/versionless query gets every version under its own verdict", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2022-33972"), "products": ss("pkg:deb/ubuntu/intel-microcode?distro=ubuntu-16.04")},
 			Status: 200, Rows: 6,
 			Want: []Stmt{
@@ -170,14 +150,7 @@ func ubuntuCases() []Case {
 			},
 		},
 		{
-			Name: "ubuntu/purl/strict_arch keeps the named arch and source", Superseded: "phase 5", Endpoint: epStatements,
-			Body: body{"cves": ss("CVE-2022-33972"), "strict_arch": true,
-				"products": ss("pkg:deb/ubuntu/intel-microcode@3.20210216.0ubuntu0.16.04.1?arch=amd64&distro=ubuntu-16.04")},
-			Status: 200, Rows: 4, Headers: map[string]string{"X-Reel-Arch": "amd64", "X-Reel-Mode": "cve", "X-Reel-CVE": "CVE-2022-33972", "X-Reel-Grouped": "2"},
-			Want: []Stmt{uvMicrocode("fixed", direct, evMicrocodeFixed, echo1604), uvMicrocode("affected", direct, evMicrocodeAffected, echo1604)},
-		},
-		{
-			Name: "ubuntu/exact/strict_arch with a version", Pending: "phase 5", Endpoint: epStatements,
+			Name: "ubuntu/exact/strict_arch with a version", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2022-33972"), "strict_arch": true,
 				"products": ss("pkg:deb/ubuntu/intel-microcode@3.20210216.0ubuntu0.16.04.1?arch=amd64&distro=ubuntu-16.04")},
 			Status: 200, Rows: 2, Headers: map[string]string{"X-Reel-Arch": "amd64"},
@@ -187,15 +160,7 @@ func ubuntuCases() []Case {
 		},
 
 		{
-			Name: "ubuntu/purl/under_investigation", Superseded: "phase 5", Endpoint: epStatements,
-			Body:   body{"cves": ss("CVE-2022-2060"), "products": ss("pkg:deb/ubuntu/dolibarr@3.5.8+dfsg1-1ubuntu1+esm1?arch=amd64&distro=ubuntu-16.04")},
-			Status: 200, Rows: 7,
-			Want: []Stmt{{CVE: "CVE-2022-2060", Supplier: "ubuntu", Status: "under_investigation", Timestamp: tsUV2060, Notes: direct,
-				Products: ss("pkg:deb/ubuntu/dolibarr?distro=ubuntu-16.04"),
-				Evidence: "UV vex/cve/2022/CVE-2022-2060.json statements[0] under_investigation: dolibarr@3.5.8+dfsg1-1ubuntu1+esm1 distro=esm-apps-legacy/xenial (7 arches)"}},
-		},
-		{
-			Name: "ubuntu/exact/under_investigation at a listed version", Pending: "phase 5", Endpoint: epStatements,
+			Name: "ubuntu/exact/under_investigation at a listed version", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2022-2060"), "products": ss("pkg:deb/ubuntu/dolibarr@3.5.8+dfsg1-1ubuntu1+esm1?arch=amd64&distro=ubuntu-16.04")},
 			Status: 200, Rows: 7,
 			Want: []Stmt{{CVE: "CVE-2022-2060", Supplier: "ubuntu", Status: "under_investigation", Timestamp: tsUV2060, Notes: direct,
@@ -211,7 +176,7 @@ func ubuntuCases() []Case {
 		},
 
 		{
-			Name: "ubuntu/exact/a base asked with and without a version keeps its whole list", Pending: "phase 5", Endpoint: epStatements,
+			Name: "ubuntu/exact/a base asked with and without a version keeps its whole list", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2022-33972"), "products": ss(
 				"pkg:deb/ubuntu/intel-microcode@3.20210216.0ubuntu0.16.04.1?arch=amd64&distro=ubuntu-16.04",
 				"pkg:deb/ubuntu/intel-microcode?distro=ubuntu-16.04")},
@@ -224,7 +189,7 @@ func ubuntuCases() []Case {
 		{
 			// Trivy percent-encodes "+" in a version (packageurl-go escapes
 			// every byte outside the unreserved set).
-			Name: "ubuntu/exact/a %2B-encoded version matches the vendor's +", Pending: "phase 5", Endpoint: epStatements,
+			Name: "ubuntu/exact/a %2B-encoded version matches the vendor's +", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2022-2060"), "products": ss("pkg:deb/ubuntu/dolibarr@3.5.8%2Bdfsg1-1ubuntu1%2Besm1?arch=amd64&distro=ubuntu-16.04")},
 			Status: 200, Rows: 7,
 			Want: []Stmt{{CVE: "CVE-2022-2060", Supplier: "ubuntu", Status: "under_investigation", Timestamp: tsUV2060, Notes: direct,
@@ -243,18 +208,7 @@ func ubuntuCases() []Case {
 		// CVE-2022-33972 fixed at 3.20230214.0ubuntu0.18.04.1, CVE-2022-21180
 		// not_affected at 3.20260210.0ubuntu0.18.04.1+esm1.
 		{
-			Name: "ubuntu/purl/one package in two CVEs is answered version-blind", Superseded: "phase 5", Endpoint: epStatements,
-			Body: body{"cves": ss("CVE-2022-33972", "CVE-2022-21180"),
-				"products": ss("pkg:deb/ubuntu/intel-microcode@3.20230214.0ubuntu0.18.04.1?arch=amd64&distro=ubuntu-18.04")},
-			Status: 200, Rows: 6, Headers: map[string]string{"X-Reel-CVE": ""},
-			Want: []Stmt{
-				uvMicrocode("fixed", direct, evMicrocode1804Fixed, ss("pkg:deb/ubuntu/intel-microcode?distro=ubuntu-18.04")),
-				{CVE: "CVE-2022-21180", Supplier: "ubuntu", Status: "not_affected", Justification: "vulnerable_code_not_present", Timestamp: tsUV21180, Notes: direct,
-					Products: ss("pkg:deb/ubuntu/intel-microcode?distro=ubuntu-18.04"), Evidence: ev21180Bionic},
-			},
-		},
-		{
-			Name: "ubuntu/exact/one CVE's listed version never matches another CVE's row", Pending: "phase 5", Endpoint: epStatements,
+			Name: "ubuntu/exact/one CVE's listed version never matches another CVE's row", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2022-33972", "CVE-2022-21180"),
 				"products": ss("pkg:deb/ubuntu/intel-microcode@3.20230214.0ubuntu0.18.04.1?arch=amd64&distro=ubuntu-18.04")},
 			Status: 200, Rows: 3,
@@ -264,20 +218,7 @@ func ubuntuCases() []Case {
 
 		// The two newest codenames in the hub's map.
 		{
-			Name: "ubuntu/purl/resolute (26.04) and questing (25.10)", Superseded: "phase 5", Endpoint: epStatements,
-			Body: body{"cves": ss("CVE-2026-41990"), "products": ss(
-				"pkg:deb/ubuntu/libgcrypt20@1.12.0-2ubuntu1.1?arch=amd64&distro=ubuntu-26.04",
-				"pkg:deb/ubuntu/libgcrypt20@1.11.0-7ubuntu0.1?arch=amd64&distro=ubuntu-25.10")},
-			Status: 200, Rows: 18,
-			Want: []Stmt{
-				{CVE: "CVE-2026-41990", Supplier: "ubuntu", Status: "fixed", Timestamp: tsUV41990, Notes: direct,
-					Products: ss("pkg:deb/ubuntu/libgcrypt20?distro=ubuntu-26.04"), Evidence: evGcryptResolute},
-				{CVE: "CVE-2026-41990", Supplier: "ubuntu", Status: "not_affected", Justification: "vulnerable_code_not_present", Timestamp: tsUV41990, Notes: direct,
-					Products: ss("pkg:deb/ubuntu/libgcrypt20?distro=ubuntu-25.10"), Evidence: evGcryptQuesting},
-			},
-		},
-		{
-			Name: "ubuntu/exact/resolute (26.04) and questing (25.10)", Pending: "phase 5", Endpoint: epStatements,
+			Name: "ubuntu/exact/resolute (26.04) and questing (25.10)", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2026-41990"), "products": ss(
 				"pkg:deb/ubuntu/libgcrypt20@1.12.0-2ubuntu1.1?arch=amd64&distro=ubuntu-26.04",
 				"pkg:deb/ubuntu/libgcrypt20@1.11.0-7ubuntu0.1?arch=amd64&distro=ubuntu-25.10")},
@@ -292,15 +233,7 @@ func ubuntuCases() []Case {
 
 		// FIPS tracks of one release fold onto ubuntu-20.04.
 		{
-			Name: "ubuntu/purl/fips and fips-updates tracks normalise to the release", Superseded: "phase 5", Endpoint: epStatements,
-			Body:   body{"cves": ss("CVE-2026-41990"), "products": ss("pkg:deb/ubuntu/libgcrypt20@1.8.5-5ubuntu1.fips.1.7?arch=amd64&distro=ubuntu-20.04")},
-			Status: 200, Rows: 6,
-			Want: []Stmt{{CVE: "CVE-2026-41990", Supplier: "ubuntu", Status: "not_affected", Justification: "vulnerable_code_not_present", Timestamp: tsUV41990, Notes: direct,
-				Products: ss("pkg:deb/ubuntu/libgcrypt20?distro=ubuntu-20.04"),
-				Evidence: "UV vex/cve/2026/CVE-2026-41990.json statements[1] not_affected: libgcrypt20@1.8.5-5ubuntu1.fips.1.4 distro=fips/focal and @...fips.1.7 distro=fips-updates/focal (source, amd64, s390x)"}},
-		},
-		{
-			Name: "ubuntu/exact/fips-updates version", Pending: "phase 5", Endpoint: epStatements,
+			Name: "ubuntu/exact/fips-updates version", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2026-41990"), "products": ss("pkg:deb/ubuntu/libgcrypt20@1.8.5-5ubuntu1.fips.1.7?arch=amd64&distro=ubuntu-20.04")},
 			Status: 200, Rows: 3,
 			Want: []Stmt{{CVE: "CVE-2026-41990", Supplier: "ubuntu", Status: "not_affected", Justification: "vulnerable_code_not_present", Timestamp: tsUV41990, Notes: direct,
@@ -313,15 +246,7 @@ func ubuntuCases() []Case {
 
 		// Trivy writes the deb epoch as a qualifier; Canonical writes it inline.
 		{
-			Name: "ubuntu/purl/Trivy epoch qualifier", Superseded: "phase 5", Endpoint: epStatements,
-			Body:   body{"cves": ss("CVE-2022-37434"), "products": ss("pkg:deb/ubuntu/zlib1g@1.2.11.dfsg-2ubuntu9.2?arch=amd64&distro=ubuntu-22.04&epoch=1")},
-			Status: 200, Rows: 7,
-			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "ubuntu", Status: "fixed", Timestamp: tsUV37434, Notes: direct,
-				Products: ss("pkg:deb/ubuntu/zlib1g?distro=ubuntu-22.04"),
-				Evidence: "UV vex/cve/2022/CVE-2022-37434.json statements[0] fixed: zlib1g@1:1.2.11.dfsg-2ubuntu9.2 distro=jammy (7 arches)"}},
-		},
-		{
-			Name: "ubuntu/exact/Trivy epoch qualifier folds into the version", Pending: "phase 5", Endpoint: epStatements,
+			Name: "ubuntu/exact/Trivy epoch qualifier folds into the version", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2022-37434"), "products": ss("pkg:deb/ubuntu/zlib1g@1.2.11.dfsg-2ubuntu9.2?arch=amd64&distro=ubuntu-22.04&epoch=1")},
 			Status: 200, Rows: 7,
 			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "ubuntu", Status: "fixed", Timestamp: tsUV37434, Notes: direct,
@@ -338,16 +263,7 @@ func ubuntuCases() []Case {
 
 		// Canonical writes some trusty ESM rows as "trusty/esm": codename first.
 		{
-			Name: "ubuntu/purl/trusty/esm is Ubuntu 14.04", Superseded: "phase 5", Endpoint: epStatements,
-			KnownBug: "ubuntuvex.Normalize takes the last /-segment as the codename; Canonical's distro=trusty/esm (codename first) stays unnormalised, so no ubuntu-14.04 query reaches these rows",
-			Body:     body{"cves": ss("CVE-2022-37434"), "products": ss("pkg:deb/ubuntu/klibc-utils@2.0.3-0ubuntu1.14.04.3+esm3?arch=amd64&distro=ubuntu-14.04")},
-			Status:   200, Rows: 5,
-			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "ubuntu", Status: "fixed", Timestamp: tsUV37434, Notes: direct,
-				Products: ss("pkg:deb/ubuntu/klibc-utils?distro=ubuntu-14.04"),
-				Evidence: "UV vex/cve/2022/CVE-2022-37434.json statements[0] fixed: klibc-utils@2.0.3-0ubuntu1.14.04.3+esm3 distro=trusty/esm (amd64, arm64, armhf, i386, ppc64el)"}},
-		},
-		{
-			Name: "ubuntu/exact/trusty/esm is Ubuntu 14.04", Pending: "phase 5", Endpoint: epStatements,
+			Name: "ubuntu/exact/trusty/esm is Ubuntu 14.04", Endpoint: epStatements,
 			KnownBug: "ubuntuvex.Normalize takes the last /-segment as the codename; Canonical's distro=trusty/esm (codename first) stays unnormalised",
 			Body:     body{"cves": ss("CVE-2022-37434"), "products": ss("pkg:deb/ubuntu/klibc-utils@2.0.3-0ubuntu1.14.04.3+esm3?arch=amd64&distro=ubuntu-14.04")},
 			Status:   200, Rows: 5,
@@ -362,15 +278,7 @@ func ubuntuCases() []Case {
 		},
 
 		{
-			Name: "ubuntu/broad/products only", Superseded: "phase 5", Endpoint: epStatements,
-			Body:   body{"products": ss("pkg:deb/ubuntu/libxsmm-dev@1.9-1?arch=amd64&distro=ubuntu-20.04")},
-			Status: 200, Rows: 1,
-			Want: []Stmt{{CVE: "CVE-2018-20543", Supplier: "ubuntu", Status: "not_affected", Justification: "component_not_present", Timestamp: tsUV20543, Notes: direct,
-				Products: ss("pkg:deb/ubuntu/libxsmm-dev?distro=ubuntu-20.04"),
-				Evidence: "UV vex/cve/2018/CVE-2018-20543.json statements[0]: libxsmm-dev@1.9-1 arch=amd64 distro=focal (the only document naming libxsmm-dev)"}},
-		},
-		{
-			Name: "ubuntu/exact/broad products only at a listed version", Pending: "phase 5", Endpoint: epStatements,
+			Name: "ubuntu/exact/broad products only at a listed version", Endpoint: epStatements,
 			Body:   body{"products": ss("pkg:deb/ubuntu/libxsmm-dev@1.9-1?arch=amd64&distro=ubuntu-20.04")},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2018-20543", Supplier: "ubuntu", Status: "not_affected", Justification: "component_not_present", Timestamp: tsUV20543, Notes: direct,

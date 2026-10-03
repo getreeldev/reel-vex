@@ -68,9 +68,9 @@ func TestSmoke_LiveFeed(t *testing.T) {
 	if !res.Complete {
 		t.Error("the live snapshot should be Complete: every file index.json lists present and parsed")
 	}
-	// Sanity floor: the snapshot emits ~323K CVE-named rows from ~1,250 files
-	// today. A collapse far below that signals an upstream restructuring worth
-	// a human look.
+	// Sanity floor: the snapshot emits ~33K exact-list rows (~323K CVE-named
+	// subcomponent statements) from ~1,250 files today. A collapse far below
+	// that signals an upstream restructuring worth a human look.
 	if emitted < 10000 {
 		t.Errorf("emitted=%d is suspiciously low; the feed may have restructured", emitted)
 	}

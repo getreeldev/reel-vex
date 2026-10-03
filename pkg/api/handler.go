@@ -200,7 +200,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // CPE-prefix matching — and the OpenVEX encoder echoes the user's input
 // PURLs into products[] so Trivy can match them. Without Products the
 // encoder falls back to each statement's stored product_id, which may be
-// a CPE for OVAL-derived rows.
+// a CPE for OVAL-derived rows. Exact-list rows (Ubuntu OpenVEX, Rancher)
+// are the exception either way: a product's version selects the verdict
+// stated for it, and each row is rendered per listed version (see
+// db.QueryFilters.ExactVersions and pkg/openvex).
 //
 // SBOM, when present, is a CycloneDX 1.4+ document inlined as JSON. The
 // CVE list is derived from .vulnerabilities[].id, the product list from
@@ -323,8 +326,9 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 	var baseToReason map[string]string
 	var baseToInputs map[string][]string
 	var bases []string
+	var versions []db.BaseVersion
 	if len(req.Products) > 0 {
-		baseToReason, baseToInputs = s.expandProducts(req.Products)
+		baseToReason, baseToInputs, versions = s.expandProducts(req.Products)
 		bases = make([]string, 0, len(baseToReason))
 		for b := range baseToReason {
 			bases = append(bases, b)
@@ -355,6 +359,7 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 	filters := db.QueryFilters{
 		ProductBaseIDs: bases,
 		ArchAllow:      archAllowList(arches),
+		ExactVersions:  versions,
 		Vendors:        req.Vendors,
 		SourceFormats:  req.SourceFormats,
 		Statuses:       req.Statuses,
@@ -526,7 +531,7 @@ func (s *Server) handleIngestTrigger(w http.ResponseWriter, r *http.Request) {
 }
 
 // expandProducts turns the user-supplied product list into two maps, keyed
-// by candidate base identifier:
+// by candidate base identifier, and a list of (candidate, version) pairs:
 //
 //   - baseToReason: match_reason that would apply if a statement's base_id
 //     matches that candidate (first/stronger rule wins on collision).
@@ -534,17 +539,23 @@ func (s *Server) handleIngestTrigger(w http.ResponseWriter, r *http.Request) {
 //     qualifiers and version) that expanded to this candidate. Used by the
 //     OpenVEX emitter to echo the user's PURLs into products[] so Trivy
 //     can match statements keyed by a different identifier (typically CPE).
+//   - versions: each candidate paired with the version its input named
+//     (csaf.MatchVersion; empty for none), for db.QueryFilters.ExactVersions,
+//     so an exact-list row is matched against the caller's own version.
 //
 // Delegates expansion to resolver.Resolver so alias lookups and CPE prefix
 // expansion run alongside the direct base.
-func (s *Server) expandProducts(products []string) (map[string]string, map[string][]string) {
+func (s *Server) expandProducts(products []string) (map[string]string, map[string][]string, []db.BaseVersion) {
 	baseToReason := make(map[string]string, len(products))
 	baseToInputs := make(map[string][]string, len(products))
 	seenInput := make(map[string]map[string]bool)
+	var versions []db.BaseVersion
 
 	for _, p := range products {
 		inputBase, _ := csaf.SplitPURL(p)
+		version := csaf.MatchVersion(p)
 		for _, cand := range s.resolver.Expand(p) {
+			versions = append(versions, db.BaseVersion{Base: cand.ID, Version: version})
 			if _, exists := baseToReason[cand.ID]; !exists {
 				baseToReason[cand.ID] = cand.MatchReason
 			}
@@ -557,7 +568,7 @@ func (s *Server) expandProducts(products []string) (map[string]string, map[strin
 			}
 		}
 	}
-	return baseToReason, baseToInputs
+	return baseToReason, baseToInputs, versions
 }
 
 type errorResponse struct {

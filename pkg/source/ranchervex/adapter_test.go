@@ -278,14 +278,14 @@ func TestAdapter_Sync(t *testing.T) {
 	if got == nil {
 		t.Fatal("CVE-2024-1 row not emitted")
 	}
-	if got.ProductID != "pkg:golang/golang.org/x/net@v0.17.0" {
-		t.Errorf("ProductID (subcomponent): got %q", got.ProductID)
+	if got.ProductID != "pkg:golang/golang.org/x/net" {
+		t.Errorf("ProductID (subcomponent without its version): got %q", got.ProductID)
 	}
 	if got.BaseID != "pkg:golang/golang.org/x/net" {
 		t.Errorf("BaseID: got %q", got.BaseID)
 	}
-	if got.Version != "v0.17.0" {
-		t.Errorf("Version: got %q", got.Version)
+	if strings.Join(got.Versions, ",") != "v0.17.0" || got.VersionKind != "exact" || got.Version != "" {
+		t.Errorf("Versions/VersionKind/Version: got %v / %q / %q, want [v0.17.0] / exact / empty", got.Versions, got.VersionKind, got.Version)
 	}
 	if got.Scope != ociID {
 		t.Errorf("Scope (product @id): got %q, want %q", got.Scope, ociID)
@@ -348,9 +348,9 @@ func TestAdapter_IgnoresSince(t *testing.T) {
 }
 
 // TestAdapter_TarOrder: files are emitted in the order the snapshot holds
-// them, not the order index.json lists them, and statements inside a file in
-// file order — so of two statements with the same key the later one lands
-// last and wins the upsert.
+// them, not the order index.json lists them; a file's rows are emitted once
+// it has parsed whole, in key order, and two justifications of one key are two
+// rows rather than the later one winning.
 func TestAdapter_TarOrder(t *testing.T) {
 	first := openvex.Document{Context: openvex.Context, Version: 1,
 		Statements: []openvex.Statement{
@@ -374,8 +374,8 @@ func TestAdapter_TarOrder(t *testing.T) {
 		got = append(got, s.CVE+"/"+s.Justification)
 	}
 	want := []string{
-		"CVE-2024-1/vulnerable_code_not_present",
 		"CVE-2024-1/inline_mitigations_already_exist",
+		"CVE-2024-1/vulnerable_code_not_present",
 		"CVE-2024-2/vulnerable_code_not_present",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {

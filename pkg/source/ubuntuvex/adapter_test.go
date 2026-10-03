@@ -5,9 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -417,4 +420,139 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// canonicalStatements is the exact-list example for CVE-2024-1234 on Ubuntu
+// 22.04 amd64, written the way Canonical does: one product per binary
+// version, the same verdict repeated across versions, and an ESM track that
+// folds onto the mainline release.
+func canonicalStatements() []openvex.Statement {
+	const ts = "2026-04-01T00:00:00Z"
+	at := func(name, version string) openvex.Component {
+		return purl("pkg:deb/ubuntu/" + name + "@" + version + "?arch=amd64&distro=jammy")
+	}
+	return []openvex.Statement{
+		{Vulnerability: openvex.Vulnerability{Name: "CVE-2024-1234"}, Status: "fixed", Timestamp: ts,
+			Products: []openvex.Component{at("openssl", "1.10"), at("openssl", "1.11"), at("glibc", "2.35-2"),
+				purl("pkg:deb/ubuntu/openssl@1.11?arch=amd64&distro=esm-infra/jammy")}},
+		{Vulnerability: openvex.Vulnerability{Name: "CVE-2024-1234"}, Status: "not_affected",
+			Justification: "vulnerable_code_not_present", Timestamp: ts,
+			Products: []openvex.Component{at("zlib", "1.2"), at("zlib", "1.3")}},
+		{Vulnerability: openvex.Vulnerability{Name: "CVE-2024-1234"}, Status: "affected", Timestamp: "2026-04-02T00:00:00Z",
+			Products: []openvex.Component{at("curl", "7.81"), at("glibc", "2.35-1")}},
+	}
+}
+
+// TestEmitDoc_OneRowPerVerdict: rows group by (CVE, product without its
+// version, status, justification), each carrying the versions stated for that
+// verdict, in the same order whatever order the document lists them in.
+func TestEmitDoc_OneRowPerVerdict(t *testing.T) {
+	want := []string{
+		"CVE-2024-1234 pkg:deb/ubuntu/curl?arch=amd64&distro=ubuntu-22.04 affected/ [7.81]",
+		"CVE-2024-1234 pkg:deb/ubuntu/glibc?arch=amd64&distro=ubuntu-22.04 affected/ [2.35-1]",
+		"CVE-2024-1234 pkg:deb/ubuntu/glibc?arch=amd64&distro=ubuntu-22.04 fixed/ [2.35-2]",
+		"CVE-2024-1234 pkg:deb/ubuntu/openssl?arch=amd64&distro=ubuntu-22.04 fixed/ [1.10 1.11]",
+		"CVE-2024-1234 pkg:deb/ubuntu/zlib?arch=amd64&distro=ubuntu-22.04 not_affected/vulnerable_code_not_present [1.2 1.3]",
+	}
+	render := func(stmts []openvex.Statement) []string {
+		var got []string
+		_, err := emitDoc(openvex.Document{Statements: stmts}, time.Now(), func(s source.Statement) error {
+			if s.VersionKind != "exact" || s.Version != "" {
+				t.Errorf("want an exact-list row with no single Version: %+v", s)
+			}
+			if s.BaseID != "pkg:deb/ubuntu/"+s.ProductID[len("pkg:deb/ubuntu/"):strings.IndexByte(s.ProductID, '?')]+"?distro=ubuntu-22.04" {
+				t.Errorf("BaseID %q is not SplitPURL of %q", s.BaseID, s.ProductID)
+			}
+			got = append(got, fmt.Sprintf("%s %s %s/%s %v", s.CVE, s.ProductID, s.Status, s.Justification, s.Versions))
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	got := render(canonicalStatements())
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("rows:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	// Reversed statements and products: the same rows, in the same order.
+	rev := canonicalStatements()
+	slices.Reverse(rev)
+	for i := range rev {
+		slices.Reverse(rev[i].Products)
+	}
+	if again := render(rev); strings.Join(again, "\n") != strings.Join(want, "\n") {
+		t.Errorf("order-dependent output:\n%s", strings.Join(again, "\n"))
+	}
+}
+
+// TestEmitDoc_GroupDetails: a group's timestamp is its latest; a product with
+// no @version gives an empty list; an arch is part of the product, so amd64
+// and arm64 are separate rows; a not_affected under two justifications is two
+// rows.
+func TestEmitDoc_GroupDetails(t *testing.T) {
+	stmts := []openvex.Statement{
+		{Vulnerability: openvex.Vulnerability{Name: "CVE-1"}, Status: "fixed", Timestamp: "2026-01-01T00:00:00Z",
+			Products: []openvex.Component{purl("pkg:deb/ubuntu/a@1?arch=amd64&distro=jammy")}},
+		{Vulnerability: openvex.Vulnerability{Name: "CVE-1"}, Status: "fixed", Timestamp: "2026-03-01T00:00:00Z",
+			Products: []openvex.Component{purl("pkg:deb/ubuntu/a@2?arch=amd64&distro=jammy"), purl("pkg:deb/ubuntu/a@2?arch=arm64&distro=jammy")}},
+		{Vulnerability: openvex.Vulnerability{Name: "CVE-1"}, Status: "not_affected", Justification: "component_not_present",
+			Timestamp: "2026-01-01T00:00:00Z", Products: []openvex.Component{purl("pkg:deb/ubuntu/b?distro=noble")}},
+		{Vulnerability: openvex.Vulnerability{Name: "CVE-1"}, Status: "not_affected", Justification: "vulnerable_code_not_present",
+			Timestamp: "2026-01-01T00:00:00Z", Products: []openvex.Component{purl("pkg:deb/ubuntu/b?distro=noble")}},
+	}
+	var got []source.Statement
+	if _, err := emitDoc(openvex.Document{Statements: stmts}, time.Now(), func(s source.Statement) error {
+		got = append(got, s)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("want 4 rows (a amd64, a arm64, b twice), got %d: %+v", len(got), got)
+	}
+	a := got[0]
+	if a.ProductID != "pkg:deb/ubuntu/a?arch=amd64&distro=ubuntu-22.04" || strings.Join(a.Versions, ",") != "1,2" ||
+		!a.Updated.Equal(time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("amd64 row: %+v", a)
+	}
+	if got[1].ProductID != "pkg:deb/ubuntu/a?arch=arm64&distro=ubuntu-22.04" || strings.Join(got[1].Versions, ",") != "2" {
+		t.Errorf("arm64 row: %+v", got[1])
+	}
+	for _, b := range got[2:] {
+		if b.ProductID != "pkg:deb/ubuntu/b?distro=ubuntu-24.04" || len(b.Versions) != 0 {
+			t.Errorf("versionless row: %+v", b)
+		}
+	}
+	if got[2].Justification == got[3].Justification {
+		t.Errorf("two justifications should be two rows: %+v", got[2:])
+	}
+}
+
+// TestEmitDoc_FoldedTracksKeepEachVerdict: two ESM tracks of one release
+// fold onto one identifier; when Canonical gives them different verdicts at
+// different builds, each verdict is its own row with its own version, rather
+// than one key the last statement wins.
+func TestEmitDoc_FoldedTracksKeepEachVerdict(t *testing.T) {
+	stmts := []openvex.Statement{
+		{Vulnerability: openvex.Vulnerability{Name: "CVE-1"}, Status: "affected", Timestamp: "2026-01-01T00:00:00Z",
+			Products: []openvex.Component{purl("pkg:deb/ubuntu/a@1.0?arch=amd64&distro=xenial")}},
+		{Vulnerability: openvex.Vulnerability{Name: "CVE-1"}, Status: "fixed", Timestamp: "2026-01-01T00:00:00Z",
+			Products: []openvex.Component{purl("pkg:deb/ubuntu/a@1.0+esm1?arch=amd64&distro=esm-infra/xenial")}},
+	}
+	var got []string
+	if _, err := emitDoc(openvex.Document{Statements: stmts}, time.Now(), func(s source.Statement) error {
+		got = append(got, fmt.Sprintf("%s %s %v", s.ProductID, s.Status, s.Versions))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"pkg:deb/ubuntu/a?arch=amd64&distro=ubuntu-16.04 affected [1.0]",
+		"pkg:deb/ubuntu/a?arch=amd64&distro=ubuntu-16.04 fixed [1.0+esm1]",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("rows %v, want %v", got, want)
+	}
 }

@@ -374,3 +374,56 @@ func TestEncode_ValidatesAgainstSchema(t *testing.T) {
 		t.Fatalf("encoded document is not valid OpenVEX 0.2.0: %v", err)
 	}
 }
+
+// TestEncode_ExactListRows: an exact-list row is rendered per version as the
+// vendor published it — the versionless product_id with @version put back
+// before its qualifiers — never as the caller's echoed base; an empty list
+// renders the bare product_id; a legacy row (empty version_kind) still echoes
+// the caller's base. Grouping by assertion applies to the rendered products.
+func TestEncode_ExactListRows(t *testing.T) {
+	row := func(name, arch, status string, versions ...string) db.Statement {
+		return db.Statement{Vendor: "ubuntu", CVE: "CVE-2024-1234", SourceFormat: "openvex", Status: status,
+			ProductID: "pkg:deb/ubuntu/" + name + "?arch=" + arch + "&distro=ubuntu-22.04",
+			BaseID:    "pkg:deb/ubuntu/" + name + "?distro=ubuntu-22.04", Versions: versions, VersionKind: "exact",
+			Updated: "2026-04-01T00:00:00Z"}
+	}
+	stmts := []db.Statement{
+		row("glibc", "amd64", "affected", "2.35-1"),
+		row("glibc", "amd64", "fixed", "2.35-2"),
+		row("openssl", "amd64", "fixed", "1.10", "1.11"),
+		row("openssl", "arm64", "fixed", "1.12"),
+		row("bash", "amd64", "fixed"),
+		{Vendor: "debian", CVE: "CVE-2024-1234", SourceFormat: "oval", Status: "fixed",
+			ProductID: "pkg:deb/debian/zlib@1.0", BaseID: "pkg:deb/debian/zlib?distro=debian-12", Versions: []string{"1.0"},
+			Updated: "2026-04-01T00:00:00Z"},
+	}
+	// The caller's echoed inputs for every base: an exact row must ignore them.
+	inputs := map[string][]string{}
+	for _, s := range stmts {
+		inputs[s.BaseID] = []string{s.BaseID}
+	}
+	doc := Encode(stmts, inputs, nil)
+	if err := Validate(doc); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, s := range doc.Statements {
+		var ids []string
+		for _, p := range s.Products {
+			ids = append(ids, p.ID)
+		}
+		got = append(got, s.Supplier+" "+s.Status+" "+strings.Join(ids, " "))
+	}
+	want := []string{
+		"debian fixed pkg:deb/debian/zlib?distro=debian-12",
+		"ubuntu fixed pkg:deb/ubuntu/bash?arch=amd64&distro=ubuntu-22.04 " +
+			"pkg:deb/ubuntu/glibc@2.35-2?arch=amd64&distro=ubuntu-22.04 " +
+			"pkg:deb/ubuntu/openssl@1.10?arch=amd64&distro=ubuntu-22.04 " +
+			"pkg:deb/ubuntu/openssl@1.11?arch=amd64&distro=ubuntu-22.04 " +
+			"pkg:deb/ubuntu/openssl@1.12?arch=arm64&distro=ubuntu-22.04",
+		"ubuntu affected pkg:deb/ubuntu/glibc@2.35-1?arch=amd64&distro=ubuntu-22.04",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("statements:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}

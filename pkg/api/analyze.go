@@ -145,7 +145,10 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		arches = requestArches(sbomComponentIDs)
 	}
 	archAllow := archAllowList(arches)
-	respBaseToReason, respBaseToInputs := s.expandProducts(sbomComponentIDs)
+	// Exact-list vendor rows are matched against each component's own
+	// version. User base_ids carry no pair, so a vendor row reached only
+	// through a user statement keeps its whole list.
+	respBaseToReason, respBaseToInputs, exactVersions := s.expandProducts(sbomComponentIDs)
 	queryBases := make(map[string]bool, len(respBaseToReason))
 	for b := range respBaseToReason {
 		queryBases[b] = true
@@ -181,7 +184,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	var truncated bool
 	switch {
 	case synthesize && len(queryBases) > 0:
-		filters := db.QueryFilters{ProductBaseIDs: mapKeysSorted(queryBases), Scopes: scopes, ArchAllow: archAllow}
+		filters := db.QueryFilters{ProductBaseIDs: mapKeysSorted(queryBases), Scopes: scopes, ArchAllow: archAllow, ExactVersions: exactVersions}
 		if s.statementsMax > 0 {
 			filters.Limit = s.statementsMax + 1 // +1 to detect truncation
 		}
@@ -207,6 +210,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			ProductBaseIDs: mapKeysSorted(queryBases),
 			Scopes:         scopes,
 			ArchAllow:      archAllow,
+			ExactVersions:  exactVersions,
 		})
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {

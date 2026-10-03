@@ -5,8 +5,9 @@
 // TestPG; this fake exists only to keep the consumer tests fast and hermetic.
 //
 // "Faithful" means: same filter semantics (IN within a dimension, AND across
-// dimensions), the same scope gate, the same deterministic ORDER BY
-// (base_id, cve, product_id, source_format), and the same BulkInsert base/
+// dimensions), the same scope gate and exact-list matching, the same
+// deterministic ORDER BY (base_id, cve, product_id, source_format, vendor,
+// scope, status, justification), and the same BulkInsert base/
 // source_format defaulting, version-list normalisation, primary key and
 // change guard as the real backends.
 package dbtest
@@ -175,6 +176,7 @@ func (s *Store) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	exact := db.NewExactFilter(f.ExactVersions)
 	var out []db.Statement
 	for _, st := range s.stmts {
 		if len(f.CVEs) > 0 && !contains(f.CVEs, st.CVE) {
@@ -216,6 +218,10 @@ func (s *Store) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 		} else if st.Scope != "" && !contains(f.Scopes, st.Scope) {
 			continue
 		}
+		st, ok := exact.Apply(st)
+		if !ok {
+			continue
+		}
 		st.AdapterID, st.Stream = "", "" // never selected by the Postgres query
 		out = append(out, st)
 	}
@@ -231,7 +237,19 @@ func (s *Store) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 		if a.ProductID != b.ProductID {
 			return a.ProductID < b.ProductID
 		}
-		return a.SourceFormat < b.SourceFormat
+		if a.SourceFormat != b.SourceFormat {
+			return a.SourceFormat < b.SourceFormat
+		}
+		if a.Vendor != b.Vendor {
+			return a.Vendor < b.Vendor
+		}
+		if a.Scope != b.Scope {
+			return a.Scope < b.Scope
+		}
+		if a.Status != b.Status {
+			return a.Status < b.Status
+		}
+		return a.Justification < b.Justification
 	})
 
 	if f.Offset > 0 {

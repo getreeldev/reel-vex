@@ -33,8 +33,8 @@ type Statement struct {
 	// zero or one.
 	Versions []string
 	// VersionKind says how Versions are read: '' (legacy, not yet converted),
-	// 'exact' (the queried version must be in the list) or 'boundary' (the
-	// versions are fixed-in boundaries).
+	// 'exact' (VersionKindExact: the queried version must be in the list) or
+	// 'boundary' (the versions are fixed-in boundaries).
 	VersionKind string
 	// Stream is the vendor product stream a boundary holds within (CSAF's
 	// relates_to product). Part of the primary key; empty for every feed until
@@ -60,6 +60,11 @@ type Statement struct {
 	// set only on in-memory user rows and appended to status_notes by the encoder.
 	Notes string
 }
+
+// VersionKindExact marks a row whose Versions are the exact builds the vendor
+// listed (Ubuntu OpenVEX, Rancher): a versioned query matches only a listed
+// version, and the row is rendered once per version.
+const VersionKindExact = "exact"
 
 // NormalizeVersions returns vs sorted lexically, de-duplicated and without
 // empty elements, or nil when nothing is left. Every store applies it to a
@@ -151,8 +156,14 @@ type Stats struct {
 //
 // Limit caps the number of rows returned (0 = no cap); Offset skips that many
 // rows for pagination. Results are ordered deterministically (base_id, cve,
-// product_id, source_format) so a paged/limited slice is stable across calls
-// and an emitted VEX document is byte-stable when the data hasn't changed.
+// product_id, source_format, vendor, scope, status, justification) so a
+// paged/limited slice is stable across calls and an emitted VEX document is
+// byte-stable when the data hasn't changed. The columns after source_format
+// matter because a verdict is part of a row's key: one product_id can hold
+// several rows (an affected and a fixed list, one verdict per scope), and
+// without them two such rows could swap places between pages. stream is the
+// one key column left out: it is not in the covering index, and it is empty
+// for every feed today.
 type QueryFilters struct {
 	CVEs           []string
 	ProductBaseIDs []string
@@ -181,8 +192,72 @@ type QueryFilters struct {
 	// Limit honest — a narrowed query would otherwise spend its whole page cap
 	// on rows it then discards, and report truncation that isn't real.
 	ArchAllow []string
-	Limit     int
-	Offset    int
+	// ExactVersions pairs each queried base identifier with the version the
+	// caller named for it (csaf.MatchVersion form; empty when none). It
+	// narrows only rows whose VersionKind is 'exact'; every other row passes
+	// through. A base named at least once without a version, and a base not
+	// listed here, keep every exact row with its whole list. A base named only
+	// with versions keeps an exact row when one of those versions is in the
+	// row's list, or when the list is empty (the vendor stated the verdict with
+	// no version), and the returned row's Versions are narrowed to the
+	// versions matched. Each row is judged against its own list, so a version
+	// listed on one row (another CVE, another architecture) never admits
+	// another row. Applied in the query, like ArchAllow, so Limit counts rows
+	// the caller keeps.
+	ExactVersions []BaseVersion
+	Limit         int
+	Offset        int
+}
+
+// BaseVersion is one queried product: a base identifier it resolved to and
+// the version the caller named, empty for none.
+type BaseVersion struct{ Base, Version string }
+
+// ExactFilter is QueryFilters.ExactVersions resolved per base: the bases the
+// caller named only with versions, each with the set of versions named.
+type ExactFilter map[string]map[string]bool
+
+// NewExactFilter resolves pairs into an ExactFilter. A base named at least
+// once without a version is left out: it keeps every exact row whole.
+func NewExactFilter(pairs []BaseVersion) ExactFilter {
+	open := make(map[string]bool)
+	f := make(ExactFilter)
+	for _, p := range pairs {
+		if p.Version == "" {
+			open[p.Base] = true
+			continue
+		}
+		if f[p.Base] == nil {
+			f[p.Base] = make(map[string]bool)
+		}
+		f[p.Base][p.Version] = true
+	}
+	for b := range open {
+		delete(f, b)
+	}
+	return f
+}
+
+// Apply is the one exact-list rule every store calls on a row it read: it
+// reports whether the row survives and returns it with Versions narrowed to
+// the versions matched. Rows that are not 'exact', rows with an empty list and
+// rows whose base the filter does not name are returned unchanged.
+func (f ExactFilter) Apply(s Statement) (Statement, bool) {
+	want, ok := f[s.BaseID]
+	if !ok || s.VersionKind != VersionKindExact || len(s.Versions) == 0 {
+		return s, true
+	}
+	var matched []string
+	for _, v := range s.Versions {
+		if want[v] {
+			matched = append(matched, v)
+		}
+	}
+	if len(matched) == 0 {
+		return s, false
+	}
+	s.Versions = matched
+	return s, true
 }
 
 // Alias is a mapping from one identifier namespace to another, as published

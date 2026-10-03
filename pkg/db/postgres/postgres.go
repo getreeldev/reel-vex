@@ -16,8 +16,11 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -231,7 +234,30 @@ func (p *DB) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 	if len(f.CVEs) == 0 && len(f.ProductBaseIDs) == 0 {
 		return nil, nil
 	}
+	query, args, exact := statementsQuery(f)
 
+	ctx, cancel := context.WithTimeout(context.Background(), p.queryTimeout)
+	defer cancel()
+	rows, err := p.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out, err := scanStatements(rows)
+	if err != nil || len(exact) == 0 {
+		return out, err
+	}
+	// The predicate kept only rows the filter keeps; this narrows each one's
+	// list to the versions matched.
+	for i := range out {
+		out[i], _ = exact.Apply(out[i])
+	}
+	return out, nil
+}
+
+// statementsQuery builds QueryStatements' SQL and arguments, and returns the
+// exact-list filter whose matched versions the caller narrows after the scan.
+func statementsQuery(f db.QueryFilters) (string, []any, db.ExactFilter) {
 	clauses := make([]string, 0, 8)
 	args := make([]any, 0)
 
@@ -274,6 +300,29 @@ func (p *DB) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 		clauses = append(clauses, fmt.Sprintf("(position('arch=' in product_id) = 0 OR product_id LIKE ANY($%d::text[]))", len(args)))
 	}
 
+	// Exact-list matching: for a base the caller named only with versions, an
+	// exact row survives only when one of those versions is in its list (or
+	// the list is empty). The versions bind as ONE jsonb object keyed by base
+	// ({"<base>": ["<version>", ...]}), so each row is tested against its own
+	// base's versions and its own list: `?` and `->` find the base in the
+	// object, `?|` tests the row's list against it. Do not rewrite this as a
+	// correlated EXISTS over unnested (base, version) arrays: inside the OR it
+	// becomes a per-row SubPlan (measured 1m44s against 0.43s at 1M exact rows
+	// and 5,000 queried products). Every column read is in the covering index,
+	// so the predicate filters inside the index scan and Limit counts rows the
+	// caller keeps.
+	exact := db.NewExactFilter(f.ExactVersions)
+	if len(exact) > 0 {
+		m := make(map[string][]string, len(exact))
+		for b, vs := range exact {
+			m[b] = slices.Sorted(maps.Keys(vs))
+		}
+		j, _ := json.Marshal(m) // a map of string slices always marshals
+		args = append(args, string(j))
+		clauses = append(clauses, fmt.Sprintf(
+			"(version_kind <> 'exact' OR cardinality(versions) = 0 OR NOT ($%[1]d::jsonb ? base_id) OR ($%[1]d::jsonb -> base_id) ?| versions)", len(args)))
+	}
+
 	// Scope gate: with no scope context only unscoped rows are returned, so a
 	// product-scoped not_affected can't suppress an unrelated product's finding.
 	if len(f.Scopes) == 0 {
@@ -287,7 +336,7 @@ func (p *DB) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 		SELECT vendor, cve, product_id, base_id, versions, version_kind, id_type, status, justification, updated, source_format, scope
 		FROM statements
 		WHERE ` + strings.Join(clauses, " AND ") + `
-		ORDER BY base_id, cve, product_id, source_format`
+		ORDER BY base_id, cve, product_id, source_format, vendor, scope, status, justification`
 	if f.Limit > 0 {
 		args = append(args, f.Limit)
 		query += fmt.Sprintf(" LIMIT $%d", len(args))
@@ -296,15 +345,7 @@ func (p *DB) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 		args = append(args, f.Offset)
 		query += fmt.Sprintf(" OFFSET $%d", len(args))
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), p.queryTimeout)
-	defer cancel()
-	rows, err := p.pool.Query(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanStatements(rows)
+	return query, args, exact
 }
 
 // scanStatements reads result rows into Statements. No selected column is
@@ -465,11 +506,15 @@ func (p *DB) computeStats() (db.Stats, error) {
 // index already exists and IF NOT EXISTS makes this an instant no-op. Building it
 // here (after the index-free bulk load) instead of in the migration keeps the
 // cold load fast. The key/INCLUDE columns must stay aligned with the broad-mode
-// query in QueryStatements (key = its WHERE/ORDER-BY tuple; INCLUDE = the rest
-// of the SELECTed columns) so the scan stays index-only. INCLUDEing the version
-// list keeps the entries small: a list holds the versions of one package
-// identity, and the identities with the most versions (Ubuntu kernels) are
-// short because their binary names carry the ABI.
+// query in QueryStatements (key = its WHERE tuple and the leading ORDER BY
+// columns, the rest of the order sorted from INCLUDE columns; INCLUDE = the
+// rest of the SELECTed and filtered columns) so the scan stays index-only.
+// INCLUDEing the version list keeps the entries small: a list holds the
+// versions of one package identity for one verdict, and a btree entry is
+// limited to ~2,700 bytes. Measured on the live feeds (Ubuntu 2026-10-02,
+// Rancher 2026-10-03): Ubuntu lists hold at most 7 versions and at most 163
+// bytes of text, Rancher lists at most 30 versions and 421 bytes of text
+// (~504 bytes as stored).
 func (p *DB) EnsureCoveringIndex() error {
 	_, err := p.pool.Exec(context.Background(), `
 		CREATE INDEX IF NOT EXISTS idx_statements_broad

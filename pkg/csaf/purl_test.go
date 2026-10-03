@@ -149,3 +149,53 @@ func TestArchIndependent(t *testing.T) {
 		}
 	}
 }
+
+func TestStripAndInsertPURLVersion(t *testing.T) {
+	cases := []struct{ in, versionless, version string }{
+		{"pkg:deb/ubuntu/openssl@3.0.2-0ubuntu1.10?arch=amd64&distro=ubuntu-22.04", "pkg:deb/ubuntu/openssl?arch=amd64&distro=ubuntu-22.04", "3.0.2-0ubuntu1.10"},
+		{"pkg:deb/ubuntu/zlib1g@1:1.2.11.dfsg-2ubuntu9.2?arch=amd64&distro=ubuntu-22.04", "pkg:deb/ubuntu/zlib1g?arch=amd64&distro=ubuntu-22.04", "1:1.2.11.dfsg-2ubuntu9.2"},
+		{"pkg:golang/golang.org/x/net@v0.35.0", "pkg:golang/golang.org/x/net", "v0.35.0"},
+		{"pkg:maven/org.apache/log4j@2.16.0?type=jar#some/path", "pkg:maven/org.apache/log4j?type=jar#some/path", "2.16.0"},
+		{"pkg:npm/%40angular/core@16.0.0", "pkg:npm/%40angular/core", "16.0.0"},
+		{"pkg:apk/alpine/zlib", "pkg:apk/alpine/zlib", ""},
+		{"pkg:deb/ubuntu/curl?arch=amd64", "pkg:deb/ubuntu/curl?arch=amd64", ""},
+		{"cpe:/a:redhat:enterprise_linux:9", "cpe:/a:redhat:enterprise_linux:9", ""},
+	}
+	for _, c := range cases {
+		vl, v := StripPURLVersion(c.in)
+		if vl != c.versionless || v != c.version {
+			t.Errorf("StripPURLVersion(%q) = %q, %q; want %q, %q", c.in, vl, v, c.versionless, c.version)
+		}
+		if c.version != "" {
+			if got := InsertPURLVersion(vl, v); got != c.in {
+				t.Errorf("InsertPURLVersion(%q, %q) = %q, want %q", vl, v, got, c.in)
+			}
+		}
+	}
+	if got := InsertPURLVersion("pkg:apk/alpine/zlib", ""); got != "pkg:apk/alpine/zlib" {
+		t.Errorf("an empty version must leave the identifier unchanged, got %q", got)
+	}
+}
+
+func TestMatchVersion(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"pkg:deb/ubuntu/openssl@3.0.2-0ubuntu1.10?arch=amd64&distro=ubuntu-22.04", "3.0.2-0ubuntu1.10"},
+		// PathUnescape, never QueryUnescape: %2B is '+', and '+' stays '+'.
+		{"pkg:deb/ubuntu/dolibarr@3.5.8%2Bdfsg1-1ubuntu1%2Besm1?arch=amd64", "3.5.8+dfsg1-1ubuntu1+esm1"},
+		{"pkg:deb/ubuntu/dolibarr@3.5.8+dfsg1-1ubuntu1+esm1?arch=amd64", "3.5.8+dfsg1-1ubuntu1+esm1"},
+		// A non-zero epoch qualifier folds in; zero and an inline epoch do not.
+		{"pkg:deb/ubuntu/zlib1g@1.2.11.dfsg-2ubuntu9.2?arch=amd64&distro=ubuntu-22.04&epoch=1", "1:1.2.11.dfsg-2ubuntu9.2"},
+		{"pkg:deb/ubuntu/zlib1g@1.2.11.dfsg-2ubuntu9.2?epoch=0&arch=amd64", "1.2.11.dfsg-2ubuntu9.2"},
+		{"pkg:deb/ubuntu/bind9@1:9.11.3%2Bdfsg-1ubuntu1.17?epoch=1", "1:9.11.3+dfsg-1ubuntu1.17"},
+		{"pkg:deb/ubuntu/bind9@1%3A9.11.3?epoch=1", "1:9.11.3"},
+		{"pkg:deb/ubuntu/zlib1g?epoch=1", ""},
+		{"cpe:/a:redhat:enterprise_linux:9", ""},
+		// A malformed escape is compared as written.
+		{"pkg:golang/x@v1%zz", "v1%zz"},
+	}
+	for _, c := range cases {
+		if got := MatchVersion(c.in); got != c.want {
+			t.Errorf("MatchVersion(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
