@@ -21,11 +21,26 @@ type Options struct {
 	// Limit caps the number of statements emitted per adapter. Zero means
 	// unlimited. Dev/testing convenience; production should leave it at 0.
 	Limit int
+	// SweepMaxFraction bounds removal of rows an adapter no longer emits. A
+	// whole-feed sweep is refused when more than this fraction of the rows the
+	// adapter owns would go, and a withdrawal when more than this fraction of
+	// the CVEs it holds would. 0 (or less) disables every removal and records
+	// no seen keys; >= 1 lifts the fraction guards (a whole-feed sweep that saw
+	// nothing is still refused).
+	SweepMaxFraction float64
 }
 
 // Run drives every adapter then every alias fetcher sequentially. A failure
 // in any one is logged and skipped so the others still run.
+//
+// Run first ends every sweep session a previous run left open, including one
+// a crashed process orphaned. That assumes one ingest writer per database at
+// a time — the server's scheduler or the `ingest` subcommand, never both —
+// which already holds, since two writers would double-ingest.
 func Run(ctx context.Context, adapters []source.Adapter, fetchers []aliases.Fetcher, database db.Store, opts Options) error {
+	if err := database.ResetSweeps(); err != nil {
+		slog.Warn("reset sweeps failed", "error", err)
+	}
 	for _, a := range adapters {
 		if err := runAdapter(ctx, a, database, opts); err != nil {
 			slog.Error("adapter ingest failed", "adapter", a.ID(), "error", err)
@@ -92,14 +107,61 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 		batch     []db.Statement
 		newest    time.Time
 		processed int
+		// limitHit and flushFailed are set inside the closures, so neither an
+		// adapter that swallows emit's error nor one that rewraps it can make
+		// a cut or partly-failed run look whole.
+		limitHit, flushFailed bool
+		// seen counts the keys recorded into the open sweep session.
+		seen int64
 	)
+
+	// Removal: open a sweep session before Sync, so every key the sync emits
+	// is recorded and FinishSweep can delete the adapter's rows it did not.
+	// skip holds the first reason this run removes nothing.
+	var skip string
+	sessionOpen := false
+	if !(opts.SweepMaxFraction > 0) {
+		skip = "disabled"
+	} else if err := database.StartSweep(a.ID()); err != nil {
+		slog.Error("start sweep failed; ingesting without removal", "adapter", a.ID(), "error", err)
+		skip = "start error"
+	} else {
+		sessionOpen = true
+	}
+	endSession := func() {
+		sessionOpen = false
+		if err := database.AbortSweep(a.ID()); err != nil {
+			slog.Warn("abort sweep failed", "adapter", a.ID(), "error", err)
+		}
+	}
+	// A session still open at return means Sync panicked: end it, and log the
+	// run's one sweep line.
+	defer func() {
+		if sessionOpen {
+			endSession()
+			logSweep(a.ID(), "cves:0", db.SweepResult{Seen: seen}, "aborted", nil)
+		}
+	}()
 
 	flush := func() error {
 		if len(batch) == 0 {
 			return nil
 		}
 		if err := database.BulkInsert(batch); err != nil {
+			flushFailed = true
 			return err
+		}
+		if sessionOpen {
+			keys := make([]db.StatementKey, len(batch))
+			for i, st := range batch {
+				keys[i] = db.StatementKey{CVE: st.CVE, ProductID: st.ProductID, Scope: st.Scope,
+					Stream: st.Stream, Status: st.Status, Justification: st.Justification}
+			}
+			if err := database.RecordSeen(a.ID(), keys); err != nil {
+				flushFailed = true
+				return err
+			}
+			seen += int64(len(keys))
 		}
 		batch = batch[:0]
 		return nil
@@ -107,6 +169,7 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 
 	emit := func(s source.Statement) error {
 		if opts.Limit > 0 && processed >= opts.Limit {
+			limitHit = true
 			return errLimitReached
 		}
 		if s.Updated.After(newest) {
@@ -134,6 +197,8 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 			Updated:      s.Updated.UTC().Format(time.RFC3339),
 			SourceFormat: a.SourceFormat(),
 			Scope:        s.Scope,
+			// Ownership is recorded on every write, removal enabled or not.
+			AdapterID: a.ID(),
 		})
 		processed++
 		if len(batch) >= batchSize {
@@ -143,16 +208,74 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 	}
 
 	res, err := a.Sync(ctx, since, emit)
-	if err != nil {
-		if !errors.Is(err, errLimitReached) {
-			return fmt.Errorf("sync: %w", err)
+	if err != nil && !errors.Is(err, errLimitReached) {
+		// The pending batch is not flushed: the run failed.
+		if skip == "" {
+			skip = "sync error"
+			if flushFailed {
+				skip = "flush error"
+			}
 		}
+		if sessionOpen {
+			endSession()
+		}
+		logSweep(a.ID(), "cves:0", db.SweepResult{Seen: seen}, skip, nil)
+		return fmt.Errorf("sync: %w", err)
+	}
+	if limitHit || err != nil {
 		// Options.Limit cut the stream short: whatever the adapter would have
 		// reported, this run did not emit its whole set.
 		res = source.SyncResult{}
 	}
 	if err := flush(); err != nil {
+		if skip == "" {
+			skip = "flush error"
+		}
+		if sessionOpen {
+			endSession()
+		}
+		logSweep(a.ID(), sweepScopeLabel(res), db.SweepResult{Seen: seen}, skip, nil)
 		return fmt.Errorf("flush: %w", err)
+	}
+
+	// Remove what this run proved the vendor no longer publishes. Neither a
+	// FinishSweep nor a Withdraw error fails the adapter: the data was written,
+	// the watermark below still moves, and the next sync retries.
+	if skip == "" {
+		switch {
+		case flushFailed:
+			skip = "flush error"
+		case limitHit:
+			skip = "limit"
+		}
+	}
+	scopeLabel := sweepScopeLabel(res)
+	switch {
+	case skip != "":
+		if sessionOpen {
+			endSession()
+		}
+		logSweep(a.ID(), scopeLabel, db.SweepResult{Seen: seen}, skip, nil)
+	default:
+		var scope db.SweepScope
+		switch {
+		case res.Complete:
+			scope.All = true
+		case len(res.RefreshedCVEs) > 0:
+			scope.CVEs = res.RefreshedCVEs
+		}
+		if scope.All || len(scope.CVEs) > 0 {
+			sweepRes, err := database.FinishSweep(a.ID(), scope, opts.SweepMaxFraction)
+			sessionOpen = false
+			logSweep(a.ID(), scopeLabel, sweepRes, "", err)
+		} else {
+			endSession()
+			logSweep(a.ID(), scopeLabel, db.SweepResult{Seen: seen}, "incomplete", nil)
+		}
+		if res.LiveCVEs != nil {
+			wres, err := database.Withdraw(a.ID(), res.LiveCVEs, opts.SweepMaxFraction)
+			logWithdraw(a.ID(), wres, err)
+		}
 	}
 
 	// Record adapter state: feed URL (always) and watermark (only if we saw
@@ -173,4 +296,43 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 	slog.Info("adapter done", "adapter", a.ID(), "processed", processed,
 		"complete", res.Complete, "refreshed", len(res.RefreshedCVEs), "live", live)
 	return nil
+}
+
+// sweepScopeLabel is the scope field of the sweep log line: `all` for a
+// complete run, else the number of refreshed CVEs.
+func sweepScopeLabel(res source.SyncResult) string {
+	if res.Complete {
+		return "all"
+	}
+	return "cves:" + strconv.Itoa(len(res.RefreshedCVEs))
+}
+
+// logSweep writes the one `sweep` line an adapter run logs: INFO, WARN on a
+// refusal (deleted=0; the would-have-deleted count is in the reason), ERROR
+// when FinishSweep failed.
+func logSweep(adapterID, scope string, res db.SweepResult, skipped string, err error) {
+	attrs := []any{"adapter", adapterID, "scope", scope, "seen", res.Seen, "owned", res.Owned}
+	switch {
+	case skipped != "":
+		slog.Info("sweep", append(attrs, "deleted", res.Deleted, "skipped", skipped)...)
+	case err != nil:
+		slog.Error("sweep", append(attrs, "deleted", res.Deleted, "error", err)...)
+	case res.Refused:
+		slog.Warn("sweep", append(attrs, "deleted", 0, "refused", res.Reason)...)
+	default:
+		slog.Info("sweep", append(attrs, "deleted", res.Deleted)...)
+	}
+}
+
+// logWithdraw writes the `withdraw` line, with the same levels as logSweep.
+func logWithdraw(adapterID string, res db.WithdrawResult, err error) {
+	attrs := []any{"adapter", adapterID, "live", res.Live, "held_cves", res.HeldCVEs, "withdrawn_cves", res.WithdrawnCVEs}
+	switch {
+	case err != nil:
+		slog.Error("withdraw", append(attrs, "deleted", res.Deleted, "error", err)...)
+	case res.Refused:
+		slog.Warn("withdraw", append(attrs, "deleted", 0, "refused", res.Reason)...)
+	default:
+		slog.Info("withdraw", append(attrs, "deleted", res.Deleted)...)
+	}
 }

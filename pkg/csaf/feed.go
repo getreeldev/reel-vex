@@ -16,27 +16,33 @@ type FeedEntry struct {
 
 // FetchFeedEntries fetches and parses changes.csv from a VEX distribution.
 // If since is non-zero, only entries newer than since are returned.
-// Returns entries in the order they appear in the file (vendor-dependent sorting).
+// Returns entries in the order they appear in the file (vendor-dependent sorting),
+// and how many non-blank lines could not be parsed and were skipped: a skipped
+// line may name a document, so a caller that needs every document must treat
+// a non-zero count as a gap.
 //
 // client carries the caller's timeout + retry transport (a hung or flaky feed
 // host must not stall the whole ingest cycle); a nil client falls back to
 // http.DefaultClient.
-func FetchFeedEntries(client *http.Client, feedURL string, since time.Time) ([]FeedEntry, error) {
+func FetchFeedEntries(client *http.Client, feedURL string, since time.Time) ([]FeedEntry, int, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
 	csvURL := feedURL + "changes.csv"
 	resp, err := client.Get(csvURL)
 	if err != nil {
-		return nil, fmt.Errorf("fetch changes.csv: %w", err)
+		return nil, 0, fmt.Errorf("fetch changes.csv: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("changes.csv returned %d", resp.StatusCode)
+		return nil, 0, fmt.Errorf("changes.csv returned %d", resp.StatusCode)
 	}
 
-	var entries []FeedEntry
+	var (
+		entries []FeedEntry
+		skipped int
+	)
 	scanner := bufio.NewScanner(resp.Body)
 	// Some feeds are large (Red Hat ~15MB). Increase buffer.
 	scanner.Buffer(make([]byte, 0, 1024), 1024*1024)
@@ -49,7 +55,8 @@ func FetchFeedEntries(client *http.Client, feedURL string, since time.Time) ([]F
 
 		entry, err := parseCSVLine(line)
 		if err != nil {
-			continue // skip malformed lines
+			skipped++
+			continue
 		}
 
 		if !since.IsZero() && !entry.Updated.After(since) {
@@ -63,10 +70,10 @@ func FetchFeedEntries(client *http.Client, feedURL string, since time.Time) ([]F
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read changes.csv: %w", err)
+		return nil, 0, fmt.Errorf("read changes.csv: %w", err)
 	}
 
-	return entries, nil
+	return entries, skipped, nil
 }
 
 // parseCSVLine parses a line like: "2024/cve-2024-6387.json","2024-07-01T12:00:00+00:00"

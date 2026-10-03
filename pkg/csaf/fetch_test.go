@@ -52,7 +52,7 @@ func TestFetchFeedEntries_UsesProvidedClient(t *testing.T) {
 	rt := &cannedRT{body: `"2024/cve-2024-6387.json","2024-07-01T12:00:00+00:00"` + "\n"}
 	client := &http.Client{Transport: rt}
 
-	entries, err := FetchFeedEntries(client, "https://reel-vex.invalid/vex/", time.Time{})
+	entries, _, err := FetchFeedEntries(client, "https://reel-vex.invalid/vex/", time.Time{})
 	if err != nil {
 		t.Fatalf("FetchFeedEntries: %v", err)
 	}
@@ -61,5 +61,28 @@ func TestFetchFeedEntries_UsesProvidedClient(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Path != "2024/cve-2024-6387.json" {
 		t.Fatalf("entries = %+v, want one entry for 2024/cve-2024-6387.json", entries)
+	}
+}
+
+// TestFetchFeedEntries_CountsSkippedLines: a line that does not parse is
+// skipped and counted, a blank line is neither, and a line filtered out by
+// since is not a skip.
+func TestFetchFeedEntries_CountsSkippedLines(t *testing.T) {
+	rt := &cannedRT{body: `"2024/cve-2024-6387.json","2024-07-01T12:00:00+00:00"` + "\n" +
+		"\n" +
+		`"2024/cve-2024-0001.json","not a time"` + "\n" +
+		`no comma at all` + "\n" +
+		`"2023/cve-2023-0001.json","2023-01-01T00:00:00+00:00"` + "\n"}
+	client := &http.Client{Transport: rt}
+
+	entries, skipped, err := FetchFeedEntries(client, "https://reel-vex.invalid/vex/", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("FetchFeedEntries: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Path != "2024/cve-2024-6387.json" {
+		t.Errorf("entries = %+v, want one entry for 2024/cve-2024-6387.json", entries)
+	}
+	if skipped != 2 {
+		t.Errorf("skipped = %d, want 2", skipped)
 	}
 }

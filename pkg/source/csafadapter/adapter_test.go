@@ -205,6 +205,42 @@ func TestSync_LiveCVEsNilWhenIndexNamesNoCVE(t *testing.T) {
 	}
 }
 
+// TestSync_UnparseableChangesLineIsIncomplete: a cold-start crawl whose
+// changes.csv has a line it cannot parse may have missed a document, so it is
+// not Complete — a whole-feed sweep would otherwise delete that document's rows.
+func TestSync_UnparseableChangesLineIsIncomplete(t *testing.T) {
+	fixture, err := os.ReadFile(fixturePath(t, "secdata-1220-cve-2024-0217.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	mux.HandleFunc("/provider-metadata.json", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"publisher":{"name":"Test Vendor"},"distributions":[{"directory_url":"%s/vex/"}]}`, server.URL)
+	})
+	mux.HandleFunc("/vex/changes.csv", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `"2024/cve-2024-0217.json","2024-01-05T00:00:00+00:00"`+"\n"+
+			`"2024/cve-2024-0218.json","2024-01-05 00:00:00"`+"\n")
+	})
+	mux.HandleFunc("/vex/2024/cve-2024-0217.json", func(w http.ResponseWriter, r *http.Request) { w.Write(fixture) })
+
+	a, err := New(source.AdapterConfig{Type: Type, ID: "test", URL: server.URL + "/provider-metadata.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Sync(context.Background(), time.Time{}, func(source.Statement) error { return nil })
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if res.Complete {
+		t.Error("a crawl that skipped an unparseable changes.csv line must not report Complete")
+	}
+	if want := []string{"CVE-2024-0217"}; !slices.Equal(res.RefreshedCVEs, want) {
+		t.Errorf("RefreshedCVEs: got %v, want %v", res.RefreshedCVEs, want)
+	}
+}
+
 func TestDocCVE(t *testing.T) {
 	for in, want := range map[string]string{
 		"2024/cve-2024-6387.json":                     "CVE-2024-6387",

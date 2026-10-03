@@ -140,9 +140,14 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 		}
 	}
 
-	entries, err := csaf.FetchFeedEntries(a.http, a.feedURL, effectiveSince)
+	entries, skippedLines, err := csaf.FetchFeedEntries(a.http, a.feedURL, effectiveSince)
 	if err != nil {
 		return source.SyncResult{}, fmt.Errorf("fetch changes.csv: %w", err)
+	}
+	if skippedLines > 0 {
+		// A line that does not parse may name a document this run never reads.
+		slog.Warn("csaf changes.csv lines unparseable; skipped", "adapter", a.id, "skipped_lines", skippedLines)
+		failed += skippedLines
 	}
 
 	for i, entry := range entries {
