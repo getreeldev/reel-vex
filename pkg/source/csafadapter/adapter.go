@@ -89,7 +89,11 @@ func (a *Adapter) Discover(ctx context.Context) (*source.FeedInfo, error) {
 // of the feed. A cold start reads every document exactly once — from the bulk
 // archive when the archive's copy is current, else from the feed — and then
 // every index.txt document neither of those read; it is Complete only when it
-// read every document index.txt lists.
+// read every document index.txt lists. A document that answers 404 or 410 and
+// that index.txt does not list was withdrawn after changes.csv named it, and
+// is no failure. Any other failure of a changes.csv document sets RetryFrom so
+// the next run reads it again — unless the document is older than
+// retryWindow, when it is given up on.
 func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.Statement) error) (source.SyncResult, error) {
 	if a.feedURL == "" {
 		if _, err := a.Discover(ctx); err != nil {
@@ -109,6 +113,13 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 		failed += skippedLines
 	}
 	livePaths := a.fetchLiveIndex(ctx)
+	var listed map[string]struct{} // nil when there is no manifest
+	if livePaths != nil {
+		listed = make(map[string]struct{}, len(livePaths))
+		for _, p := range livePaths {
+			listed[docCVE(p)] = struct{}{}
+		}
+	}
 
 	// emit's own error is recorded so the cold-start fallback below can tell
 	// "the orchestrator refused a statement" (return it) from "the archive
@@ -128,6 +139,11 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 	refreshed := map[string]struct{}{}
 	fetched := map[string]struct{}{}
 	attempted := map[string]struct{}{}
+	var (
+		withdrawn int       // documents that answered 404 or 410 and index.txt does not list
+		retryFrom time.Time // changes.csv date of the earliest document to read again
+		now       = time.Now()
+	)
 	markRefreshed := func(docPath string) {
 		if cve := docCVE(docPath); cve != "" {
 			refreshed[cve] = struct{}{}
@@ -157,7 +173,7 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 	// after the point it broke when it failed part-way, and any entry that
 	// failed to extract. Feeds without an archive (e.g. SUSE) crawl it all.
 	if coldStart {
-		unreadable, err := a.syncFromArchive(ctx, entries, emitRecorded, markRefreshed)
+		unreadable, err := a.syncFromArchive(ctx, entries, listed, emitRecorded, markRefreshed)
 		switch {
 		case emitErr != nil:
 			return source.SyncResult{}, emitErr
@@ -187,12 +203,27 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 			attempted[cve] = struct{}{}
 			entry.Updated = newestLine[cve]
 		}
-		ok, err := a.readDocument(ctx, entry.Path, entry.Updated, emit)
+		outcome, err := a.readDocument(ctx, entry.Path, entry.Updated, emit)
 		if err != nil {
 			return source.SyncResult{}, err
 		}
-		if !ok {
+		if outcome == readGone {
+			if _, ok := listed[cve]; listed != nil && !ok {
+				slog.Info("csaf document withdrawn: gone, and index.txt does not list it", "adapter", a.id, "path", entry.Path)
+				withdrawn++
+				continue
+			}
+			slog.Warn("csaf document gone but not withdrawn: index.txt lists it, or there is no index.txt", "adapter", a.id, "path", entry.Path)
+		}
+		if outcome != readOK {
 			failed++
+			switch {
+			case now.Sub(entry.Updated) > retryWindow:
+				slog.Warn("csaf document failed and is older than the retry window; giving up on it",
+					"adapter", a.id, "path", entry.Path, "updated", entry.Updated, "retry_window", retryWindow)
+			case retryFrom.IsZero() || entry.Updated.Before(retryFrom):
+				retryFrom = entry.Updated
+			}
 			continue
 		}
 		// A document with no statements still refreshes: the vendor
@@ -228,7 +259,7 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 			}
 			attempted[cve] = struct{}{}
 			extra++
-			ok, err := a.readDocument(ctx, p, time.Time{}, func(s source.Statement) error {
+			outcome, err := a.readDocument(ctx, p, time.Time{}, func(s source.Statement) error {
 				if s.Updated.IsZero() {
 					s.Updated = fallback
 				}
@@ -237,7 +268,12 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 			if err != nil {
 				return source.SyncResult{}, err
 			}
-			if !ok {
+			if outcome == readGone {
+				slog.Warn("csaf document index.txt lists is gone", "adapter", a.id, "path", p)
+			}
+			if outcome != readOK {
+				// changes.csv does not date it, so RetryFrom cannot name it;
+				// the next cold start reads it.
 				failed++
 				continue
 			}
@@ -285,42 +321,68 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 		Complete:      complete,
 		RefreshedCVEs: make([]string, 0, len(refreshed)),
 		LiveCVEs:      live,
+		RetryFrom:     retryFrom,
 	}
 	for cve := range refreshed {
 		res.RefreshedCVEs = append(res.RefreshedCVEs, cve)
 	}
 	sort.Strings(res.RefreshedCVEs)
+	if withdrawn > 0 {
+		slog.Info("csaf documents changes.csv names are gone and unlisted: withdrawn", "adapter", a.id, "withdrawn", withdrawn)
+	}
 	if failed > 0 {
-		slog.Warn("csaf sync skipped documents on error; run is incomplete", "adapter", a.id, "failed", failed)
+		slog.Warn("csaf sync skipped documents on error; run is incomplete", "adapter", a.id, "failed", failed, "retry_from", retryFrom)
 	}
 	return res, nil
 }
 
+// retryWindow bounds how far back a failed document holds the watermark
+// (RetryFrom): one whose changes.csv date is older than this is given up on,
+// with a WARN naming it, so a document that is permanently broken cannot make
+// every later run re-read the feed from its date. The vendor re-publishing it
+// lists it in changes.csv again. Seven days covers a vendor outage over a
+// weekend and more; at that depth an incremental run re-reads a few thousand
+// documents (Red Hat changed 3,777, SUSE 7,531 in the 7 days to 2026-10-04).
+const retryWindow = 7 * 24 * time.Hour
+
+// readOutcome is what reading one document came to.
+type readOutcome int
+
+const (
+	readOK     readOutcome = iota
+	readFailed             // not fetched (network, 5xx, ...), not the CSAF document its path names, or not parsed
+	readGone               // the feed answered 404 or 410
+)
+
 // readDocument fetches one document by its path under the feed, checks it is
 // the CSAF document the path names, and emits its statements dated updated —
 // or, when updated is zero, by the document's own current_release_date (zero
-// when it has none; the caller's emit dates those). It returns false, logged,
-// when the document could not be read, and an error only from emit.
-func (a *Adapter) readDocument(ctx context.Context, docPath string, updated time.Time, emit func(source.Statement) error) (bool, error) {
+// when it has none; the caller's emit dates those). A document that could not
+// be read is logged and reported by the outcome; the error is only emit's.
+func (a *Adapter) readDocument(ctx context.Context, docPath string, updated time.Time, emit func(source.Statement) error) (readOutcome, error) {
 	docURL := a.feedURL + docPath
 	data, err := a.fetchDocument(ctx, docURL)
+	var status httpStatusError
+	if errors.As(err, &status) && (status == http.StatusNotFound || status == http.StatusGone) {
+		return readGone, nil // the caller decides, by the manifest, whether that is a failure
+	}
 	if err != nil {
 		slog.Warn("csaf fetch failed", "adapter", a.id, "url", docURL, "error", err)
-		return false, nil
+		return readFailed, nil
 	}
 	if err := checkDocument(data, docCVE(docPath)); err != nil {
 		slog.Warn("csaf document refused", "adapter", a.id, "url", docURL, "error", err)
-		return false, nil
+		return readFailed, nil
 	}
 	stmts, err := csaf.Extract(data)
 	if err != nil {
 		slog.Warn("csaf extract failed", "adapter", a.id, "url", docURL, "error", err)
-		return false, nil
+		return readFailed, nil
 	}
 	if updated.IsZero() {
 		updated = releaseDate(data, time.Time{})
 	}
-	return true, emitStatements(stmts, updated, emit)
+	return readOK, emitStatements(stmts, updated, emit)
 }
 
 // emitStatements emits a document's statements, each dated updated.
@@ -473,7 +535,12 @@ func (a *Adapter) fetchDocument(ctx context.Context, url string) ([]byte, error)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, httpStatusError(resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)
 }
+
+// httpStatusError is a document fetch answered with a status other than 200.
+type httpStatusError int
+
+func (e httpStatusError) Error() string { return fmt.Sprintf("HTTP %d", int(e)) }

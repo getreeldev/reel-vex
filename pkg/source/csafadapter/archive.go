@@ -34,7 +34,11 @@ const archiveHTTPTimeout = 10 * time.Minute
 // statement, each document dated by its own current_release_date. It skips
 // every document the given changes.csv entries date after the archive's cut
 // (all of them when the cut date is unknown): the archive holds an older copy
-// of those, and the caller fetches them fresh. refreshed is called with the
+// of those, and the caller fetches them fresh. With a manifest (listed
+// non-nil, the CVEs index.txt names) it also skips every document the manifest
+// does not list: the vendor withdrew it after the cut. Should the manifest be
+// truncated, a skipped document that changes.csv lists is fetched by the
+// caller, and its absence from the manifest then distrusts the manifest. refreshed is called with the
 // path of every entry fully emitted, including entries that yield no
 // statements; it is called as the walk goes, so the entries read before a
 // part-way failure have already been reported. An entry that fails to extract
@@ -45,7 +49,7 @@ const archiveHTTPTimeout = 10 * time.Minute
 // No archive published for this feed returns (0, nil). A non-nil error means
 // an archive existed but processing failed; the caller crawls what it did not
 // read. An error from emit is returned as is.
-func (a *Adapter) syncFromArchive(ctx context.Context, entries []csaf.FeedEntry, emit func(source.Statement) error, refreshed func(docPath string)) (unreadable int, err error) {
+func (a *Adapter) syncFromArchive(ctx context.Context, entries []csaf.FeedEntry, listed map[string]struct{}, emit func(source.Statement) error, refreshed func(docPath string)) (unreadable int, err error) {
 	name, err := a.fetchArchiveName(ctx)
 	if err != nil {
 		return 0, err
@@ -92,7 +96,7 @@ func (a *Adapter) syncFromArchive(ctx context.Context, entries []csaf.FeedEntry,
 		fallback = time.Now().UTC()
 	}
 
-	var docs, emitted, skipped, stale int
+	var docs, emitted, skipped, stale, withdrawn int
 	for {
 		if err := ctx.Err(); err != nil {
 			return 0, err
@@ -111,6 +115,12 @@ func (a *Adapter) syncFromArchive(ctx context.Context, entries []csaf.FeedEntry,
 		if _, ok := fresh[cve]; ok {
 			stale++
 			continue
+		}
+		if listed != nil && cve != "" {
+			if _, ok := listed[cve]; !ok {
+				withdrawn++
+				continue
+			}
 		}
 		data, err := io.ReadAll(tr)
 		if err != nil {
@@ -144,7 +154,7 @@ func (a *Adapter) syncFromArchive(ctx context.Context, entries []csaf.FeedEntry,
 		}
 	}
 	slog.Info("csaf bulk archive: done", "adapter", a.id, "docs", docs, "emitted", emitted, "skipped", skipped,
-		"changed_since_cut", stale, "archive_date", archiveDate.Format("2006-01-02"))
+		"changed_since_cut", stale, "withdrawn", withdrawn, "archive_date", archiveDate.Format("2006-01-02"))
 	return unreadable, nil
 }
 

@@ -318,6 +318,11 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 	// new data this cycle). UpsertAdapterState preserves the prior watermark
 	// when the incoming one is empty, so HEAD-short-circuit cycles don't
 	// erase a previously-set last_synced.
+	// A document the adapter failed to read is read again next run: the
+	// watermark stays a second before it (the stored form has no fraction).
+	if !res.RetryFrom.IsZero() && !newest.Before(res.RetryFrom) {
+		newest = res.RetryFrom.Add(-time.Second)
+	}
 	var newestStr string
 	if !newest.IsZero() {
 		newestStr = newest.UTC().Format(time.RFC3339) // UTC: see emit() above

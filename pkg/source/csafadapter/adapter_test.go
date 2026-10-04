@@ -294,10 +294,17 @@ func csafDoc(cve, status, released string) []byte {
 // files (path relative to the feed). hits counts the requests per path.
 func feedServer(t *testing.T, files map[string][]byte) (metadataURL string, hits map[string]int) {
 	t.Helper()
+	return feedServerWrapped(t, files, func(h http.Handler) http.Handler { return h })
+}
+
+// feedServerWrapped is feedServer with wrap around its handler, to answer
+// some paths otherwise.
+func feedServerWrapped(t *testing.T, files map[string][]byte, wrap func(http.Handler) http.Handler) (metadataURL string, hits map[string]int) {
+	t.Helper()
 	hits = map[string]int{}
 	var mu sync.Mutex
 	mux := http.NewServeMux()
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(wrap(mux))
 	t.Cleanup(server.Close)
 	mux.HandleFunc("/provider-metadata.json", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"publisher":{"name":"Test Vendor"},"distributions":[{"directory_url":"%s/vex/"}]}`, server.URL)
@@ -419,6 +426,134 @@ func TestSync_ManifestMissingAFetchedDocumentIsNotTrusted(t *testing.T) {
 		if want := []string{"CVE-2099-0001", "CVE-2099-0002"}; !slices.Equal(res.RefreshedCVEs, want) {
 			t.Errorf("since %v: RefreshedCVEs: got %v, want %v", since, res.RefreshedCVEs, want)
 		}
+	}
+}
+
+// changesLine is one changes.csv line dated at.
+func changesLine(path string, at time.Time) string {
+	return `"` + path + `","` + at.UTC().Format(time.RFC3339) + `"` + "\n"
+}
+
+// TestSync_GoneAndUnlistedIsWithdrawn: a document changes.csv names that
+// answers 404 or 410 and that index.txt does not list was withdrawn after it
+// was listed: not a failure, not refreshed, no retry. One index.txt does list
+// is a failure, read again next run.
+func TestSync_GoneAndUnlistedIsWithdrawn(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	unlisted404, unlisted410, listed404 := now.Add(-3*time.Hour), now.Add(-2*time.Hour), now.Add(-time.Hour)
+	files := map[string][]byte{
+		"changes.csv": []byte(changesLine("2099/cve-2099-0001.json", unlisted404) +
+			changesLine("2099/cve-2099-0002.json", unlisted410) +
+			changesLine("2099/cve-2099-0003.json", now.Add(-30*time.Minute))),
+		"index.txt":               []byte("2099/cve-2099-0003.json\n"),
+		"2099/cve-2099-0003.json": csafDoc("CVE-2099-0003", "fixed", "2026-05-25T00:00:00Z"),
+	}
+	gone410 := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/cve-2099-0002.json") {
+				w.WriteHeader(http.StatusGone)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	t.Run("unlisted", func(t *testing.T) {
+		metadataURL, _ := feedServerWrapped(t, files, gone410)
+		a, err := New(source.AdapterConfig{Type: Type, ID: "suse", URL: metadataURL})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := a.Sync(context.Background(), time.Time{}, func(source.Statement) error { return nil })
+		if err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		if !res.Complete {
+			t.Error("documents withdrawn after changes.csv named them must not make a cold start incomplete")
+		}
+		if !res.RetryFrom.IsZero() {
+			t.Errorf("RetryFrom = %v, want zero: nothing failed", res.RetryFrom)
+		}
+		if want := []string{"CVE-2099-0003"}; !slices.Equal(res.RefreshedCVEs, want) {
+			t.Errorf("RefreshedCVEs: got %v, want %v", res.RefreshedCVEs, want)
+		}
+	})
+
+	t.Run("listed", func(t *testing.T) {
+		listedFiles := map[string][]byte{}
+		for k, v := range files {
+			listedFiles[k] = v
+		}
+		listedFiles["changes.csv"] = append(append([]byte{}, files["changes.csv"]...), changesLine("2099/cve-2099-0004.json", listed404)...)
+		listedFiles["index.txt"] = []byte("2099/cve-2099-0003.json\n2099/cve-2099-0004.json\n")
+		metadataURL, _ := feedServerWrapped(t, listedFiles, gone410)
+		a, err := New(source.AdapterConfig{Type: Type, ID: "suse", URL: metadataURL})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := a.Sync(context.Background(), now.Add(-24*time.Hour), func(source.Statement) error { return nil })
+		if err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		if !res.RetryFrom.Equal(listed404) {
+			t.Errorf("RetryFrom = %v, want the listed 404's date %v", res.RetryFrom, listed404)
+		}
+		if want := []string{"CVE-2099-0003"}; !slices.Equal(res.RefreshedCVEs, want) {
+			t.Errorf("RefreshedCVEs: got %v, want %v", res.RefreshedCVEs, want)
+		}
+	})
+}
+
+// TestSync_FailureSetsRetryFrom: RetryFrom is the changes.csv date of the
+// earliest document that failed — a refused body, an HTTP error — so the
+// next run reads it again; a failure older than retryWindow is given up on
+// and holds nothing back.
+func TestSync_FailureSetsRetryFrom(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	recent, older, ancient := now.Add(-time.Hour), now.Add(-6*24*time.Hour), now.Add(-8*24*time.Hour)
+	forbidden := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/cve-2099-0002.json") {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	for _, c := range []struct {
+		name  string
+		lines string
+		want  time.Time
+	}{
+		{"recent failures", changesLine("2099/cve-2099-0001.json", recent) + changesLine("2099/cve-2099-0002.json", older) +
+			changesLine("2099/cve-2099-0003.json", now), older},
+		{"a failure past the window", changesLine("2099/cve-2099-0001.json", recent) + changesLine("2099/cve-2099-0002.json", ancient) +
+			changesLine("2099/cve-2099-0003.json", now), recent},
+		{"only a failure past the window", changesLine("2099/cve-2099-0002.json", ancient) +
+			changesLine("2099/cve-2099-0003.json", now), time.Time{}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			metadataURL, _ := feedServerWrapped(t, map[string][]byte{
+				"changes.csv":             []byte(c.lines),
+				"index.txt":               []byte("2099/cve-2099-0001.json\n2099/cve-2099-0002.json\n2099/cve-2099-0003.json\n"),
+				"2099/cve-2099-0001.json": []byte(`{"message":"Service Unavailable"}`),
+				"2099/cve-2099-0003.json": csafDoc("CVE-2099-0003", "fixed", "2026-05-25T00:00:00Z"),
+			}, forbidden)
+			a, err := New(source.AdapterConfig{Type: Type, ID: "suse", URL: metadataURL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := a.Sync(context.Background(), now.Add(-30*24*time.Hour), func(source.Statement) error { return nil })
+			if err != nil {
+				t.Fatalf("Sync: %v", err)
+			}
+			if !res.RetryFrom.Equal(c.want) {
+				t.Errorf("RetryFrom = %v, want %v", res.RetryFrom, c.want)
+			}
+			if want := []string{"CVE-2099-0003"}; !slices.Equal(res.RefreshedCVEs, want) {
+				t.Errorf("RefreshedCVEs: got %v, want %v", res.RefreshedCVEs, want)
+			}
+		})
 	}
 }
 

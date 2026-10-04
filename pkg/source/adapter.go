@@ -79,6 +79,12 @@ type SyncResult struct {
 	// adapter has no manifest or could not read it — never an empty slice
 	// standing in for "unknown".
 	LiveCVEs []string
+
+	// RetryFrom, when non-zero, is the feed timestamp (CSAF changes.csv) of
+	// the earliest document this call failed to read and wants read again.
+	// The orchestrator keeps the watermark before it, so the next incremental
+	// sync fetches that document — and every one after it — again.
+	RetryFrom time.Time
 }
 
 // FeedInfo is the post-discovery metadata about an adapter's feed.

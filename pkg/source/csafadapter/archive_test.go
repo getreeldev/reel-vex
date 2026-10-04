@@ -465,3 +465,67 @@ func TestReleaseDate(t *testing.T) {
 		}
 	}
 }
+
+// TestSync_ArchiveSkipsWithdrawnDocuments: on a cold start, an archived
+// document index.txt does not list was withdrawn after the weekly cut and is
+// not emitted. Should index.txt be truncated instead, a skipped document that
+// changes.csv lists is fetched from the feed, once, and its absence from the
+// manifest distrusts the manifest.
+func TestSync_ArchiveSkipsWithdrawnDocuments(t *testing.T) {
+	const archiveName = "csaf_vex_2026-05-23.tar.zst"
+	const (
+		kept      = "2099/cve-2099-0001.json"
+		withdrawn = "2099/cve-2099-0002.json"
+	)
+	archive := buildZstdTarCut(t, []tarFile{
+		{"csaf_vex_2026-05-23/" + kept, csafDoc("CVE-2099-0001", "fixed", "2026-05-01T00:00:00Z")},
+		{"csaf_vex_2026-05-23/" + withdrawn, csafDoc("CVE-2099-0002", "fixed", "2026-05-02T00:00:00Z")},
+	}, false)
+	run := func(t *testing.T, files map[string][]byte) (source.SyncResult, map[string]int, map[string]int) {
+		t.Helper()
+		files["archive_latest.txt"] = []byte(archiveName + "\n")
+		files[archiveName] = archive
+		metadataURL, hits := feedServer(t, files)
+		a, err := New(source.AdapterConfig{Type: Type, ID: "redhat", URL: metadataURL})
+		if err != nil {
+			t.Fatal(err)
+		}
+		emitted := map[string]int{}
+		res, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error { emitted[s.CVE]++; return nil })
+		if err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		return res, emitted, hits
+	}
+
+	t.Run("withdrawn", func(t *testing.T) {
+		res, emitted, _ := run(t, map[string][]byte{
+			"changes.csv": []byte(`"` + kept + `","2026-05-01T00:00:00+00:00"` + "\n"),
+			"index.txt":   []byte(kept + "\n"),
+		})
+		if emitted["CVE-2099-0002"] != 0 {
+			t.Errorf("a withdrawn archived document was emitted (%d statements)", emitted["CVE-2099-0002"])
+		}
+		if want := []string{"CVE-2099-0001"}; !slices.Equal(res.RefreshedCVEs, want) {
+			t.Errorf("RefreshedCVEs: got %v, want %v", res.RefreshedCVEs, want)
+		}
+		if !res.Complete {
+			t.Error("a cold start that read every listed document must report Complete")
+		}
+	})
+
+	t.Run("truncated index", func(t *testing.T) {
+		res, emitted, hits := run(t, map[string][]byte{
+			"changes.csv": []byte(`"` + kept + `","2026-05-01T00:00:00+00:00"` + "\n" +
+				`"` + withdrawn + `","2026-05-02T00:00:00+00:00"` + "\n"),
+			"index.txt": []byte(kept + "\n"),
+			withdrawn:   csafDoc("CVE-2099-0002", "fixed", "2026-05-02T00:00:00Z"),
+		})
+		if emitted["CVE-2099-0002"] != 1 || hits[withdrawn] != 1 {
+			t.Errorf("want the live copy fetched and emitted once: emitted %d, fetched %d", emitted["CVE-2099-0002"], hits[withdrawn])
+		}
+		if res.LiveCVEs != nil || res.Complete {
+			t.Errorf("a manifest lacking a fetched document must not be trusted: LiveCVEs %v, Complete %v", res.LiveCVEs, res.Complete)
+		}
+	})
+}
