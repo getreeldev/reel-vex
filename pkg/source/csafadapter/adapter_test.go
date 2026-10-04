@@ -16,6 +16,12 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/source"
 )
 
+// TestMain drops the pause before the second read of failed documents.
+func TestMain(m *testing.M) {
+	retryPause = 0
+	os.Exit(m.Run())
+}
+
 // fixturePath resolves the repo-root testdata/ path from this package's test dir.
 func fixturePath(t *testing.T, name string) string {
 	t.Helper()
@@ -555,6 +561,118 @@ func TestSync_FailureSetsRetryFrom(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSync_FailedDocumentsAreReadOnceMore: after the main pass, every
+// document that failed — an HTTP error, a non-CSAF body, a 404 on a listed
+// document, an index.txt-only document — is read once more, retryPause later.
+// One read then counts exactly as if the first read had worked; only one that
+// fails again is a failure. A withdrawn document is not read again.
+func TestSync_FailedDocumentsAreReadOnceMore(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	const (
+		forbiddenOnce = "2099/cve-2099-0001.json"
+		errorPageOnce = "2099/cve-2099-0002.json"
+		indexOnly     = "2099/cve-2099-0003.json" // 404 once, listed
+		alwaysBroken  = "2099/cve-2099-0004.json"
+		withdrawn     = "2099/cve-2099-0005.json" // 404, unlisted
+	)
+	brokenAt := now.Add(-2 * time.Hour)
+	run := func(t *testing.T, withBroken bool, pause time.Duration) (source.SyncResult, map[string]int, map[string][]time.Time) {
+		t.Helper()
+		old := retryPause
+		retryPause = pause
+		t.Cleanup(func() { retryPause = old })
+		changes := changesLine(forbiddenOnce, now.Add(-3*time.Hour)) + changesLine(errorPageOnce, now.Add(-time.Hour)) +
+			changesLine(withdrawn, now.Add(-time.Hour))
+		index := forbiddenOnce + "\n" + errorPageOnce + "\n" + indexOnly + "\n"
+		if withBroken {
+			changes += changesLine(alwaysBroken, brokenAt)
+			index += alwaysBroken + "\n"
+		}
+		var mu sync.Mutex
+		at := map[string][]time.Time{}
+		flaky := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				p := strings.TrimPrefix(r.URL.Path, "/vex/")
+				mu.Lock()
+				at[p] = append(at[p], time.Now())
+				n := len(at[p])
+				mu.Unlock()
+				switch {
+				case p == alwaysBroken:
+					w.WriteHeader(http.StatusForbidden)
+				case p == forbiddenOnce && n == 1:
+					w.WriteHeader(http.StatusForbidden)
+				case p == errorPageOnce && n == 1:
+					fmt.Fprint(w, `{"message":"Service Unavailable"}`)
+				case p == indexOnly && n == 1:
+					http.NotFound(w, r)
+				default:
+					next.ServeHTTP(w, r)
+				}
+			})
+		}
+		metadataURL, hits := feedServerWrapped(t, map[string][]byte{
+			"changes.csv": []byte(changes),
+			"index.txt":   []byte(index),
+			forbiddenOnce: csafDoc("CVE-2099-0001", "fixed", "2026-05-25T00:00:00Z"),
+			errorPageOnce: csafDoc("CVE-2099-0002", "fixed", "2026-05-25T00:00:00Z"),
+			indexOnly:     csafDoc("CVE-2099-0003", "fixed", "2026-05-25T00:00:00Z"),
+		}, flaky)
+		a, err := New(source.AdapterConfig{Type: Type, ID: "suse", URL: metadataURL})
+		if err != nil {
+			t.Fatal(err)
+		}
+		emitted := map[string]int{}
+		res, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error { emitted[s.CVE]++; return nil })
+		if err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		for _, cve := range []string{"CVE-2099-0001", "CVE-2099-0002", "CVE-2099-0003"} {
+			if emitted[cve] != 1 {
+				t.Errorf("%s: %d statements emitted, want the second read's 1", cve, emitted[cve])
+			}
+		}
+		if want := []string{"CVE-2099-0001", "CVE-2099-0002", "CVE-2099-0003"}; !slices.Equal(res.RefreshedCVEs, want) {
+			t.Errorf("RefreshedCVEs: got %v, want %v", res.RefreshedCVEs, want)
+		}
+		if hits[withdrawn] != 1 {
+			t.Errorf("a withdrawn document was read %d times, want once", hits[withdrawn])
+		}
+		return res, hits, at
+	}
+
+	t.Run("all recover", func(t *testing.T) {
+		res, _, _ := run(t, false, 0)
+		if !res.Complete {
+			t.Error("documents read on the second pass leave a cold start Complete")
+		}
+		if !res.RetryFrom.IsZero() {
+			t.Errorf("RetryFrom = %v, want zero: every document was read", res.RetryFrom)
+		}
+	})
+
+	t.Run("one stays broken", func(t *testing.T) {
+		res, _, at := run(t, true, 0)
+		if res.Complete {
+			t.Error("a document that failed twice must make the run incomplete")
+		}
+		if !res.RetryFrom.Equal(brokenAt) {
+			t.Errorf("RetryFrom = %v, want the broken document's date %v", res.RetryFrom, brokenAt)
+		}
+		if n := len(at[alwaysBroken]); n != 2 {
+			t.Errorf("the broken document was read %d times, want twice", n)
+		}
+	})
+
+	t.Run("the second read waits retryPause", func(t *testing.T) {
+		const pause = 150 * time.Millisecond
+		_, _, at := run(t, false, pause)
+		if ts := at[forbiddenOnce]; len(ts) != 2 || ts[1].Sub(ts[0]) < pause {
+			t.Errorf("second read of %s: requests at %v, want two at least %v apart", forbiddenOnce, ts, pause)
+		}
+	})
 }
 
 func TestDocCVE(t *testing.T) {

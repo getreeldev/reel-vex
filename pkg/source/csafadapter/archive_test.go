@@ -198,8 +198,9 @@ func TestSync_ArchiveEmitErrorIsReturned(t *testing.T) {
 		if want := []string{"CVE-2024-0217"}; !slices.Equal(res.RefreshedCVEs, want) {
 			t.Errorf("RefreshedCVEs: got %v, want %v", res.RefreshedCVEs, want)
 		}
-		if hits["2024/cve-2024-0001.json"] != 1 || hits["2024/cve-2024-0217.json"] != 0 {
-			t.Errorf("want only the failed entry fetched, once: %v", hits)
+		// Read in the main pass and once more after it.
+		if hits["2024/cve-2024-0001.json"] != 2 || hits["2024/cve-2024-0217.json"] != 0 {
+			t.Errorf("want only the failed entry fetched, twice: %v", hits)
 		}
 	})
 

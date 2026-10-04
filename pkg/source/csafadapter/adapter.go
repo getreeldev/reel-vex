@@ -91,9 +91,10 @@ func (a *Adapter) Discover(ctx context.Context) (*source.FeedInfo, error) {
 // every index.txt document neither of those read; it is Complete only when it
 // read every document index.txt lists. A document that answers 404 or 410 and
 // that index.txt does not list was withdrawn after changes.csv named it, and
-// is no failure. Any other failure of a changes.csv document sets RetryFrom so
-// the next run reads it again — unless the document is older than
-// retryWindow, when it is given up on.
+// is no failure. Every other failed document is read once more after the
+// main pass, retryPause later; one that fails again is a failure, and for a
+// changes.csv document sets RetryFrom so the next run reads it again — unless
+// the document is older than retryWindow, when it is given up on.
 func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.Statement) error) (source.SyncResult, error) {
 	if a.feedURL == "" {
 		if _, err := a.Discover(ctx); err != nil {
@@ -150,6 +151,35 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 		}
 	}
 
+	// read reads one document from the feed and records what came of it. It
+	// reports retry when the document failed in a way a second read may mend:
+	// anything but success and a withdrawal.
+	read := func(d pendingDoc) (retry bool, err error) {
+		outcome, err := a.readDocument(ctx, d.path, d.updated, d.emit)
+		if err != nil {
+			return false, err
+		}
+		switch outcome {
+		case readOK:
+			// A document with no statements still refreshes: the vendor
+			// re-published it with nothing in it, so its old rows are gone.
+			markRefreshed(d.path)
+			if d.cve != "" {
+				fetched[d.cve] = struct{}{}
+			}
+			return false, nil
+		case readGone:
+			if _, ok := listed[d.cve]; listed != nil && !ok {
+				slog.Info("csaf document withdrawn: gone, and index.txt does not list it", "adapter", a.id, "path", d.path)
+				withdrawn++
+				return false, nil
+			}
+			slog.Warn("csaf document gone but not withdrawn: index.txt lists it, or there is no index.txt", "adapter", a.id, "path", d.path)
+		}
+		return true, nil
+	}
+	var pending []pendingDoc // documents to read once more after the main pass
+
 	// A document listed twice in changes.csv is read once, dated by its
 	// newest line.
 	newestLine := map[string]time.Time{}
@@ -203,34 +233,13 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 			attempted[cve] = struct{}{}
 			entry.Updated = newestLine[cve]
 		}
-		outcome, err := a.readDocument(ctx, entry.Path, entry.Updated, emit)
+		d := pendingDoc{path: entry.Path, cve: cve, updated: entry.Updated, emit: emit}
+		retry, err := read(d)
 		if err != nil {
 			return source.SyncResult{}, err
 		}
-		if outcome == readGone {
-			if _, ok := listed[cve]; listed != nil && !ok {
-				slog.Info("csaf document withdrawn: gone, and index.txt does not list it", "adapter", a.id, "path", entry.Path)
-				withdrawn++
-				continue
-			}
-			slog.Warn("csaf document gone but not withdrawn: index.txt lists it, or there is no index.txt", "adapter", a.id, "path", entry.Path)
-		}
-		if outcome != readOK {
-			failed++
-			switch {
-			case now.Sub(entry.Updated) > retryWindow:
-				slog.Warn("csaf document failed and is older than the retry window; giving up on it",
-					"adapter", a.id, "path", entry.Path, "updated", entry.Updated, "retry_window", retryWindow)
-			case retryFrom.IsZero() || entry.Updated.Before(retryFrom):
-				retryFrom = entry.Updated
-			}
-			continue
-		}
-		// A document with no statements still refreshes: the vendor
-		// re-published it with nothing in it, so its old rows are gone.
-		markRefreshed(entry.Path)
-		if cve != "" {
-			fetched[cve] = struct{}{}
+		if retry {
+			pending = append(pending, d)
 		}
 		if i > 0 && i%100 == 0 {
 			slog.Info("csaf progress", "adapter", a.id, "processed", i, "of", len(entries))
@@ -259,30 +268,62 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 			}
 			attempted[cve] = struct{}{}
 			extra++
-			outcome, err := a.readDocument(ctx, p, time.Time{}, func(s source.Statement) error {
+			d := pendingDoc{path: p, cve: cve, emit: func(s source.Statement) error {
 				if s.Updated.IsZero() {
 					s.Updated = fallback
 				}
 				return emit(s)
-			})
+			}}
+			retry, err := read(d)
 			if err != nil {
 				return source.SyncResult{}, err
 			}
-			if outcome == readGone {
-				slog.Warn("csaf document index.txt lists is gone", "adapter", a.id, "path", p)
+			if retry {
+				pending = append(pending, d)
 			}
-			if outcome != readOK {
-				// changes.csv does not date it, so RetryFrom cannot name it;
-				// the next cold start reads it.
-				failed++
-				continue
-			}
-			markRefreshed(p)
-			fetched[cve] = struct{}{}
 		}
 		if extra > 0 {
 			slog.Info("csaf index.txt documents changes.csv does not list", "adapter", a.id, "read", extra)
 		}
+	}
+
+	// A second chance, after a pause, for every document that failed: most
+	// failures are a moment of the vendor's (a timeout, a 5xx, an error page
+	// served as 200). A document read now counts as read; one that fails again
+	// is a failure.
+	if len(pending) > 0 {
+		slog.Info("csaf reading failed documents once more", "adapter", a.id, "documents", len(pending), "after", retryPause)
+		select {
+		case <-ctx.Done():
+			return source.SyncResult{}, ctx.Err()
+		case <-time.After(retryPause):
+		}
+		var recovered int
+		for _, d := range pending {
+			if err := ctx.Err(); err != nil {
+				return source.SyncResult{}, err
+			}
+			retry, err := read(d)
+			if err != nil {
+				return source.SyncResult{}, err
+			}
+			if !retry {
+				recovered++
+				continue
+			}
+			failed++
+			switch {
+			case d.updated.IsZero():
+				// An index.txt-only document: changes.csv does not date it, so
+				// RetryFrom cannot name it; the next cold start reads it.
+			case now.Sub(d.updated) > retryWindow:
+				slog.Warn("csaf document failed and is older than the retry window; giving up on it",
+					"adapter", a.id, "path", d.path, "updated", d.updated, "retry_window", retryWindow)
+			case retryFrom.IsZero() || d.updated.Before(retryFrom):
+				retryFrom = d.updated
+			}
+		}
+		slog.Info("csaf failed documents read once more", "adapter", a.id, "retried", len(pending), "recovered", recovered)
 	}
 
 	// A manifest that lacks a document this run just fetched from the same
@@ -344,6 +385,20 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 // weekend and more; at that depth an incremental run re-reads a few thousand
 // documents (Red Hat changed 3,777, SUSE 7,531 in the 7 days to 2026-10-04).
 const retryWindow = 7 * 24 * time.Hour
+
+// retryPause is how long a sync waits before reading its failed documents
+// once more. A variable so tests need not wait.
+var retryPause = 30 * time.Second
+
+// pendingDoc is one document to read from the feed: its path, the CVE the
+// path names, its changes.csv date (zero for an index.txt-only document, which
+// is dated by its own release date) and the emit its statements go through.
+type pendingDoc struct {
+	path    string
+	cve     string
+	updated time.Time
+	emit    func(source.Statement) error
+}
 
 // readOutcome is what reading one document came to.
 type readOutcome int
