@@ -12,7 +12,7 @@ func alpineCases() []Case {
 	}
 	return []Case{
 		{
-			// The Phase 1 audit fix: secfixes key "0" means the CVE does not apply.
+			// secfixes key "0" means the CVE does not apply.
 			Name: "alpine/cve-only/secfixes \"0\" is not_affected", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2020-36325")}, Status: 200, Rows: 1,
 			Want: []Stmt{main("CVE-2020-36325", "not_affected", "vulnerable_code_not_present",
@@ -40,15 +40,15 @@ func alpineCases() []Case {
 				Products: ss("pkg:apk/alpine/opendkim?distro=alpine-3.22.1"), Evidence: "AS v3.22/community.json package opendkim: secfixes \"0\": [CVE-2020-35766]"}},
 		},
 		{
-			// The version kept (the highest, 1.2.11-r4) is not part of any answer
-			// before Phase 5b; one row is what is observable.
+			// Both fixed-in versions land on one row (a row holds one fixed-in
+			// version per key); a CVE-only query sees that one row.
 			Name: "alpine/cve-only/a CVE under two fixed versions is one row", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2021-20314")}, Status: 200, Rows: 1,
 			Want: []Stmt{main("CVE-2021-20314", "fixed", "",
 				"AS v3.22/main.json package libspf2: secfixes \"1.2.10-r5\" and \"1.2.11-r4\" both list CVE-2021-20314", "pkg:apk/alpine/libspf2?distro=alpine-3.22")},
 		},
 		{
-			// The Phase 1 rule: a CVE listed under "0" and under a fixed
+			// A CVE listed under "0" and under a fixed
 			// version is the fixed version; "0" applies only when no fixed
 			// version lists it.
 			Name: "alpine/cve-only/a CVE under \"0\" and a fixed version is fixed", Endpoint: epStatements,
@@ -66,6 +66,13 @@ func alpineCases() []Case {
 				{CVE: "CVE-2019-14249", Supplier: "alpine", Status: "fixed", Timestamp: tsDay1File, Notes: notes("secdb", "direct"),
 					Products: ss("pkg:apk/alpine/libdwarf@0.9.2-r0?arch=x86_64&distro=3.22.0"), Evidence: "AS v3.22/main.json package libdwarf: secfixes \"0.6.0-r0\"; \"0.9.2-r0\" lists only DW2024* ids"},
 			},
+		},
+		{
+			// Day 2 drops it from secfixes (day2/alpine).
+			Name: "alpine/cve-only/one of two CVEs under one fixed version", Endpoint: epStatements,
+			Body: body{"cves": ss("CVE-2022-29869")}, Status: 200, Rows: 1,
+			Want: []Stmt{main("CVE-2022-29869", "fixed", "",
+				"AS v3.22/main.json package cifs-utils: secfixes \"6.15-r0\": [CVE-2022-27239, CVE-2022-29869]", "pkg:apk/alpine/cifs-utils?distro=alpine-3.22")},
 		},
 		{
 			Name: "alpine/cve-only/community repository", Endpoint: epStatements,
@@ -215,8 +222,8 @@ func oracleCases() []Case {
 				Evidence: "OO com.oracle.elsa-ol9.xml definition oval:com.oracle.elsa:def:20263516 (ELSA-2026-3516, OL9 gate only): thunderbird < 0:140.8.0-1.0.1.el9_7"}},
 		},
 		{
-			// The Phase 1 audit fix: an OL9-only package of a multi-release ELSA
-			// is not stated for OL8.
+			// An OL9-only package of a multi-release ELSA is not stated for
+			// OL8.
 			Name: "oracle/negative/an OL9-only package under OL8", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2023-42465"), "products": ss("pkg:rpm/oracle/sudo-python-plugin@1.9.5p2-10.el9_3?arch=x86_64&distro=oracle-8")},
 			Status: 204, Rows: 0,

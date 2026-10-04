@@ -2,7 +2,7 @@
 
 package acceptance
 
-// Boundary rows (Phase 5e): Debian, Ubuntu OVAL, Alpine, Amazon, AlmaLinux and
+// Boundary rows: Debian, Ubuntu OVAL, Alpine, Amazon, AlmaLinux and
 // Oracle state `fixed` with a fixed-in version. A query naming a version gets
 // the row only at or above it, in the ecosystem's ordering (dpkg, rpm, apk),
 // with an epoch qualifier and an inline epoch read as one and a missing epoch

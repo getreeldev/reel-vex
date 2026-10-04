@@ -6,9 +6,9 @@ import "strings"
 
 // Day 2: the fixtures change (testdata/feeds/day2 and testdata/src/day2, every
 // edit listed in testdata/README.md) and the ingest runs again. These cases
-// hold after that second ingest, through the removal wiring
-// (PLAN-VEX-SWEEP.md §2: whole-feed sweep, per-document replace, withdrawal by
-// manifest, the 0.2 fraction guard).
+// hold after that second ingest, through the removal wiring (docs/architecture.md,
+// "Removal": whole-feed sweep, per-document replace, withdrawal by manifest,
+// the 0.2 fraction guard).
 
 // noOpRepublish is why a row the vendor still states unchanged keeps its day-1
 // date after the day-2 ingest re-reads it.

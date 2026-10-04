@@ -6,11 +6,10 @@ package acceptance
 // (oval-definitions-bookworm.xml.bz2, "DO" below). Rows are dated by the feed
 // file's Last-Modified (tsDay1File), although the definitions carry their own
 // dates (Ubuntu advisory issued/updated, Debian DSA <date>): that is the
-// product's current design, an open decision in PLAN-VEX-SWEEP.md §6 Backlog,
-// "Found by Phase 3a". A row's product is the versionless package with its
-// release, and a `fixed` row holds the fixed-in version: a query naming a
-// version gets it only at or above that version, under the identifier it sent
-// (more in cases_boundary_test.go).
+// product's current design (see tsDay1File). A row's product is the
+// versionless package with its release, and a `fixed` row holds the fixed-in
+// version: a query naming a version gets it only at or above that version,
+// under the identifier it sent (more in cases_boundary_test.go).
 
 func ubuntuOVALCases() []Case {
 	return []Case{
@@ -24,7 +23,7 @@ func ubuntuOVALCases() []Case {
 		{
 			// UO definition oval:com.ubuntu.noble:def:674430000000 (USN-6744-3):
 			// variable python3-pil, python3-pil.imagetk < 10.2.0-1ubuntu1. The
-			// query's 10.0.0-1 is below the fixed-in version: no answer (Phase 5e).
+			// query's 10.0.0-1 is below the fixed-in version: no answer.
 			Name: "ubuntu-oval/purl/two binary packages of one USN", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2024-28219"), "products": ss("pkg:deb/ubuntu/python3-pil@10.0.0-1?arch=amd64&distro=ubuntu-24.04")},
 			Status: 204, Rows: 0,
@@ -39,7 +38,7 @@ func ubuntuOVALCases() []Case {
 		{
 			// UO definition oval:com.ubuntu.noble:def:675610000000 (USN-6756-1),
 			// the only definition naming less: less < 590-2ubuntu2.1. The query's
-			// 590-2ubuntu2 is below the fixed-in version: no answer (Phase 5e).
+			// 590-2ubuntu2 is below the fixed-in version: no answer.
 			Name: "ubuntu-oval/broad/products only", Endpoint: epStatements,
 			Body:   body{"products": ss("pkg:deb/ubuntu/less@590-2ubuntu2?arch=amd64&distro=ubuntu-24.04")},
 			Status: 204, Rows: 0,
@@ -61,7 +60,7 @@ func ubuntuOVALCases() []Case {
 					Evidence: "UV vex/cve/2022/CVE-2022-37434.json statements[0] fixed: libklibc@2.0.13-4ubuntu0.2 distro=noble (7 arches)"},
 				{CVE: "CVE-2022-37434", Supplier: "ubuntu", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"),
 					Products: ss("pkg:deb/ubuntu/libklibc@2.0.13-4ubuntu0.2?arch=amd64&distro=ubuntu-24.04"),
-					Evidence: "UO definition oval:com.ubuntu.noble:def:673620000000 (USN-6736-2): libklibc < 2.0.13-4ubuntu0.1; 2.0.13-4ubuntu0.2 is above it, so the OVAL row is answered under the identifier sent (Phase 5e)"},
+					Evidence: "UO definition oval:com.ubuntu.noble:def:673620000000 (USN-6736-2): libklibc < 2.0.13-4ubuntu0.1; 2.0.13-4ubuntu0.2 is above it, so the OVAL row is answered under the identifier sent"},
 			},
 		},
 	}
@@ -70,7 +69,7 @@ func ubuntuOVALCases() []Case {
 func debianCases() []Case {
 	return []Case{
 		{
-			// The Phase 1 audit fix: "less than 0:0" is how Debian writes "no fix yet".
+			// "less than 0:0" is how Debian writes "no fix yet".
 			Name: "debian/cve-only/0:0 is affected, not fixed", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2016-5416")}, Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2016-5416", Supplier: "debian", Status: "affected", Timestamp: tsDay1File, Notes: notes("oval", ""),

@@ -105,6 +105,7 @@ func filterCases() []Case {
 		{
 			Name: "errors/user_vex with another @context is 422", Endpoint: epAnalyze,
 			Body: body{"user_vex": []any{map[string]any{"@context": "https://openvex.dev/ns/v0.1.0", "statements": []any{}}}}, Status: 422,
+			Error: `doc[0]: user_vex doc has invalid @context (must be https://openvex.dev/ns/v0.2.0) (got "https://openvex.dev/ns/v0.1.0")`,
 		},
 		{
 			Name: "filter/several dimensions are ANDed", Endpoint: epStatements,
@@ -294,7 +295,7 @@ func analyzeCases() []Case {
 			Status: 200, Rows: 1,
 			Vulns: []Vuln{
 				{ID: "CVE-2024-54661", State: "not_affected", Justification: "code_not_present", Affects: ss(link(socat)), Evidence: "AS v3.22/main.json package socat: secfixes \"0\": [CVE-2024-54661]"},
-				{ID: "CVE-2026-56123", Affects: ss(link(socat)), Evidence: "AS v3.22/main.json package socat: secfixes \"1.8.1.2-r0\": [CVE-2026-56123]; the component's 1.8.0.3-r0 is below the fixed-in version, so no analysis (Phase 5e)"},
+				{ID: "CVE-2026-56123", Affects: ss(link(socat)), Evidence: "AS v3.22/main.json package socat: secfixes \"1.8.1.2-r0\": [CVE-2026-56123]; the component's 1.8.0.3-r0 is below the fixed-in version, so no analysis"},
 				{ID: "CVE-2026-99999", Affects: ss(link(socat)), Evidence: "no fixture names CVE-2026-99999: left without analysis"},
 			},
 		},
@@ -348,7 +349,7 @@ func analyzeCases() []Case {
 				{ID: "CVE-2024-54661", State: "not_affected", Justification: "code_not_present", Affects: ss(link(socat)), Evidence: "AS v3.22/main.json package socat: secfixes \"0\""},
 				// socat secfixes "1.8.1.2-r0": [CVE-2026-56123]: the SBOM's
 				// 1.8.0.3-r0 is below the fixed-in version, so the CVE is not
-				// synthesised (Phase 5e).
+				// synthesised.
 			},
 		},
 		// CycloneDX analysis vocabulary (pkg/api: under_investigation ->
@@ -497,7 +498,7 @@ func analyzeCases() []Case {
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "rancher", Status: "not_affected", Justification: "vulnerable_code_not_in_execute_path",
 				Timestamp: tsRVSachet, Notes: scoped(notes("openvex", "direct"), scopeSachetDocker), Products: ss("pkg:apk/alpine/zlib"),
-				Evidence: evSachetDocker + " (no version: an empty list, rendered as the vendor's product_id — PLAN-VEX-SWEEP.md Phase 5 step 4)"}},
+				Evidence: evSachetDocker + " (no version: an empty list, rendered as the vendor's product_id: docs/api.md, Version selection)"}},
 		},
 	}
 }

@@ -28,12 +28,14 @@ const (
 //
 // For /v1/statements the answer is every statement's vulnerability name,
 // supplier, status, justification, impact_statement, timestamp, status_notes
-// and products[] identifiers, compared as a set: a missing statement and an
-// extra one both fail; every OpenVEX document is also validated against the
-// OpenVEX 0.2.0 schema. For /v1/analyze it is every vulnerability of the
-// returned SBOM: its analysis state and justification (none when the vendor
-// data said nothing) and its affects refs — or, on the user-VEX-only path,
-// which answers OpenVEX, the statements as above.
+// and products[], compared as a set: a missing statement and an extra one both
+// fail; every OpenVEX document is also validated against the OpenVEX 0.2.0
+// schema. A product is written as one identifier; the response must carry it
+// in the shape pkg/openvex documents (productShape). For /v1/analyze it is
+// every vulnerability of the returned SBOM: its analysis state and
+// justification (none when the vendor data said nothing) and its affects refs
+// — or, on the user-VEX-only path, which answers OpenVEX, the statements as
+// above.
 type Case struct {
 	Name     string
 	Endpoint string
@@ -49,16 +51,6 @@ type Case struct {
 	Error string
 	Want  []Stmt
 	Vulns []Vuln
-
-	// Pending names the phase that adds the behaviour; the case is skipped.
-	Pending string
-	// Superseded names the phase whose behaviour replaces this case's
-	// expectation; that phase deletes the case. Informational only.
-	Superseded string
-	// KnownBug says how the product disagrees with the vendor document. The
-	// case still runs: a failure is reported as a skip, a pass fails so the
-	// marker is removed.
-	KnownBug string
 }
 
 type body = map[string]any
@@ -112,22 +104,8 @@ func runCase(t *testing.T, c Case) {
 			t.Fatalf("expected vulnerability %s has no evidence", v.ID)
 		}
 	}
-	if c.Pending != "" {
-		t.Skip("pending: " + c.Pending)
-	}
-	errs := check(c)
-	switch {
-	case c.KnownBug != "" && len(errs) > 0:
-		for _, e := range errs {
-			t.Log(e)
-		}
-		t.Skip("KNOWN BUG: " + c.KnownBug)
-	case c.KnownBug != "":
-		t.Fatal("known bug fixed — remove KnownBug: " + c.KnownBug)
-	default:
-		for _, e := range errs {
-			t.Error(e)
-		}
+	for _, e := range check(c) {
+		t.Error(e)
 	}
 }
 
@@ -266,22 +244,32 @@ func compareStatements(raw []byte, want []Stmt) []string {
 		g := Stmt{CVE: s.Vulnerability.Name, Supplier: s.Supplier, Status: s.Status,
 			Justification: s.Justification, Impact: s.ImpactStatement, Timestamp: s.Timestamp, Notes: s.StatusNotes}
 		for _, p := range s.Products {
-			id := p.ID
+			var purl, cpe22, cpe23 string
 			if p.Identifiers != nil {
-				switch {
-				case p.Identifiers.PURL != "":
-					id = p.Identifiers.PURL
-				case p.Identifiers.CPE23 != "":
-					id = p.Identifiers.CPE23
-				case p.Identifiers.CPE22 != "":
-					id = p.Identifiers.CPE22
-				}
+				purl, cpe22, cpe23 = p.Identifiers.PURL, p.Identifiers.CPE22, p.Identifiers.CPE23
 			}
-			g.Products = append(g.Products, id)
+			g.Products = append(g.Products, productShape(p.ID, purl, cpe22, cpe23))
 		}
 		got = append(got, g)
 	}
 	return diff(got, want, stmtKey)
+}
+
+// productShape renders a response product as the one identifier a case
+// writes, when it has the shape pkg/openvex gives that identifier: a PURL as
+// both @id and identifiers.purl (Trivy matches on @id), a CPE in
+// identifiers.cpe23 alone, anything else as @id alone. Any other shape is
+// rendered whole, so it shows as unexpected.
+func productShape(id, purl, cpe22, cpe23 string) string {
+	switch {
+	case strings.HasPrefix(id, "pkg:") && purl == id && cpe22 == "" && cpe23 == "":
+		return id
+	case id == "" && purl == "" && cpe22 == "" && strings.HasPrefix(cpe23, "cpe:"):
+		return cpe23
+	case id != "" && !strings.HasPrefix(id, "pkg:") && !strings.HasPrefix(id, "cpe:") && purl == "" && cpe22 == "" && cpe23 == "":
+		return id
+	}
+	return fmt.Sprintf("{@id=%q purl=%q cpe22=%q cpe23=%q}", id, purl, cpe22, cpe23)
 }
 
 type gotSBOM struct {

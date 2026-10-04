@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
     branches: [main]
   # Make this workflow callable from release.yml so the release flow shares the
@@ -45,6 +45,8 @@ jobs:
           go-version: "1.27"
       - name: go vet
         run: go vet ./...
+      - name: go vet (integration tag)
+        run: go vet -tags integration ./...
 
   govulncheck:
     runs-on: ubuntu-latest
@@ -70,8 +72,10 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: "1.27"
+      # TestPG needs the database the integration job has; under CI=true it
+      # fails without one rather than skip, so it is skipped here by name.
       - name: go test ./...
-        run: go test ./...
+        run: go test -count=1 -skip '^TestPG$' ./...
 
   integration-test:
     runs-on: ubuntu-latest
@@ -92,9 +96,15 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: "1.27"
+      # TestPG and test/integration both truncate the same tables, so TestPG
+      # runs in a step of its own first.
+      - name: TestPG
+        env:
+          REEL_VEX_TEST_PG_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        run: go test -count=1 -v -run '^TestPG$' ./pkg/db/postgres/
       # test/integration and test/acceptance; the acceptance suite creates and
       # drops a database of its own, so the two packages may run in parallel.
       - name: Integration tests
         env:
           REEL_VEX_TEST_PG_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
-        run: go test -tags integration -v ./test/...
+        run: go test -tags integration -count=1 -v ./test/...

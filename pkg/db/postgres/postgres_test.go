@@ -25,10 +25,12 @@ import (
 
 // TestPG exercises the Postgres backend against a real server. It is skipped
 // unless REEL_VEX_TEST_PG_DSN is set, so the default `go test ./...` (no Docker)
-// stays green. Run locally/CI with:
+// stays green; under CI=true a missing DSN fails it instead (CI's unit job
+// runs `go test -skip TestPG`, its integration job runs it with a database).
+// Run locally/CI with:
 //
 //	REEL_VEX_TEST_PG_DSN='postgres://user:pass@localhost:5432/db?sslmode=disable' \
-//	  go test -run TestPG ./pkg/db/postgres/
+//	  go test -count=1 -run TestPG ./pkg/db/postgres/
 //
 // It validates the dialect ports that the dry-run flagged: ANY-array IN lists,
 // the IS DISTINCT FROM conditional-upsert skip, the scope gate, the row scan,
@@ -36,6 +38,9 @@ import (
 func TestPG(t *testing.T) {
 	dsn := os.Getenv("REEL_VEX_TEST_PG_DSN")
 	if dsn == "" {
+		if os.Getenv("CI") == "true" {
+			t.Fatal("REEL_VEX_TEST_PG_DSN not set under CI=true: TestPG needs a database")
+		}
 		t.Skip("set REEL_VEX_TEST_PG_DSN to run the Postgres backend test")
 	}
 	d, err := Open(dsn)

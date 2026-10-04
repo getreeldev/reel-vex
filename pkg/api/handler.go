@@ -23,11 +23,10 @@ import (
 // Cache-Control values for GET endpoints.
 //
 // VEX data only changes when the daily ingest runs, so stale-while-revalidate
-// is set aggressively on per-CVE responses — browsers can serve a slightly
-// stale answer for up to 24h while refreshing in the background. Stats are
-// re-checked more often because the counters tick up during ingest.
+// is set aggressively: browsers can serve a slightly stale answer for up to
+// 24h while refreshing in the background. Stats are re-checked every minute
+// because the counters tick up during ingest.
 const (
-	cacheCVE   = "public, max-age=600, stale-while-revalidate=86400"
 	cacheStats = "public, max-age=60, stale-while-revalidate=86400"
 	cacheNone  = "no-cache"
 )

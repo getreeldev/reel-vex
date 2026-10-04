@@ -71,6 +71,7 @@ import (
 	"time"
 
 	"github.com/getreeldev/reel-vex/pkg/csaf"
+	"github.com/getreeldev/reel-vex/pkg/db"
 	"github.com/getreeldev/reel-vex/pkg/openvex"
 	"github.com/getreeldev/reel-vex/pkg/source"
 	"github.com/getreeldev/reel-vex/pkg/source/httpretry"
@@ -493,7 +494,7 @@ func (g fileGroups) emit(emit func(source.Statement) error) (int, error) {
 			ProductID:     k.product,
 			BaseID:        base,
 			Versions:      slices.Compact(vg.versions),
-			VersionKind:   "exact",
+			VersionKind:   db.VersionKindExact,
 			IDType:        idType,
 			Status:        k.status,
 			Justification: k.justification,

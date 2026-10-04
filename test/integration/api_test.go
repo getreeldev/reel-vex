@@ -38,9 +38,14 @@ func runTests(m *testing.M) int {
 	// reel-vex is Postgres-only; the integration test needs a real database.
 	// In CI a `postgres` service supplies it; locally set REEL_VEX_TEST_PG_DSN.
 	// Absent, skip the whole suite (so `go test -tags integration` stays green
-	// without a DB).
+	// without a DB) — except under CI=true, where a missing database must not
+	// read as a pass.
 	dsn := os.Getenv("REEL_VEX_TEST_PG_DSN")
 	if dsn == "" {
+		if os.Getenv("CI") == "true" {
+			fmt.Fprintln(os.Stderr, "REEL_VEX_TEST_PG_DSN not set under CI=true: the integration suite needs a database")
+			return 1
+		}
 		fmt.Fprintln(os.Stderr, "REEL_VEX_TEST_PG_DSN not set; skipping integration tests")
 		return 0
 	}

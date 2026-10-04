@@ -15,7 +15,7 @@ const (
 func suseCases() []Case {
 	return []Case{
 		{
-			// The Phase 1 audit fix: SUSE marks fixes as product_status.recommended.
+			// SUSE marks fixes as product_status.recommended.
 			Name: "suse/cve-only/recommended is fixed", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2025-1914")}, Status: 200, Rows: 7,
 			Want: []Stmt{{CVE: "CVE-2025-1914", Supplier: "suse", Status: "fixed", Timestamp: tsSUSE1914, Notes: notes("csaf", ""),
@@ -54,7 +54,7 @@ func suseCases() []Case {
 			},
 		},
 		{
-			// The older status the Phase 1 fix also maps: the SL Micro Extras
+			// The older status for a fix, also mapped: the SL Micro Extras
 			// 6.2 platform appears in this document only under first_fixed.
 			Name: "suse/cpe/first_fixed is fixed", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2025-22077"), "products": ss("cpe:/o:suse:sl-micro-extras:6.2")},

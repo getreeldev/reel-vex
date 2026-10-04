@@ -10,8 +10,8 @@ package acceptance
 //
 // A product query is answered with the verdict Canonical stated for the version
 // asked about, under the vendor's own per-version identifiers, and a versionless
-// query with every listed version under its own verdict (PLAN-VEX-SWEEP.md §2,
-// "Version lists per verdict").
+// query with every listed version under its own verdict (docs/api.md, Version
+// selection).
 
 const (
 	tsUV2060  = "2022-06-13T09:15:00Z" // UV vex/cve/2022/CVE-2022-2060.json statements[0].timestamp
@@ -193,7 +193,7 @@ func ubuntuCases() []Case {
 				"pkg:deb/ubuntu/intel-microcode?distro=ubuntu-16.04")},
 			Status: 200, Rows: 6,
 			Want: []Stmt{
-				uvMicrocode("fixed", direct, evMicrocodeFixed+" (PLAN-VEX-SWEEP.md Phase 5 step 3: a base asked both with and without a version keeps its whole list)", uvMicrocode1604Fixed),
+				uvMicrocode("fixed", direct, evMicrocodeFixed+" (a base asked both with and without a version keeps its whole list)", uvMicrocode1604Fixed),
 				uvMicrocode("affected", direct, evMicrocodeAffected, uvMicrocode1604Affected),
 			},
 		},
@@ -212,7 +212,7 @@ func ubuntuCases() []Case {
 					"pkg:deb/ubuntu/dolibarr@3.5.8+dfsg1-1ubuntu1+esm1?arch=ppc64el&distro=ubuntu-16.04",
 					"pkg:deb/ubuntu/dolibarr@3.5.8+dfsg1-1ubuntu1+esm1?arch=s390x&distro=ubuntu-16.04",
 					"pkg:deb/ubuntu/dolibarr@3.5.8+dfsg1-1ubuntu1+esm1?arch=source&distro=ubuntu-16.04"),
-				Evidence: "UV vex/cve/2022/CVE-2022-2060.json statements[0]: dolibarr@3.5.8+dfsg1-1ubuntu1+esm1 (PLAN-VEX-SWEEP.md Phase 5 step 3: compare after url.PathUnescape on both sides)"}},
+				Evidence: "UV vex/cve/2022/CVE-2022-2060.json statements[0]: dolibarr@3.5.8+dfsg1-1ubuntu1+esm1 (versions compared after url.PathUnescape on both sides)"}},
 		},
 
 		// Two CVEs list intel-microcode on 18.04 at different versions:
@@ -223,8 +223,18 @@ func ubuntuCases() []Case {
 			Body: body{"cves": ss("CVE-2022-33972", "CVE-2022-21180"),
 				"products": ss("pkg:deb/ubuntu/intel-microcode@3.20230214.0ubuntu0.18.04.1?arch=amd64&distro=ubuntu-18.04")},
 			Status: 200, Rows: 3,
-			Want: []Stmt{uvMicrocode("fixed", direct, evMicrocode1804Fixed+" (PLAN-VEX-SWEEP.md Phase 5 step 3: a caller version matches a row only through that row's own (cve, versionless product, qualifiers))",
+			Want: []Stmt{uvMicrocode("fixed", direct, evMicrocode1804Fixed+" (a caller version matches a row only through that row's own (cve, versionless product, qualifiers))",
 				archesAt("pkg:deb/ubuntu/intel-microcode@3.20230214.0ubuntu0.18.04.1", "ubuntu-18.04", "amd64", "i386", "source"))},
+		},
+
+		{
+			Name: "ubuntu/exact/the other CVE's listed version gets that CVE's verdict only", Endpoint: epStatements,
+			Body: body{"cves": ss("CVE-2022-33972", "CVE-2022-21180"),
+				"products": ss("pkg:deb/ubuntu/intel-microcode@3.20260210.0ubuntu0.18.04.1+esm1?arch=amd64&distro=ubuntu-18.04")},
+			Status: 200, Rows: 3,
+			Want: []Stmt{{CVE: "CVE-2022-21180", Supplier: "ubuntu", Status: "not_affected", Justification: "vulnerable_code_not_present", Timestamp: tsUV21180, Notes: direct,
+				Products: archesAt("pkg:deb/ubuntu/intel-microcode@3.20260210.0ubuntu0.18.04.1+esm1", "ubuntu-18.04", "amd64", "i386", "source"),
+				Evidence: ev21180Bionic}},
 		},
 
 		// The two newest codenames in the hub's map.

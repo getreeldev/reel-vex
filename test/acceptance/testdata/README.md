@@ -27,6 +27,14 @@ purpose.
   container. `feeds/**/*.{tar.xz,tar.gz,tar.zst,bz2,gz}` are built from it by
   `gen.go` (`cd test/acceptance/testdata && go run gen.go`; needs `bzip2` on PATH).
   Output is byte-for-byte reproducible; regenerate after editing anything under `src/`.
+  `TestFixturesMatchSource` (no database, no build tag) decompresses every container
+  and fails when it differs from `src/`.
+
+**What the server checks.** Each ingest must ask for every file of its day
+(`feeds/day1` on day 1, the `feeds/day2` overlay on day 2), and any 404 fails it
+except SUSE's `archive_latest.txt` (day 1) and the day-2 gone document. A file no
+adapter reads, or one an adapter looks for and the fixtures lack, fails the suite
+rather than surfacing later as a wrong answer.
 
 **Last-Modified.** The server dates every day-1 file `Sat, 03 Oct 2026 00:00:00 GMT`
 and every day-2 replacement `Sun, 04 Oct 2026 00:00:00 GMT` (except one pinned file,
@@ -43,7 +51,9 @@ noted per feed for reference.
 - `vex/archive_latest.txt` — verbatim (`csaf_vex_2026-09-27.tar.zst`).
 - `vex/changes.csv`, `vex/index.txt` — the lines of the seven documents below, in the
   vendor's order (vendor files: 69,847 / 69,853 lines; Last-Modified 2026-10-03).
-- `vex/<year>/cve-*.json` — seven documents, verbatim:
+- `vex/<year>/cve-*.json` — seven documents, verbatim; the two marked "archive" are
+  only in the bulk archive below, not served as loose files on day 1, so a cold start
+  that skipped the archive would 404 on them:
   - `2023/cve-2023-34034.json` (spring-security: fixed, known_affected,
     known_not_affected + flag; CPE-only products),
   - `2025/cve-2025-20012.json` (microcode_ctl: fixed across AUS/E4S/EUS/TUS/ELS streams
@@ -61,6 +71,7 @@ noted per feed for reference.
   400 KB of the real archive on 2026-10-03). It holds the two documents whose
   `changes.csv` date is before the archive date (`src/day1/redhat-archive/`); the five
   later ones reach the adapter through the `changes.csv` delta, as on the live feed.
+  The suite requires the adapter's `csaf bulk archive: done … docs=2` line on day 1.
 - `../metrics/repository-to-cpe.json` — five of the 13,032 repositories kept
   (`public-hummingbird-x86_64-rpms`, `rhel-10-for-x86_64-baseos-rpms`,
   `rhel-8-for-x86_64-appstream-rpms`, `rhel-8-for-x86_64-baseos-rpms`,
@@ -165,8 +176,7 @@ sweep guard).
 
 ## Day 2 (second ingest)
 
-Served only once the suite's day-2 cases are no longer pending. **These are the only
-edits to vendor items**:
+**These are the only edits to vendor items**:
 
 | file | edit | Last-Modified |
 |---|---|---|
@@ -196,4 +206,4 @@ dates CSAF rows by `changes.csv`.
 - updateinfo: the advisory's `<updated date>`.
 - OVAL and secdb: the file's Last-Modified (the server's day-1 date). OVAL definitions
   carry dates of their own; dating OVAL rows by the file is the product's current design,
-  an open decision in PLAN-VEX-SWEEP.md §6 Backlog ("Found by Phase 3a").
+  and whether to date them by the definition instead is an open question.

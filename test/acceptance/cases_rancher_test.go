@@ -97,7 +97,7 @@ func rancherCases() []Case {
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2026-24061", Supplier: "rancher", Status: "not_affected", Justification: "vulnerable_code_not_in_execute_path",
 				Timestamp: tsRVKube, Notes: scoped(notes("openvex", "direct"), scopeKubeOVN), Products: ss("pkg:deb/ubuntu/inetutils-ping"),
-				Evidence: evKubeOVN + " (no version: an empty list, rendered as the vendor's product_id — PLAN-VEX-SWEEP.md Phase 5 step 4)"}},
+				Evidence: evKubeOVN + " (no version: an empty list, rendered as the vendor's product_id: docs/api.md, Version selection)"}},
 		},
 		{
 			Name: "rancher/negative/non-CVE statements are skipped", Endpoint: epStatements,
@@ -120,7 +120,7 @@ func rancherCases() []Case {
 			Status: 204, Rows: 0,
 		},
 
-		// Exact versions (Phase 5).
+		// Exact versions.
 		{
 			Name: "rancher/exact/listed version", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2025-22870"), "products": ss("pkg:golang/golang.org/x/net@v0.35.0"), "scopes": ss(scopeOPA)},
@@ -150,9 +150,9 @@ func rancherCases() []Case {
 		},
 		{
 			// An empty list means the vendor stated the verdict with no version:
-			// it matches any version (§2), and is rendered as the vendor's
+			// it matches any version, and is rendered as the vendor's
 			// versionless product_id, never the caller's identifier
-			// (PLAN-VEX-SWEEP.md Phase 5 step 4, decided 2026-10-03).
+			// (docs/api.md, Version selection).
 			Name: "rancher/exact/an empty version list matches any version", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2022-37434"), "vendors": ss("rancher"), "products": ss("pkg:apk/alpine/zlib@1.2.12-r3?arch=x86_64&distro=3.16.2"), "scopes": ss(scopeSachetDocker)},
 			Status: 200, Rows: 1,
