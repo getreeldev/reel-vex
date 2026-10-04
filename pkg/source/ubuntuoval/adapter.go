@@ -142,6 +142,7 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 			ProductID:     s.ProductID,
 			BaseID:        s.BaseID,
 			Version:       s.Version,
+			VersionKind:   source.FixedInKind(s.Status, s.Version),
 			IDType:        s.IDType,
 			Status:        s.Status,
 			Justification: s.Justification,

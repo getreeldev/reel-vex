@@ -331,10 +331,13 @@ func (p *DB) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 	if len(f.CVEs) == 0 && len(f.ProductBaseIDs) == 0 {
 		return nil, nil
 	}
-	query, args, exact := statementsQuery(f)
-
 	ctx, cancel := context.WithTimeout(context.Background(), p.queryTimeout)
 	defer cancel()
+	if boundary := db.NewBoundaryFilter(f.BoundaryVersions); len(boundary) > 0 {
+		return p.queryBoundary(ctx, f, boundary)
+	}
+	query, args, exact := statementsQuery(f)
+
 	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -351,6 +354,88 @@ func (p *DB) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 	}
 	return out, nil
 }
+
+// queryBoundary is QueryStatements when the caller named versions to compare
+// against boundary rows. The comparison is a distro's version ordering (dpkg,
+// rpm, apk), which SQL cannot express, so rows are judged here while they are
+// read, and Offset and Limit are applied to the rows kept — a LIMIT in the
+// query would count rows the comparison then drops, leaving pages short and
+// X-Reel-Statements and truncation describing rows nobody returned. The query
+// runs as a cursor read in batches, so reading stops once Offset+Limit rows
+// are kept, as LIMIT would stop it: a plain result set would be sent whole
+// and drained on close however early the reader stopped. A cursor is also
+// planned for its first rows (cursor_tuple_fraction), as a LIMIT query is.
+func (p *DB) queryBoundary(ctx context.Context, f db.QueryFilters, boundary db.BoundaryFilter) ([]db.Statement, error) {
+	limit, offset := f.Limit, f.Offset
+	declare, args, exact := boundaryCursor(f)
+
+	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(context.Background()) // read-only; ends the cursor too
+	if _, err := tx.Exec(ctx, declare, args...); err != nil {
+		return nil, err
+	}
+	var out []db.Statement
+	skipped := 0
+	for {
+		batch := boundaryFetchMax
+		if limit > 0 {
+			batch = min(max(offset-skipped+limit-len(out), boundaryFetchMin), boundaryFetchMax)
+		}
+		rows, err := tx.Query(ctx, fmt.Sprintf("FETCH %d FROM statements_cur", batch))
+		if err != nil {
+			return nil, err
+		}
+		read, done := 0, false
+		for rows.Next() {
+			read++
+			s, err := scanStatement(rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			// The exact predicate already ran in the query; Apply narrows the
+			// list to the versions matched.
+			if s, _ = exact.Apply(s); !boundary.Keeps(s) {
+				continue
+			}
+			if skipped < offset {
+				skipped++
+				continue
+			}
+			out = append(out, s)
+			if limit > 0 && len(out) == limit {
+				done = true
+				break
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if done || read < batch {
+			return out, nil
+		}
+	}
+}
+
+// boundaryCursor is the DECLARE queryBoundary runs: QueryStatements' query
+// without its LIMIT and OFFSET, which queryBoundary applies to the rows kept.
+func boundaryCursor(f db.QueryFilters) (string, []any, db.ExactFilter) {
+	f.Limit, f.Offset = 0, 0
+	query, args, exact := statementsQuery(f)
+	return "DECLARE statements_cur NO SCROLL CURSOR FOR " + query, args, exact
+}
+
+// The bounds of one FETCH in queryBoundary: enough rows to fill the page that
+// remains, at least a few hundred so a small page does not cost a round trip
+// per dropped row, at most a few thousand so memory stays flat.
+const (
+	boundaryFetchMin = 256
+	boundaryFetchMax = 5000
+)
 
 // statementsQuery builds QueryStatements' SQL and arguments, and returns the
 // exact-list filter whose matched versions the caller narrows after the scan.
@@ -450,23 +535,32 @@ func statementsQuery(f db.QueryFilters) (string, []any, db.ExactFilter) {
 	return query, args, exact
 }
 
-// scanStatements reads result rows into Statements. No selected column is
-// nullable; an empty version list reads as nil, as NormalizeVersions writes it.
+// scanStatements reads result rows into Statements.
 func scanStatements(rows pgx.Rows) ([]db.Statement, error) {
 	var out []db.Statement
 	for rows.Next() {
-		var s db.Statement
-		if err := rows.Scan(
-			&s.Vendor, &s.CVE, &s.ProductID, &s.BaseID, &s.Versions, &s.VersionKind, &s.IDType,
-			&s.Status, &s.Justification, &s.Updated, &s.SourceFormat, &s.Scope); err != nil {
+		s, err := scanStatement(rows)
+		if err != nil {
 			return nil, err
-		}
-		if len(s.Versions) == 0 {
-			s.Versions = nil
 		}
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// scanStatement reads the current result row. No selected column is nullable;
+// an empty version list reads as nil, as NormalizeVersions writes it.
+func scanStatement(rows pgx.Rows) (db.Statement, error) {
+	var s db.Statement
+	if err := rows.Scan(
+		&s.Vendor, &s.CVE, &s.ProductID, &s.BaseID, &s.Versions, &s.VersionKind, &s.IDType,
+		&s.Status, &s.Justification, &s.Updated, &s.SourceFormat, &s.Scope); err != nil {
+		return db.Statement{}, err
+	}
+	if len(s.Versions) == 0 {
+		s.Versions = nil
+	}
+	return s, nil
 }
 
 // Stats returns cached coverage stats, computing on first call. Cached because

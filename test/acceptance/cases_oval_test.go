@@ -8,8 +8,9 @@ package acceptance
 // dates (Ubuntu advisory issued/updated, Debian DSA <date>): that is the
 // product's current design, an open decision in PLAN-VEX-SWEEP.md §6 Backlog,
 // "Found by Phase 3a". A row's product is the versionless package with its
-// release (the fixed-in version is stored but is not part of any answer until
-// Phase 5b).
+// release, and a `fixed` row holds the fixed-in version: a query naming a
+// version gets it only at or above that version, under the identifier it sent
+// (more in cases_boundary_test.go).
 
 func ubuntuOVALCases() []Case {
 	return []Case{
@@ -21,12 +22,12 @@ func ubuntuOVALCases() []Case {
 				Evidence: "UO definition oval:com.ubuntu.noble:def:675610000000 (USN-6756-1, class patch): less < 590-2ubuntu2.1"}},
 		},
 		{
+			// UO definition oval:com.ubuntu.noble:def:674430000000 (USN-6744-3):
+			// variable python3-pil, python3-pil.imagetk < 10.2.0-1ubuntu1. The
+			// query's 10.0.0-1 is below the fixed-in version: no answer (Phase 5e).
 			Name: "ubuntu-oval/purl/two binary packages of one USN", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2024-28219"), "products": ss("pkg:deb/ubuntu/python3-pil@10.0.0-1?arch=amd64&distro=ubuntu-24.04")},
-			Status: 200, Rows: 1,
-			Want: []Stmt{{CVE: "CVE-2024-28219", Supplier: "ubuntu", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"),
-				Products: ss("pkg:deb/ubuntu/python3-pil?distro=ubuntu-24.04"),
-				Evidence: "UO definition oval:com.ubuntu.noble:def:674430000000 (USN-6744-3): variable python3-pil, python3-pil.imagetk < 10.2.0-1ubuntu1"}},
+			Status: 204, Rows: 0,
 		},
 		{
 			Name: "ubuntu-oval/cve-only/one USN, four CVEs, two packages", Endpoint: epStatements,
@@ -36,12 +37,12 @@ func ubuntuOVALCases() []Case {
 				Evidence: "UO definition oval:com.ubuntu.noble:def:673620000000 (USN-6736-2): CVE-2016-9840, -9841, CVE-2018-25032, CVE-2022-37434; klibc-utils, libklibc < 2.0.13-4ubuntu0.1"}},
 		},
 		{
+			// UO definition oval:com.ubuntu.noble:def:675610000000 (USN-6756-1),
+			// the only definition naming less: less < 590-2ubuntu2.1. The query's
+			// 590-2ubuntu2 is below the fixed-in version: no answer (Phase 5e).
 			Name: "ubuntu-oval/broad/products only", Endpoint: epStatements,
 			Body:   body{"products": ss("pkg:deb/ubuntu/less@590-2ubuntu2?arch=amd64&distro=ubuntu-24.04")},
-			Status: 200, Rows: 1,
-			Want: []Stmt{{CVE: "CVE-2024-32487", Supplier: "ubuntu", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"),
-				Products: ss("pkg:deb/ubuntu/less?distro=ubuntu-24.04"),
-				Evidence: "UO definition oval:com.ubuntu.noble:def:675610000000 (USN-6756-1): the only definition naming less"}},
+			Status: 204, Rows: 0,
 		},
 		{
 			Name: "ubuntu-oval/negative/a USN with no CVE emits nothing", Endpoint: epStatements,
@@ -59,8 +60,8 @@ func ubuntuOVALCases() []Case {
 					Products: archesAt("pkg:deb/ubuntu/libklibc@2.0.13-4ubuntu0.2", "ubuntu-24.04", "amd64", "arm64", "armhf", "i386", "ppc64el", "riscv64", "s390x"),
 					Evidence: "UV vex/cve/2022/CVE-2022-37434.json statements[0] fixed: libklibc@2.0.13-4ubuntu0.2 distro=noble (7 arches)"},
 				{CVE: "CVE-2022-37434", Supplier: "ubuntu", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"),
-					Products: ss("pkg:deb/ubuntu/libklibc?distro=ubuntu-24.04"),
-					Evidence: "UO definition oval:com.ubuntu.noble:def:673620000000 (USN-6736-2): libklibc < 2.0.13-4ubuntu0.1 (an OVAL row keeps today's rendering, Phase 5 step 4)"},
+					Products: ss("pkg:deb/ubuntu/libklibc@2.0.13-4ubuntu0.2?arch=amd64&distro=ubuntu-24.04"),
+					Evidence: "UO definition oval:com.ubuntu.noble:def:673620000000 (USN-6736-2): libklibc < 2.0.13-4ubuntu0.1; 2.0.13-4ubuntu0.2 is above it, so the OVAL row is answered under the identifier sent (Phase 5e)"},
 			},
 		},
 	}
@@ -88,16 +89,16 @@ func debianCases() []Case {
 			Body:   body{"cves": ss("CVE-2022-37434"), "products": ss("pkg:deb/debian/zlib@1:1.2.13.dfsg-1?arch=source&distro=debian-12")},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "debian", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"),
-				Products: ss("pkg:deb/debian/zlib?distro=debian-12"),
-				Evidence: "DO definition oval:org.debian:def:118596735315433746990801407057633161948 (CVE-2022-37434 zlib): evr less than 1:1.2.11.dfsg-4.1"}},
+				Products: ss("pkg:deb/debian/zlib@1:1.2.13.dfsg-1?arch=source&distro=debian-12"),
+				Evidence: "DO definition oval:org.debian:def:118596735315433746990801407057633161948 (CVE-2022-37434 zlib): evr less than 1:1.2.11.dfsg-4.1; 1:1.2.13.dfsg-1 is above it"}},
 		},
 		{
 			Name: "debian/purl/Trivy point-release distro", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2022-37434"), "products": ss("pkg:deb/debian/zlib@1:1.2.13.dfsg-1?arch=source&distro=debian-12.11")},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "debian", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"),
-				Products: ss("pkg:deb/debian/zlib?distro=debian-12.11"),
-				Evidence: "DO definition oval:org.debian:def:118596735315433746990801407057633161948 (platform Debian GNU/Linux 12): zlib < 1:1.2.11.dfsg-4.1"}},
+				Products: ss("pkg:deb/debian/zlib@1:1.2.13.dfsg-1?arch=source&distro=debian-12.11"),
+				Evidence: "DO definition oval:org.debian:def:118596735315433746990801407057633161948 (platform Debian GNU/Linux 12): zlib < 1:1.2.11.dfsg-4.1; 1:1.2.13.dfsg-1 is above it"}},
 		},
 		{
 			Name: "debian/cve-only/a DSA (class patch) naming two CVEs", Endpoint: epStatements,
@@ -143,8 +144,8 @@ func debianCases() []Case {
 			Body:   body{"cves": ss("CVE-1999-0199"), "products": ss("pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?arch=source&distro=debian-12.15")},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-1999-0199", Supplier: "debian", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"),
-				Products: ss("pkg:deb/debian/glibc?distro=debian-12.15"),
-				Evidence: "DO definition oval:org.debian:def:302398480618719661759273474285073383836 (CVE-1999-0199 glibc): glibc DPKG is earlier than 2.2-1"}},
+				Products: ss("pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?arch=source&distro=debian-12.15"),
+				Evidence: "DO definition oval:org.debian:def:302398480618719661759273474285073383836 (CVE-1999-0199 glibc): glibc DPKG is earlier than 2.2-1 (evr 0:2.2-1); 2.36-9+deb12u14 is above it"}},
 		},
 		{
 			Name: "debian/negative/another vendor's namespace", Endpoint: epStatements,

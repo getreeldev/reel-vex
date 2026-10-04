@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getreeldev/reel-vex/pkg/db"
 	"github.com/getreeldev/reel-vex/pkg/source"
 )
 
@@ -146,8 +147,8 @@ func TestAdapter_Lifecycle(t *testing.T) {
 			if s.Justification != "" {
 				t.Errorf("%s: Justification got %q, want empty", s.CVE, s.Justification)
 			}
-			if s.Version == "" {
-				t.Errorf("%s: fixed statement has empty version", s.CVE)
+			if s.Version == "" || s.VersionKind != db.VersionKindBoundary {
+				t.Errorf("%s: fixed statement has version %q of kind %q, want a version of kind boundary", s.CVE, s.Version, s.VersionKind)
 			}
 			if s.CVE == "CVE-2024-5171" {
 				sawAomFix = true
@@ -177,8 +178,8 @@ func TestAdapter_Lifecycle(t *testing.T) {
 			}
 		case "not_affected":
 			notAffected++
-			if s.Version != "" {
-				t.Errorf("%s: not_affected statement must have empty version, got %q", s.CVE, s.Version)
+			if s.Version != "" || s.VersionKind != "" {
+				t.Errorf("%s: not_affected statement must have empty version and kind, got %q %q", s.CVE, s.Version, s.VersionKind)
 			}
 			if s.Justification != "vulnerable_code_not_present" {
 				t.Errorf("%s: Justification got %q, want vulnerable_code_not_present", s.CVE, s.Justification)

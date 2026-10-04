@@ -56,7 +56,7 @@ A package listed without a version (every Rancher deb, rpm and apk subcomponent)
 
 A query is matched against these lists strictly — a versioned query gets only the verdict stated for that version, and nothing for a version the vendor did not list — and an exact row is rendered as per-version identifiers as the vendor published them ([`api.md`](./api.md#version-selection)).
 
-**Every other feed** (`version_kind = ''`) still writes one version per statement, so its lists hold at most one element and it is matched and rendered as before 0.13. The OVAL feeds, Alpine and Amazon state fixed-in boundaries, and Red Hat and SUSE CSAF state a boundary per product stream; converting them to boundary lists compared in the distro's version ordering within the right stream (`version_kind = 'boundary'`, with `stream` in the key) is later work.
+**The OVAL feeds, Alpine and Amazon** state `fixed` with a fixed-in version, and write such a row with `version_kind = 'boundary'` and that one version: a versioned query gets it only at or above the version, compared in the distro's ordering (dpkg, rpm, apk) as the store reads the rows, and it is answered under the query's own versioned identifier ([`api.md`](./api.md#fixed-in-versions-boundary-rows)). A key stated with several fixed-in versions (parallel streams) still keeps the last one written. **Red Hat and SUSE CSAF** (`version_kind = ''`) still write one version per statement and are matched and rendered as before 0.13: they state a boundary per product stream, and comparing it within the right stream (with `stream` in the key) is later work.
 
 ### Alias fetchers
 

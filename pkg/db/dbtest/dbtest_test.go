@@ -464,3 +464,44 @@ func TestExactVersions(t *testing.T) {
 		}
 	}
 }
+
+// TestBoundaryVersions: the fake keeps a boundary row for a versioned query
+// only at or above its fixed-in version, before Offset and Limit, as Postgres
+// does (TestPG's testBoundaries pages the two against each other).
+func TestBoundaryVersions(t *testing.T) {
+	const cve = "CVE-2022-37434"
+	zlib := "pkg:deb/debian/zlib?distro=debian-12"
+	row := func(cve, version string) db.Statement {
+		return db.Statement{Vendor: "debian", CVE: cve, ProductID: zlib, BaseID: zlib, Versions: []string{version},
+			VersionKind: db.VersionKindBoundary, IDType: "purl", Status: "fixed", Updated: "2026-06-01T00:00:00Z", SourceFormat: "oval"}
+	}
+	s := seed(t, row(cve, "1:1.2.11.dfsg-4.1"), row("CVE-2023-0001", "1:1.3-1"), row("CVE-2023-0002", "1:1.2-1"))
+	pv := func(v string) []db.BaseVersion { return []db.BaseVersion{{Base: zlib, Version: v}} }
+	for _, c := range []struct {
+		name string
+		f    db.QueryFilters
+		want []string
+	}{
+		{"below", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{zlib}, BoundaryVersions: pv("1:1.2.11.dfsg-2")}, nil},
+		{"at", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{zlib}, BoundaryVersions: pv("1:1.2.11.dfsg-4.1")}, []string{cve}},
+		{"above", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{zlib}, BoundaryVersions: pv("1:1.2.13.dfsg-1")}, []string{cve}},
+		{"missing epoch is 0", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{zlib}, BoundaryVersions: pv("1.2.13.dfsg-1")}, nil},
+		{"no version", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{zlib}, BoundaryVersions: pv("")}, []string{cve}},
+		{"unparseable", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{zlib}, BoundaryVersions: pv("1:")}, nil},
+		// CVE-2023-0001 (fixed at 1:1.3-1) sorts between the two rows kept
+		// and is dropped: Offset and Limit count only what is kept.
+		{"offset and limit", db.QueryFilters{ProductBaseIDs: []string{zlib}, BoundaryVersions: pv("1:1.2.13-1"), Offset: 1, Limit: 1}, []string{"CVE-2023-0002"}},
+	} {
+		got, err := s.QueryStatements(c.f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var g []string
+		for _, st := range got {
+			g = append(g, st.CVE)
+		}
+		if !slices.Equal(g, c.want) {
+			t.Errorf("%s: got %v, want %v", c.name, g, c.want)
+		}
+	}
+}

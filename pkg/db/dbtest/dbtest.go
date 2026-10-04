@@ -5,15 +5,16 @@
 // TestPG; this fake exists only to keep the consumer tests fast and hermetic.
 //
 // "Faithful" means: same filter semantics (IN within a dimension, AND across
-// dimensions), the same scope gate and exact-list matching, the same ORDER BY
-// columns (base_id, cve, product_id, source_format, vendor, scope, status,
-// justification), and the same BulkInsert base/source_format defaulting,
-// version-list normalisation, primary key, change guard and owner rule as the
-// Postgres backend. One difference is deliberate: the fake orders strings
-// bytewise, while Postgres orders text by the database's collation, so the
-// two agree only under the C collation; under a linguistic one (en_US.UTF-8,
-// say) keys that differ in case or punctuation can come back in another
-// order. A test that depends on that order is testing the collation.
+// dimensions), the same scope gate, exact-list and boundary matching (both
+// before Offset and Limit), the same ORDER BY columns (base_id, cve,
+// product_id, source_format, vendor, scope, status, justification), and the
+// same BulkInsert base/source_format defaulting, version-list normalisation,
+// primary key, change guard and owner rule as the Postgres backend. One
+// difference is deliberate: the fake orders strings bytewise, while Postgres
+// orders text by the database's collation, so the two agree only under the C
+// collation; under a linguistic one (en_US.UTF-8, say) keys that differ in
+// case or punctuation can come back in another order. A test that depends on
+// that order is testing the collation.
 package dbtest
 
 import (
@@ -189,6 +190,7 @@ func (s *Store) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 	defer s.mu.Unlock()
 
 	exact := db.NewExactFilter(f.ExactVersions)
+	boundary := db.NewBoundaryFilter(f.BoundaryVersions)
 	var out []db.Statement
 	for _, st := range s.stmts {
 		if len(f.CVEs) > 0 && !contains(f.CVEs, st.CVE) {
@@ -234,7 +236,7 @@ func (s *Store) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 			continue
 		}
 		st, ok := exact.Apply(st)
-		if !ok {
+		if !ok || !boundary.Keeps(st) {
 			continue
 		}
 		st.AdapterID, st.Stream = "", ""        // never selected by the Postgres query

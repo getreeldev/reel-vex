@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getreeldev/reel-vex/pkg/db"
 	"github.com/getreeldev/reel-vex/pkg/source"
 )
 
@@ -123,13 +124,16 @@ func TestAdapter_Lifecycle(t *testing.T) {
 			if s.Version != want {
 				t.Errorf("%q: got version %q, want %q", s.ProductID, s.Version, want)
 			}
+			if s.VersionKind != db.VersionKindBoundary {
+				t.Errorf("%q: VersionKind %q, want boundary", s.ProductID, s.VersionKind)
+			}
 			delete(wantFixed, s.ProductID)
 		case "affected":
 			if s.ProductID != "pkg:deb/debian/curl?distro=debian-12" {
 				t.Errorf("affected: got %q", s.ProductID)
 			}
-			if s.Version != "" {
-				t.Errorf("affected statement must have empty version, got %q", s.Version)
+			if s.Version != "" || s.VersionKind != "" {
+				t.Errorf("affected statement must have empty version and kind, got %q %q", s.Version, s.VersionKind)
 			}
 			sawAffected = true
 		default:

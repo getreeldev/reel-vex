@@ -151,10 +151,12 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 	archAllow := archAllowList(arches)
 	// Exact-list vendor rows are matched against each component's own
-	// version. User base_ids carry no pair, so a vendor row reached only
-	// through a user statement keeps its whole list — and so is not withheld
-	// as a source package's (sourceBases) either.
-	respBaseToReason, respBaseToInputs, exactVersions, sourceBases := s.expandProducts(sbomComponentIDs, sources)
+	// version, and boundary rows against it or, through a source package,
+	// the source version. User base_ids carry no pair, so a vendor row
+	// reached only through a user statement keeps its whole list — and so is
+	// not withheld as a source package's (sourceBases) either.
+	x := s.expandProducts(sbomComponentIDs, sources)
+	respBaseToReason, respBaseToInputs, sourceBases := x.reasons, x.inputs, x.sourceBases
 	queryBases := make(map[string]bool, len(respBaseToReason))
 	for b := range respBaseToReason {
 		queryBases[b] = true
@@ -193,7 +195,8 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	var truncated bool
 	switch {
 	case synthesize && len(queryBases) > 0:
-		filters := db.QueryFilters{ProductBaseIDs: mapKeysSorted(queryBases), Scopes: scopes, ArchAllow: archAllow, ExactVersions: exactVersions, SourceBases: sourceBases}
+		filters := db.QueryFilters{ProductBaseIDs: mapKeysSorted(queryBases), Scopes: scopes, ArchAllow: archAllow,
+			ExactVersions: x.exact, BoundaryVersions: x.boundary, SourceBases: sourceBases}
 		if s.statementsMax > 0 {
 			filters.Limit = s.statementsMax + 1 // +1 to detect truncation
 		}
@@ -215,12 +218,13 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	case len(queryCVEs) > 0 && len(queryBases) > 0:
 		var err error
 		vendorStmts, err = s.db.QueryStatements(db.QueryFilters{
-			CVEs:           mapKeysSorted(queryCVEs),
-			ProductBaseIDs: mapKeysSorted(queryBases),
-			Scopes:         scopes,
-			ArchAllow:      archAllow,
-			ExactVersions:  exactVersions,
-			SourceBases:    sourceBases,
+			CVEs:             mapKeysSorted(queryCVEs),
+			ProductBaseIDs:   mapKeysSorted(queryBases),
+			Scopes:           scopes,
+			ArchAllow:        archAllow,
+			ExactVersions:    x.exact,
+			BoundaryVersions: x.boundary,
+			SourceBases:      sourceBases,
 		})
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
@@ -411,10 +415,9 @@ func componentProperties(comp map[string]any) map[string]string {
 // was built from, as the vendor rows name it — pkg:deb/debian/<SrcName> with
 // the binary's distro qualifier as written, and the source version
 // [SrcVersion-SrcRelease] with a non-zero SrcEpoch as the epoch qualifier. The
-// version is carried for matching against the fixed-in boundaries Debian
-// states per source package, which the next phase (boundary feeds) compares;
-// nothing compares it today, because a source candidate is paired with no
-// version and never admits an exact-list row:
+// version is what Debian's fixed-in versions, stated per source package, are
+// compared with (expandProducts pairs it with the source candidates for
+// boundary rows); a source candidate never admits an exact-list row:
 //
 //	pkg:deb/debian/zlib1g@1.2.13.dfsg-1?arch=amd64&distro=debian-12.15&epoch=1
 //	  SrcName zlib, SrcVersion 1.2.13.dfsg, SrcRelease 1, SrcEpoch 1
@@ -902,24 +905,35 @@ func synthesizeVulnerabilities(sbom map[string]any, stmts []db.Statement, match 
 // idMatch is one SBOM identifier (a component's purl or cpe) as /v1/analyze
 // attributes vendor rows to it.
 type idMatch struct {
-	id      string
-	version string          // csaf.MatchVersion(id); empty for none
-	bases   map[string]bool // the resolver's candidates for the identifier
-	source  map[string]bool // candidates reached only through its source package
+	id         string
+	version    string          // csaf.MatchVersion(id); empty for none
+	bases      map[string]bool // the resolver's candidates for the identifier
+	source     map[string]bool // candidates reached only through its source package
+	srcVersion string          // csaf.MatchVersion of the source package's purl; empty for none
 }
 
 // admits reports whether row s is a statement about this identifier. The
-// store's exact-list filter pools every version an SBOM names for one base,
-// so a row it returns may hold another component's version: an exact-list row
-// with a list is about this identifier only when the identifier names no
-// version or one in the list. A row reached through the source package never
-// is when it is an exact list, which names the vendor's builds of the package
-// itself (db.QueryFilters.SourceBases).
+// store's exact-list and boundary filters pool every version an SBOM names
+// for one base, so a row they return may hold only for another component's
+// version: an exact-list row with a list is about this identifier only when
+// the identifier names no version or one in the list, and a boundary row only
+// when it names no version or one at or above the fixed-in version
+// (db.BoundaryReaches). A row reached through the source package never is
+// when it is an exact list, which names the vendor's builds of the package
+// itself (db.QueryFilters.SourceBases); a boundary row reached that way is
+// judged by the source package's version, the one the vendor's fixed-in
+// version is stated for.
 func (m *idMatch) admits(s db.Statement) bool {
 	if m.bases[s.BaseID] {
+		if s.VersionKind == db.VersionKindBoundary {
+			return m.version == "" || db.BoundaryReaches(s, m.version)
+		}
 		return s.VersionKind != db.VersionKindExact || len(s.Versions) == 0 || m.version == "" || slices.Contains(s.Versions, m.version)
 	}
-	return m.source[s.BaseID] && s.VersionKind != db.VersionKindExact
+	if !m.source[s.BaseID] || s.VersionKind == db.VersionKindExact {
+		return false
+	}
+	return s.VersionKind != db.VersionKindBoundary || m.srcVersion == "" || db.BoundaryReaches(s, m.srcVersion)
 }
 
 // sbomMatch is every SBOM identifier's idMatch, by identifier and by each base
@@ -943,6 +957,7 @@ func (s *Server) sbomMatches(ids []string, sources map[string]string) sbomMatch 
 			out.byBase[cand.ID] = append(out.byBase[cand.ID], m)
 		}
 		if src := sources[id]; src != "" {
+			m.srcVersion = csaf.MatchVersion(src)
 			for _, cand := range s.resolver.Expand(src) {
 				if !m.bases[cand.ID] && !m.source[cand.ID] {
 					m.source[cand.ID] = true

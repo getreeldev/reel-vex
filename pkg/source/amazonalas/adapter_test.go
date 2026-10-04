@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getreeldev/reel-vex/pkg/db"
 	"github.com/getreeldev/reel-vex/pkg/source"
 )
 
@@ -207,6 +208,9 @@ func TestAdapter_Sync_amzn2(t *testing.T) {
 	for _, s := range kh {
 		if s.Version != "4.14.51-66.38.amzn2" {
 			t.Errorf("kernel-headers Version got %q, want 4.14.51-66.38.amzn2", s.Version)
+		}
+		if s.VersionKind != db.VersionKindBoundary {
+			t.Errorf("kernel-headers VersionKind got %q, want boundary", s.VersionKind)
 		}
 		if s.ProductID != "pkg:rpm/amazon/kernel-headers@4.14.51-66.38.amzn2?distro=amazon-2" {
 			t.Errorf("kernel-headers ProductID got %q", s.ProductID)

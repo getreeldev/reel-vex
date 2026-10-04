@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getreeldev/reel-vex/pkg/db"
 	"github.com/getreeldev/reel-vex/pkg/source"
 )
 
@@ -113,6 +114,9 @@ func TestAdapter_Lifecycle(t *testing.T) {
 		}
 		if s.Version != "0:41.0.7-4ubuntu0.1" {
 			t.Errorf("Version: got %q, want 0:41.0.7-4ubuntu0.1", s.Version)
+		}
+		if s.VersionKind != db.VersionKindBoundary {
+			t.Errorf("VersionKind: got %q, want boundary", s.VersionKind)
 		}
 		if !s.Updated.Equal(lastModified) {
 			t.Errorf("Updated: got %v, want %v", s.Updated, lastModified)

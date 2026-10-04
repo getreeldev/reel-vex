@@ -206,7 +206,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // a CPE — chiefly Red Hat CSAF's, which keys many statements by CPE alone. Exact-list rows (Ubuntu OpenVEX, Rancher)
 // are the exception either way: a product's version selects the verdict
 // stated for it, and each row is rendered per listed version (see
-// db.QueryFilters.ExactVersions and pkg/openvex).
+// db.QueryFilters.ExactVersions and pkg/openvex). So are boundary rows (the
+// fixed-in versions of the OVAL feeds, Alpine and Amazon) for a product that
+// names a version: the row answers only at or above the fixed-in version, and
+// under the product as sent (db.QueryFilters.BoundaryVersions).
 //
 // SBOM, when present, is a CycloneDX 1.4+ document inlined as JSON. The
 // CVE list is derived from .vulnerabilities[].id, the product list from
@@ -331,15 +334,12 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 	// caller provided a Products filter. With no Products, the query runs
 	// without a base_id constraint and the encoder falls back to each
 	// statement's own ProductID for the response's products[] field.
-	var baseToReason map[string]string
-	var baseToInputs map[string][]string
+	var x expansion
 	var bases []string
-	var versions []db.BaseVersion
-	var sourceBases []string
 	if len(req.Products) > 0 {
-		baseToReason, baseToInputs, versions, sourceBases = s.expandProducts(req.Products, sources)
-		bases = make([]string, 0, len(baseToReason))
-		for b := range baseToReason {
+		x = s.expandProducts(req.Products, sources)
+		bases = make([]string, 0, len(x.reasons))
+		for b := range x.reasons {
 			bases = append(bases, b)
 		}
 	}
@@ -366,17 +366,18 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filters := db.QueryFilters{
-		ProductBaseIDs: bases,
-		ArchAllow:      archAllowList(arches),
-		ExactVersions:  versions,
-		SourceBases:    sourceBases,
-		Vendors:        req.Vendors,
-		SourceFormats:  req.SourceFormats,
-		Statuses:       req.Statuses,
-		Justifications: req.Justifications,
-		Scopes:         scopes,
-		Since:          req.Since,
-		Offset:         offset,
+		ProductBaseIDs:   bases,
+		ArchAllow:        archAllowList(arches),
+		ExactVersions:    x.exact,
+		BoundaryVersions: x.boundary,
+		SourceBases:      x.sourceBases,
+		Vendors:          req.Vendors,
+		SourceFormats:    req.SourceFormats,
+		Statuses:         req.Statuses,
+		Justifications:   req.Justifications,
+		Scopes:           scopes,
+		Since:            req.Since,
+		Offset:           offset,
 	}
 	// CVE filter only when not in broad mode.
 	if !broadMode {
@@ -444,7 +445,7 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	doc := openvex.Encode(stmts, baseToInputs, baseToReason)
+	doc := openvex.EncodeVersioned(stmts, x.inputs, x.echoes, x.reasons)
 	// X-Reel-Statements counts DB rows; this counts the statements they grouped
 	// into. Both are useful and neither substitutes for the other.
 	w.Header().Set("X-Reel-Grouped", strconv.Itoa(len(doc.Statements)))
@@ -555,23 +556,37 @@ func (s *Server) handleIngestTrigger(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "started"})
 }
 
-// expandProducts turns the user-supplied product list into two maps, keyed
-// by candidate base identifier, a list of (candidate, version) pairs and the
-// candidates reached only through a source package:
+// expansion is what expandProducts derives from the caller's products, keyed
+// by candidate base identifier:
 //
-//   - baseToReason: match_reason that would apply if a statement's base_id
-//     matches that candidate. When several products reach one candidate, the
-//     strongest rule wins (reasonRank), whatever the order of the products.
-//   - baseToInputs: the set of user inputs (in base form — stripped of PURL
+//   - reasons: match_reason that would apply if a statement's base_id matches
+//     that candidate. When several products reach one candidate, the strongest
+//     rule wins (reasonRank), whatever the order of the products.
+//   - inputs: the set of user inputs (in base form — stripped of PURL
 //     qualifiers and version, see echoBase) that expanded to this candidate.
 //     Used by the OpenVEX emitter to echo the user's PURLs into products[] so
 //     Trivy can match statements keyed by a different identifier (typically
 //     CPE).
-//   - versions: each candidate paired with the version its input named
+//   - echoes: the same inputs as a boundary row is rendered for them (see
+//     openvex.Echo): an input naming a version is echoed as sent, beside the
+//     version compared with the row's fixed-in version, so a boundary row
+//     only ever names the versions it was checked against.
+//   - exact: each candidate paired with the version its input named
 //     (csaf.MatchVersion; empty for none), for db.QueryFilters.ExactVersions,
 //     so an exact-list row is matched against the caller's own version.
-//   - sourceBases: see below.
-//
+//   - boundary: exact's pairs plus each source candidate paired with its
+//     source package's version, for db.QueryFilters.BoundaryVersions.
+//   - sourceBases: see expandProducts.
+type expansion struct {
+	reasons     map[string]string
+	inputs      map[string][]string
+	echoes      map[string][]openvex.Echo
+	exact       []db.BaseVersion
+	boundary    []db.BaseVersion
+	sourceBases []string
+}
+
+// expandProducts expands the user-supplied product list (see expansion).
 // Delegates expansion to resolver.Resolver so alias lookups and CPE prefix
 // expansion run alongside the direct base.
 //
@@ -583,30 +598,43 @@ func (s *Server) handleIngestTrigger(w http.ResponseWriter, r *http.Request) {
 // db.QueryFilters.SourceBases, so it admits no exact-list row. Either way the
 // product's own identifier is echoed for it, so a row keyed by the source
 // package is answered under the binary the caller sent. A source candidate
-// adds no version pair: the only versions matched today are exact lists'.
-func (s *Server) expandProducts(products []string, sources map[string]string) (baseToReason map[string]string, baseToInputs map[string][]string, versions []db.BaseVersion, sourceBases []string) {
-	baseToReason = make(map[string]string, len(products))
-	baseToInputs = make(map[string][]string, len(products))
+// pairs no version for exact lists; for boundary rows it pairs the source
+// package's version, which is what the vendor's fixed-in version is stated
+// for, and the binary is echoed beside it.
+func (s *Server) expandProducts(products []string, sources map[string]string) expansion {
+	x := expansion{
+		reasons: make(map[string]string, len(products)),
+		inputs:  make(map[string][]string, len(products)),
+		echoes:  make(map[string][]openvex.Echo, len(products)),
+	}
 	seenInput := make(map[string]map[string]bool)
-	echo := func(base, input string) {
+	seenEcho := make(map[string]map[openvex.Echo]bool)
+	echo := func(base, input string, e openvex.Echo) {
 		if seenInput[base] == nil {
 			seenInput[base] = make(map[string]bool)
+			seenEcho[base] = make(map[openvex.Echo]bool)
 		}
 		if !seenInput[base][input] {
 			seenInput[base][input] = true
-			baseToInputs[base] = append(baseToInputs[base], input)
+			x.inputs[base] = append(x.inputs[base], input)
+		}
+		if !seenEcho[base][e] {
+			seenEcho[base][e] = true
+			x.echoes[base] = append(x.echoes[base], e)
 		}
 	}
 
 	for _, p := range products {
 		inputBase := echoBase(p)
 		version := csaf.MatchVersion(p)
+		e := versionedEcho(p, inputBase, version)
 		for _, cand := range s.resolver.Expand(p) {
-			versions = append(versions, db.BaseVersion{Base: cand.ID, Version: version})
-			if r, exists := baseToReason[cand.ID]; !exists || reasonRank[cand.MatchReason] < reasonRank[r] {
-				baseToReason[cand.ID] = cand.MatchReason
+			x.exact = append(x.exact, db.BaseVersion{Base: cand.ID, Version: version})
+			x.boundary = append(x.boundary, db.BaseVersion{Base: cand.ID, Version: version})
+			if r, exists := x.reasons[cand.ID]; !exists || reasonRank[cand.MatchReason] < reasonRank[r] {
+				x.reasons[cand.ID] = cand.MatchReason
 			}
-			echo(cand.ID, inputBase)
+			echo(cand.ID, inputBase, e)
 		}
 	}
 	for _, p := range products {
@@ -615,15 +643,32 @@ func (s *Server) expandProducts(products []string, sources map[string]string) (b
 			continue
 		}
 		inputBase := echoBase(p)
+		version := csaf.MatchVersion(src)
+		e := versionedEcho(p, inputBase, version)
 		for _, cand := range s.resolver.Expand(src) {
-			if _, exists := baseToReason[cand.ID]; !exists {
-				baseToReason[cand.ID] = matchViaSourcePackage
-				sourceBases = append(sourceBases, cand.ID)
+			if _, exists := x.reasons[cand.ID]; !exists {
+				x.reasons[cand.ID] = matchViaSourcePackage
+				x.sourceBases = append(x.sourceBases, cand.ID)
 			}
-			echo(cand.ID, inputBase)
+			x.boundary = append(x.boundary, db.BaseVersion{Base: cand.ID, Version: version})
+			echo(cand.ID, inputBase, e)
 		}
 	}
-	return baseToReason, baseToInputs, versions, sourceBases
+	return x
+}
+
+// versionedEcho is how a boundary row is rendered for one input: the
+// identifier as the caller sent it (without a subpath, which a base never
+// carries) when version — the version compared — is set, else the input's
+// base form, as every other row echoes it.
+func versionedEcho(id, inputBase, version string) openvex.Echo {
+	if version == "" {
+		return openvex.Echo{ID: inputBase}
+	}
+	if i := strings.IndexByte(id, '#'); i >= 0 {
+		id = id[:i]
+	}
+	return openvex.Echo{ID: id, Version: version}
 }
 
 // matchViaSourcePackage is the match_reason of a row reached through the

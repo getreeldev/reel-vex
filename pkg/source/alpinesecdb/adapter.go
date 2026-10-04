@@ -254,6 +254,7 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 				ProductID:     base,
 				BaseID:        base,
 				Version:       version,
+				VersionKind:   source.FixedInKind(status, version),
 				IDType:        "purl",
 				Status:        status,
 				Justification: justification,

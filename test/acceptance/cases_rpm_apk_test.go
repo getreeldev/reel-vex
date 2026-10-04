@@ -23,7 +23,7 @@ func alpineCases() []Case {
 			Body:   body{"cves": ss("CVE-2026-56123"), "products": ss("pkg:apk/alpine/socat@1.8.1.2-r0?arch=x86_64&distro=3.22.2")},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2026-56123", Supplier: "alpine", Status: "fixed", Timestamp: tsDay1File, Notes: notes("secdb", "direct"),
-				Products: ss("pkg:apk/alpine/socat?distro=3.22.2"), Evidence: "AS v3.22/main.json package socat: secfixes \"1.8.1.2-r0\": [CVE-2026-56123]"}},
+				Products: ss("pkg:apk/alpine/socat@1.8.1.2-r0?arch=x86_64&distro=3.22.2"), Evidence: "AS v3.22/main.json package socat: secfixes \"1.8.1.2-r0\": [CVE-2026-56123]; the query is at the fixed-in version"}},
 		},
 		{
 			Name: "alpine/purl/\"0\" via a Trivy query", Endpoint: epStatements,
@@ -62,9 +62,9 @@ func alpineCases() []Case {
 			Status: 200, Rows: 2,
 			Want: []Stmt{
 				{CVE: "CVE-2015-8538", Supplier: "alpine", Status: "fixed", Timestamp: tsDay1File, Notes: notes("secdb", "direct"),
-					Products: ss("pkg:apk/alpine/libdwarf?distro=3.22.0"), Evidence: "AS v3.22/main.json package libdwarf: secfixes \"0.6.0-r0\": [CVE-2019-14249, CVE-2015-8538]"},
+					Products: ss("pkg:apk/alpine/libdwarf@0.9.2-r0?arch=x86_64&distro=3.22.0"), Evidence: "AS v3.22/main.json package libdwarf: secfixes \"0.6.0-r0\": [CVE-2019-14249, CVE-2015-8538]; 0.9.2-r0 is above it"},
 				{CVE: "CVE-2019-14249", Supplier: "alpine", Status: "fixed", Timestamp: tsDay1File, Notes: notes("secdb", "direct"),
-					Products: ss("pkg:apk/alpine/libdwarf?distro=3.22.0"), Evidence: "AS v3.22/main.json package libdwarf: secfixes \"0.6.0-r0\"; \"0.9.2-r0\" lists only DW2024* ids"},
+					Products: ss("pkg:apk/alpine/libdwarf@0.9.2-r0?arch=x86_64&distro=3.22.0"), Evidence: "AS v3.22/main.json package libdwarf: secfixes \"0.6.0-r0\"; \"0.9.2-r0\" lists only DW2024* ids"},
 			},
 		},
 		{
@@ -101,16 +101,16 @@ func amazonCases() []Case {
 			Body:   body{"cves": ss("CVE-2022-23491"), "products": ss("pkg:rpm/amazon/ca-certificates@2021.2.50-1.0.amzn2023.0.6?arch=noarch&distro=amazon-2023.7.20250512")},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2022-23491", Supplier: "amazon", Status: "fixed", Timestamp: tsALCa2023, Notes: notes("updateinfo", "direct"),
-				Products: ss("pkg:rpm/amazon/ca-certificates?distro=amazon-2023.7.20250512"),
-				Evidence: "AL al2023 updateinfo <update> ALAS2023-2023-061: reference CVE-2022-23491, package ca-certificates 2021.2.50-1.0.amzn2023.0.6"}},
+				Products: ss("pkg:rpm/amazon/ca-certificates@2021.2.50-1.0.amzn2023.0.6?arch=noarch&distro=amazon-2023.7.20250512"),
+				Evidence: "AL al2023 updateinfo <update> ALAS2023-2023-061: reference CVE-2022-23491, package ca-certificates 2021.2.50-1.0.amzn2023.0.6 (the query's version)"}},
 		},
 		{
 			Name: "amazon/purl/AL2", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2022-23491"), "products": ss("pkg:rpm/amazon/ca-certificates@2021.2.50-72.amzn2.0.5?arch=noarch&distro=amazon-2")},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2022-23491", Supplier: "amazon", Status: "fixed", Timestamp: tsALCa2, Notes: notes("updateinfo", "direct"),
-				Products: ss("pkg:rpm/amazon/ca-certificates?distro=amazon-2"),
-				Evidence: "AL amzn2 updateinfo <update> ALAS2-2023-1957: reference CVE-2022-23491, package ca-certificates 2021.2.50-72.amzn2.0.5"}},
+				Products: ss("pkg:rpm/amazon/ca-certificates@2021.2.50-72.amzn2.0.5?arch=noarch&distro=amazon-2"),
+				Evidence: "AL amzn2 updateinfo <update> ALAS2-2023-1957: reference CVE-2022-23491, package ca-certificates 2021.2.50-72.amzn2.0.5 (the query's version)"}},
 		},
 		{
 			Name: "amazon/cve-only/one package fixed in both distros", Endpoint: epStatements,
@@ -130,9 +130,9 @@ func amazonCases() []Case {
 			Status: 200, Rows: 2,
 			Want: []Stmt{
 				{CVE: "CVE-2022-3179", Supplier: "amazon", Status: "fixed", Timestamp: tsALBottle23, Notes: notes("updateinfo", "direct"),
-					Products: ss("pkg:rpm/amazon/python3-bottle?distro=amazon-2023"), Evidence: "AL al2023 updateinfo <update> ALAS2023-2023-082: references CVE-2022-3179, CVE-2022-31799; package python3-bottle"},
+					Products: ss("pkg:rpm/amazon/python3-bottle@0.12.21-2.amzn2023.0.1?arch=noarch&distro=amazon-2023"), Evidence: "AL al2023 updateinfo <update> ALAS2023-2023-082: references CVE-2022-3179, CVE-2022-31799; package python3-bottle 0.12.21-2.amzn2023.0.1 (the query's version)"},
 				{CVE: "CVE-2022-31799", Supplier: "amazon", Status: "fixed", Timestamp: tsALBottle23, Notes: notes("updateinfo", "direct"),
-					Products: ss("pkg:rpm/amazon/python3-bottle?distro=amazon-2023"), Evidence: "AL al2023 updateinfo <update> ALAS2023-2023-082: reference CVE-2022-31799"},
+					Products: ss("pkg:rpm/amazon/python3-bottle@0.12.21-2.amzn2023.0.1?arch=noarch&distro=amazon-2023"), Evidence: "AL al2023 updateinfo <update> ALAS2023-2023-082: reference CVE-2022-31799, python3-bottle 0.12.21-2.amzn2023.0.1"},
 			},
 		},
 		{
@@ -142,8 +142,8 @@ func amazonCases() []Case {
 			Body:   body{"cves": ss("CVE-2022-23491"), "products": ss("pkg:rpm/amazon/ca-certificates@2021.2.50-72.amzn2.0.5?arch=noarch&distro=amazon-2%20%28Karoo%29")},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2022-23491", Supplier: "amazon", Status: "fixed", Timestamp: tsALCa2, Notes: notes("updateinfo", "direct"),
-				Products: ss("pkg:rpm/amazon/ca-certificates?distro=amazon-2%20%28Karoo%29"),
-				Evidence: "AL amzn2 updateinfo <update> ALAS2-2023-1957: reference CVE-2022-23491, package ca-certificates"}},
+				Products: ss("pkg:rpm/amazon/ca-certificates@2021.2.50-72.amzn2.0.5?arch=noarch&distro=amazon-2%20%28Karoo%29"),
+				Evidence: "AL amzn2 updateinfo <update> ALAS2-2023-1957: reference CVE-2022-23491, package ca-certificates 2021.2.50-72.amzn2.0.5 (the query's version)"}},
 		},
 		{
 			Name: "amazon/negative/an advisory without a CVE", Endpoint: epStatements,
@@ -172,15 +172,15 @@ func almalinuxCases() []Case {
 			Body:   body{"cves": ss("CVE-2021-46784"), "products": ss("pkg:rpm/alma/squid@5.2-1.el9_0.1?arch=x86_64&distro=alma-9.0&epoch=7")},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2021-46784", Supplier: "almalinux", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"),
-				Products: ss("pkg:rpm/alma/squid?distro=alma-9.0"), Evidence: ev}},
+				Products: ss("pkg:rpm/alma/squid@5.2-1.el9_0.1?arch=x86_64&distro=alma-9.0&epoch=7"), Evidence: ev + "; the query is 7:5.2-1.el9_0.1, at it"}},
 		},
 		{
 			Name: "almalinux/broad/almalinux namespace and almalinux-9.x distro", Endpoint: epStatements,
 			Body:   body{"products": ss("pkg:rpm/almalinux/grafana@7.5.11-5.el9_0?arch=x86_64&distro=almalinux-9.4")},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2022-31107", Supplier: "almalinux", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"),
-				Products: ss("pkg:rpm/almalinux/grafana?distro=almalinux-9.4"),
-				Evidence: "AO definition oval:org.almalinux.alsa:def:20225716 (ALSA-2022:5716 grafana): CVE-2022-31107, grafana evr less than 0:7.5.11-5.el9_0"}},
+				Products: ss("pkg:rpm/almalinux/grafana@7.5.11-5.el9_0?arch=x86_64&distro=almalinux-9.4"),
+				Evidence: "AO definition oval:org.almalinux.alsa:def:20225716 (ALSA-2022:5716 grafana): CVE-2022-31107, grafana evr less than 0:7.5.11-5.el9_0; the query is at it"}},
 		},
 		{
 			Name: "almalinux/negative/another major", Endpoint: epStatements,
@@ -192,6 +192,7 @@ func almalinuxCases() []Case {
 
 func oracleCases() []Case {
 	ev := "OO definition oval:com.oracle.elsa:def:20240811 (ELSA-2024-0811, in both the ol8 and the ol9 file): the \"Oracle Linux 8 is installed\" branch tests sudo < 0:1.9.5p2-1.el8_9; the \"Oracle Linux 9\" branch tests sudo and sudo-python-plugin < 0:1.9.5p2-10.el9_3"
+	plugin9 := "pkg:rpm/oracle/sudo-python-plugin@1.9.5p2-10.el9_3?arch=x86_64&distro=oracle-9"
 	return []Case{
 		{
 			Name: "oracle/cve-only/each release from its own feed", Endpoint: epStatements,
@@ -204,7 +205,7 @@ func oracleCases() []Case {
 			Name: "oracle/purl/Trivy point-release distro", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2023-28486"), "products": ss("pkg:rpm/oracle/sudo@1.9.5p2-1.el8_9?arch=x86_64&distro=oracle-8.10")},
 			Status: 200, Rows: 1,
-			Want: []Stmt{{CVE: "CVE-2023-28486", Supplier: "oracle", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"), Products: ss("pkg:rpm/oracle/sudo?distro=oracle-8.10"), Evidence: ev}},
+			Want: []Stmt{{CVE: "CVE-2023-28486", Supplier: "oracle", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"), Products: ss("pkg:rpm/oracle/sudo@1.9.5p2-1.el8_9?arch=x86_64&distro=oracle-8.10"), Evidence: ev}},
 		},
 		{
 			Name: "oracle/cve-only/an OL9-only ELSA", Endpoint: epStatements,
@@ -222,19 +223,19 @@ func oracleCases() []Case {
 		},
 		{
 			Name: "oracle/broad/OL9 package", Endpoint: epStatements,
-			Body:   body{"products": ss("pkg:rpm/oracle/sudo-python-plugin@1.9.5p2-10.el9_3?arch=x86_64&distro=oracle-9")},
+			Body:   body{"products": ss(plugin9)},
 			Status: 200, Rows: 3,
 			Want: []Stmt{
-				{CVE: "CVE-2023-28486", Supplier: "oracle", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"), Products: ss("pkg:rpm/oracle/sudo-python-plugin?distro=oracle-9"), Evidence: ev},
-				{CVE: "CVE-2023-28487", Supplier: "oracle", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"), Products: ss("pkg:rpm/oracle/sudo-python-plugin?distro=oracle-9"), Evidence: ev},
-				{CVE: "CVE-2023-42465", Supplier: "oracle", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"), Products: ss("pkg:rpm/oracle/sudo-python-plugin?distro=oracle-9"), Evidence: ev},
+				{CVE: "CVE-2023-28486", Supplier: "oracle", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"), Products: ss(plugin9), Evidence: ev},
+				{CVE: "CVE-2023-28487", Supplier: "oracle", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"), Products: ss(plugin9), Evidence: ev},
+				{CVE: "CVE-2023-42465", Supplier: "oracle", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"), Products: ss(plugin9), Evidence: ev},
 			},
 		},
 		{
 			Name: "oracle/purl/OL8 package", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2023-28486"), "products": ss("pkg:rpm/oracle/sudo@1.9.5p2-1.el8_9?arch=x86_64&distro=oracle-8")},
 			Status: 200, Rows: 1,
-			Want: []Stmt{{CVE: "CVE-2023-28486", Supplier: "oracle", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"), Products: ss("pkg:rpm/oracle/sudo?distro=oracle-8"), Evidence: ev}},
+			Want: []Stmt{{CVE: "CVE-2023-28486", Supplier: "oracle", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"), Products: ss("pkg:rpm/oracle/sudo@1.9.5p2-1.el8_9?arch=x86_64&distro=oracle-8"), Evidence: ev}},
 		},
 	}
 }

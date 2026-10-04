@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getreeldev/reel-vex/pkg/db"
 	"github.com/getreeldev/reel-vex/pkg/source"
 )
 
@@ -104,6 +105,9 @@ func TestAdapter_Lifecycle(t *testing.T) {
 		}
 		if s.Status != "fixed" {
 			t.Errorf("%s: Status got %q, want fixed", s.CVE, s.Status)
+		}
+		if s.Version == "" || s.VersionKind != db.VersionKindBoundary {
+			t.Errorf("%s: fixed-in version %q of kind %q, want a version of kind boundary", s.CVE, s.Version, s.VersionKind)
 		}
 		if !s.Updated.Equal(lastModified) {
 			t.Errorf("%s: Updated got %v, want %v", s.CVE, s.Updated, lastModified)

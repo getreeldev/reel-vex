@@ -92,7 +92,9 @@ func parseRepoMd(b []byte) (RepoMd, error) {
 // them to emit. The mapping (locked v1):
 //   - one statement per (advisory CVE reference) × (deduped package name)
 //   - Status "fixed"; the advisory ships the patched RPM
-//   - Version is "version-release", prefixed "epoch:" when epoch != "0"
+//   - Version is "version-release", prefixed "epoch:" when epoch != "0"; it
+//     is the fixed-in version, so the row's kind is boundary (a versioned
+//     query gets it only at or above that version)
 //   - BaseID is the distro-qualified, version-less PURL base (the matchable
 //     identity); ProductID adds "@version" before the qualifier, so two
 //     advisories that fix the same package for the same CVE at different
@@ -128,13 +130,14 @@ func emitStatements(ui UpdateInfo, distro distroSpec, emit func(source.Statement
 				baseID := distro.baseID(p.Name)
 				version := packageVersion(p)
 				if err := emit(source.Statement{
-					CVE:       cve,
-					ProductID: distro.productID(p.Name, version),
-					BaseID:    baseID,
-					Version:   version,
-					IDType:    "purl",
-					Status:    "fixed",
-					Updated:   updated,
+					CVE:         cve,
+					ProductID:   distro.productID(p.Name, version),
+					BaseID:      baseID,
+					Version:     version,
+					VersionKind: source.FixedInKind("fixed", version),
+					IDType:      "purl",
+					Status:      "fixed",
+					Updated:     updated,
 				}); err != nil {
 					return c, err
 				}

@@ -35,7 +35,7 @@ func TestAcceptance(t *testing.T) {
 	for _, cs := range [][]Case{
 		redhatCases(), suseCases(), ubuntuCases(), ubuntuOVALCases(), debianCases(),
 		rancherCases(), alpineCases(), amazonCases(), almalinuxCases(), oracleCases(),
-		filterCases(), analyzeCases(),
+		filterCases(), analyzeCases(), boundaryCases(),
 	} {
 		day1 = append(day1, cs...)
 	}

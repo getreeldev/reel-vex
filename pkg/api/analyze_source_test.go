@@ -12,6 +12,7 @@ import (
 	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
 	"github.com/getreeldev/reel-vex/pkg/db/dbtest"
+	"github.com/getreeldev/reel-vex/pkg/openvex"
 )
 
 // srcProps are the properties Trivy writes on a deb component built from a
@@ -115,7 +116,8 @@ func TestExpandProducts_SourcePackage(t *testing.T) {
 		libcBin: "pkg:deb/debian/glibc@2.36-9+deb12u14?distro=debian-12.15",
 		libssl3: "pkg:deb/debian/openssl@3.0.15-1~deb12u1?distro=debian-12.15",
 	}
-	reason, inputs, versions, sourceBases := srv.expandProducts([]string{libc6, libcBin, libssl3, openssl}, sources)
+	x := srv.expandProducts([]string{libc6, libcBin, libssl3, openssl}, sources)
+	reason, inputs, sourceBases := x.reasons, x.inputs, x.sourceBases
 
 	glibc := []string{"pkg:deb/debian/glibc?distro=debian-12.15", "pkg:deb/debian/glibc", "pkg:deb/debian/glibc?distro=debian-12"}
 	for _, b := range glibc {
@@ -138,13 +140,25 @@ func TestExpandProducts_SourcePackage(t *testing.T) {
 	if want := []string{"pkg:deb/debian/openssl?distro=debian-12.15", "pkg:deb/debian/libssl3?distro=debian-12.15"}; !slices.Equal(inputs[ossl], want) {
 		t.Errorf("inputs[%s] = %v, want %v", ossl, inputs[ossl], want)
 	}
-	// A source candidate pairs no version: only the products' own do.
-	for _, v := range versions {
+	// A source candidate pairs no version for exact lists: only the products'
+	// own do.
+	for _, v := range x.exact {
 		if slices.Contains(glibc, v.Base) {
-			t.Errorf("versions has a source candidate pair %+v", v)
+			t.Errorf("exact has a source candidate pair %+v", v)
 		}
 		if v.Base == ossl && v.Version != "3.0.15-1~deb12u1" {
-			t.Errorf("versions pairs %s with %q", ossl, v.Version)
+			t.Errorf("exact pairs %s with %q", ossl, v.Version)
+		}
+	}
+	// For boundary rows it pairs the source version, and the binary is echoed
+	// as sent beside it.
+	for _, b := range glibc {
+		if !slices.Contains(x.boundary, db.BaseVersion{Base: b, Version: "2.36-9+deb12u14"}) {
+			t.Errorf("boundary has no source pair for %s: %v", b, x.boundary)
+		}
+		want := []openvex.Echo{{ID: libc6, Version: "2.36-9+deb12u14"}, {ID: libcBin, Version: "2.36-9+deb12u14"}}
+		if !slices.Equal(x.echoes[b], want) {
+			t.Errorf("echoes[%s] = %v, want %v", b, x.echoes[b], want)
 		}
 	}
 }
@@ -302,7 +316,7 @@ func TestExpandProducts_StrongestReason(t *testing.T) {
 	srv := NewServer(database, nil)
 	aliased := "pkg:rpm/redhat/openssl@3.0.7-27.el8?arch=x86_64&repository_id=rhel-8-for-x86_64-baseos-rpms"
 	for _, products := range [][]string{{aliased, cpe}, {cpe, aliased}} {
-		reason, _, _, _ := srv.expandProducts(products, nil)
+		reason := srv.expandProducts(products, nil).reasons
 		if reason[cpe] != "direct" {
 			t.Errorf("%v: reason[%s] = %q, want direct", products, cpe, reason[cpe])
 		}

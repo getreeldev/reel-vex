@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/getreeldev/reel-vex/pkg/db"
+	"github.com/getreeldev/reel-vex/pkg/db/dbtest"
 	"github.com/getreeldev/reel-vex/pkg/ingest"
 	"github.com/getreeldev/reel-vex/pkg/source"
 )
@@ -199,6 +200,7 @@ func TestPG(t *testing.T) {
 
 	testSweeps(t, d, dsn)
 	testExactLists(t, d)
+	testBoundaries(t, d)
 }
 
 // exactRow builds an exact-list Ubuntu row for CVE-2024-1234 on 22.04.
@@ -355,6 +357,180 @@ func testExactLists(t *testing.T, d *DB) {
 			}
 			if name == "broad" && !strings.Contains(with, "Index Only Scan using idx_statements_broad") {
 				t.Errorf("broad: want an index-only scan of the covering index:\n%s", with)
+			}
+		}
+	})
+	t.Run("a boundary read's cursor stays on the indexes the query used without it", func(t *testing.T) {
+		bases := []string{ubuntuBase("openssl"), ubuntuBase("glibc"), ubuntuBase("pkg3")}
+		for name, f := range map[string]db.QueryFilters{
+			"cve":   {CVEs: []string{cve}, ProductBaseIDs: bases},
+			"broad": {ProductBaseIDs: bases, Limit: 50001},
+		} {
+			q, args, _ := statementsQuery(f)
+			without := explain(t, d, q, args...)
+			f.BoundaryVersions = []db.BaseVersion{pv(bases[0], "1.11")}
+			q, args, _ = boundaryCursor(f)
+			with := explain(t, d, q, args...)
+			t.Logf("%s plan of the query:\n%s\n%s plan of its cursor:\n%s", name, without, name, with)
+			if scanNodes(with) != scanNodes(without) || strings.Contains(with, "Seq Scan") {
+				t.Errorf("%s: the cursor changed the access path or added a seq scan:\nquery:\n%s\ncursor:\n%s", name, without, with)
+			}
+			if name == "broad" && !strings.Contains(with, "Index Only Scan using idx_statements_broad") {
+				t.Errorf("broad: want an index-only scan of the covering index:\n%s", with)
+			}
+		}
+	})
+}
+
+// boundaryRow builds a fixed-in row of kind boundary (an empty kind when
+// version is empty, as the adapters emit an open verdict).
+func boundaryRow(cve, base, status, version string) db.Statement {
+	s := db.Statement{Vendor: "acme", CVE: cve, ProductID: base, BaseID: base, IDType: "purl", Status: status,
+		Updated: "2026-06-01T00:00:00Z", SourceFormat: "oval", AdapterID: "acme-oval"}
+	if version != "" {
+		s.Versions, s.VersionKind = []string{version}, db.VersionKindBoundary
+	}
+	return s
+}
+
+// testBoundaries covers boundary rows: a versioned query gets a fixed-in row
+// only at or above its version, in each ecosystem's ordering, with Offset and
+// Limit counting only the rows kept — across several cursor batches too.
+func testBoundaries(t *testing.T, d *DB) {
+	ctx := t.Context()
+	if _, err := d.pool.Exec(ctx, `TRUNCATE statements`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	const (
+		cve    = "CVE-2022-37434"
+		zlib   = "pkg:deb/debian/zlib?distro=debian-12"
+		ds389  = "pkg:deb/debian/389-ds-base?distro=debian-12"
+		sudo   = "pkg:rpm/oracle/sudo?distro=oracle-8"
+		socat  = "pkg:apk/alpine/socat?distro=alpine-3.22"
+		gem    = "pkg:gem/rack"
+		paging = "pkg:deb/debian/paging?distro=debian-12"
+	)
+	rows := []db.Statement{
+		boundaryRow(cve, zlib, "fixed", "1:1.2.11.dfsg-4.1"),
+		boundaryRow(cve, ds389, "affected", ""),
+		boundaryRow(cve, sudo, "fixed", "0:1.9.5p2-1.el8_9"),
+		boundaryRow(cve, socat, "fixed", "1.8.1.2-r0"),
+		boundaryRow(cve, gem, "fixed", "2.2.0"),
+		// A kind '' row passes through whatever version is asked.
+		{Vendor: "legacy", CVE: cve, ProductID: zlib, BaseID: zlib, Versions: []string{"9:9"}, IDType: "purl",
+			Status: "fixed", Updated: "2026-06-01T00:00:00Z", SourceFormat: "oval"},
+	}
+	// 600 rows of one base, one per CVE, fixed alternately at 1.0-1 and 3.0-1:
+	// a query at 2.0-1 keeps every other one, spread over several FETCHes.
+	for i := 0; i < 600; i++ {
+		v := "1.0-1"
+		if i%2 == 1 {
+			v = "3.0-1"
+		}
+		rows = append(rows, boundaryRow(fmt.Sprintf("CVE-2000-%04d", i), paging, "fixed", v))
+	}
+	if err := d.BulkInsert(rows); err != nil {
+		t.Fatalf("BulkInsert: %v", err)
+	}
+	pv := func(base, version string) db.BaseVersion { return db.BaseVersion{Base: base, Version: version} }
+	kept := func(t *testing.T, f db.QueryFilters) []string {
+		t.Helper()
+		got, err := d.QueryStatements(f)
+		if err != nil {
+			t.Fatalf("QueryStatements: %v", err)
+		}
+		var out []string
+		for _, s := range got {
+			out = append(out, s.Vendor+" "+s.BaseID+" "+s.CVE)
+		}
+		return out
+	}
+	one := func(t *testing.T, base, version string, want ...string) {
+		t.Helper()
+		got := kept(t, db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{base}, BoundaryVersions: []db.BaseVersion{pv(base, version)}})
+		if strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Errorf("%s at %q: got %v, want %v", base, version, got, want)
+		}
+	}
+	acme := func(base string) string { return "acme " + base + " " + cve }
+
+	t.Run("dpkg: below, at, above, and the epoch", func(t *testing.T) {
+		legacy := "legacy " + zlib + " " + cve
+		one(t, zlib, "1:1.2.11.dfsg-2", legacy)
+		one(t, zlib, "1:1.2.11.dfsg-4.1", acme(zlib), legacy)
+		one(t, zlib, "1:1.2.13.dfsg-1", acme(zlib), legacy)
+		// A missing epoch is 0, below the stated 1:.
+		one(t, zlib, "1.2.13.dfsg-1", legacy)
+		one(t, zlib, "", acme(zlib), legacy)
+	})
+	t.Run("a verdict with no version holds for any version", func(t *testing.T) {
+		one(t, ds389, "2.3.1+dfsg1-1+deb12u1", acme(ds389))
+	})
+	t.Run("rpm: the epoch inline and absent are one", func(t *testing.T) {
+		one(t, sudo, "1.9.5p2-1.el8_8", nil...)
+		one(t, sudo, "1.9.5p2-1.el8_9", acme(sudo))
+		one(t, sudo, "0:1.9.5p2-1.el8_9", acme(sudo))
+		one(t, sudo, "1.9.15p5-1.el8", acme(sudo))
+		one(t, sudo, "x:1.9.15p5-1.el8", nil...)
+	})
+	t.Run("apk", func(t *testing.T) {
+		one(t, socat, "1.8.0.3-r0", nil...)
+		one(t, socat, "1.8.1.2-r0", acme(socat))
+		one(t, socat, "1.8.1.2-r1", acme(socat))
+		one(t, socat, "not a version", nil...)
+	})
+	t.Run("an ecosystem with no ordering is withheld from a versioned query", func(t *testing.T) {
+		one(t, gem, "3.0.0", nil...)
+		one(t, gem, "", acme(gem))
+	})
+	t.Run("a base named once without a version keeps its rows", func(t *testing.T) {
+		got := kept(t, db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{socat},
+			BoundaryVersions: []db.BaseVersion{pv(socat, "1.8.0.3-r0"), pv(socat, "")}})
+		if len(got) != 1 {
+			t.Errorf("got %v, want the socat row", got)
+		}
+	})
+	t.Run("one of several versions reaching keeps the row", func(t *testing.T) {
+		got := kept(t, db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{socat},
+			BoundaryVersions: []db.BaseVersion{pv(socat, "1.8.0.3-r0"), pv(socat, "1.9-r0")}})
+		if len(got) != 1 {
+			t.Errorf("got %v, want the socat row", got)
+		}
+	})
+
+	// The rows of the paging base a query at 2.0-1 keeps: the even CVEs, in
+	// the query's order.
+	var reach []string
+	for i := 0; i < 600; i += 2 {
+		reach = append(reach, fmt.Sprintf("acme %s CVE-2000-%04d", paging, i))
+	}
+	page := func(t *testing.T, offset, limit int, want []string) {
+		t.Helper()
+		got := kept(t, db.QueryFilters{ProductBaseIDs: []string{paging}, BoundaryVersions: []db.BaseVersion{pv(paging, "2.0-1")},
+			Offset: offset, Limit: limit})
+		if strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Errorf("offset %d limit %d: got %d rows (%v…), want %d", offset, limit, len(got), got[:min(len(got), 3)], len(want))
+		}
+	}
+	t.Run("offset and limit count only the rows kept", func(t *testing.T) {
+		page(t, 0, 0, reach)
+		page(t, 0, 1, reach[:1])
+		page(t, 1, 1, reach[1:2])
+		page(t, 10, 250, reach[10:260])
+		page(t, 290, 50, reach[290:])
+		page(t, 300, 5, nil)
+	})
+	t.Run("the same paging on the fake", func(t *testing.T) {
+		fake := dbtest.New()
+		defer fake.Close()
+		if err := fake.BulkInsert(rows); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range []struct{ offset, limit int }{{0, 0}, {10, 250}, {290, 50}} {
+			want, _ := d.QueryStatements(db.QueryFilters{ProductBaseIDs: []string{paging}, BoundaryVersions: []db.BaseVersion{pv(paging, "2.0-1")}, Offset: c.offset, Limit: c.limit})
+			got, _ := fake.QueryStatements(db.QueryFilters{ProductBaseIDs: []string{paging}, BoundaryVersions: []db.BaseVersion{pv(paging, "2.0-1")}, Offset: c.offset, Limit: c.limit})
+			if len(got) != len(want) || (len(got) > 0 && (got[0].CVE != want[0].CVE || got[len(got)-1].CVE != want[len(want)-1].CVE)) {
+				t.Errorf("offset %d limit %d: fake gives %d rows, Postgres %d", c.offset, c.limit, len(got), len(want))
 			}
 		}
 	})

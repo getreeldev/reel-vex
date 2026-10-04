@@ -45,8 +45,8 @@ func filterCases() []Case {
 			Body:   body{"cves": ss("CVE-2022-37434"), "products": ss("pkg:deb/ubuntu/libklibc@2.0.13-4ubuntu0.2?arch=amd64&distro=ubuntu-24.04"), "source_formats": ss("oval")},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "ubuntu", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"),
-				Products: ss("pkg:deb/ubuntu/libklibc?distro=ubuntu-24.04"),
-				Evidence: "UO definition oval:com.ubuntu.noble:def:673620000000 (USN-6736-2): libklibc < 2.0.13-4ubuntu0.1"}},
+				Products: ss("pkg:deb/ubuntu/libklibc@2.0.13-4ubuntu0.2?arch=amd64&distro=ubuntu-24.04"),
+				Evidence: "UO definition oval:com.ubuntu.noble:def:673620000000 (USN-6736-2): libklibc < 2.0.13-4ubuntu0.1; 2.0.13-4ubuntu0.2 is above it"}},
 		},
 		{
 			Name: "filter/since", Endpoint: epStatements,
@@ -291,10 +291,10 @@ func analyzeCases() []Case {
 			Name: "analyze/apk/Alpine \"0\" and fixed", Endpoint: epAnalyze,
 			Body: body{"sbom": trivySBOM(image, ss(socat),
 				sbomVuln{"CVE-2024-54661", ss(socat)}, sbomVuln{"CVE-2026-56123", ss(socat)}, sbomVuln{"CVE-2026-99999", ss(socat)})},
-			Status: 200, Rows: 2,
+			Status: 200, Rows: 1,
 			Vulns: []Vuln{
 				{ID: "CVE-2024-54661", State: "not_affected", Justification: "code_not_present", Affects: ss(link(socat)), Evidence: "AS v3.22/main.json package socat: secfixes \"0\": [CVE-2024-54661]"},
-				{ID: "CVE-2026-56123", State: "resolved", Affects: ss(link(socat)), Evidence: "AS v3.22/main.json package socat: secfixes \"1.8.1.2-r0\": [CVE-2026-56123]"},
+				{ID: "CVE-2026-56123", Affects: ss(link(socat)), Evidence: "AS v3.22/main.json package socat: secfixes \"1.8.1.2-r0\": [CVE-2026-56123]; the component's 1.8.0.3-r0 is below the fixed-in version, so no analysis (Phase 5e)"},
 				{ID: "CVE-2026-99999", Affects: ss(link(socat)), Evidence: "no fixture names CVE-2026-99999: left without analysis"},
 			},
 		},
@@ -341,12 +341,14 @@ func analyzeCases() []Case {
 		{
 			Name: "analyze/apk/an SBOM with no vulnerabilities is filled from broad mode", Endpoint: epAnalyze,
 			Body:   body{"sbom": trivySBOM(image, ss(socat, libdwarf))},
-			Status: 200, Rows: 4,
+			Status: 200, Rows: 3,
 			Vulns: []Vuln{
-				{ID: "CVE-2015-8538", State: "resolved", Affects: ss(link(libdwarf)), Evidence: "AS v3.22/main.json package libdwarf: secfixes \"0.6.0-r0\""},
-				{ID: "CVE-2019-14249", State: "resolved", Affects: ss(link(libdwarf)), Evidence: "AS v3.22/main.json package libdwarf: secfixes \"0.6.0-r0\""},
+				{ID: "CVE-2015-8538", State: "resolved", Affects: ss(link(libdwarf)), Evidence: "AS v3.22/main.json package libdwarf: secfixes \"0.6.0-r0\"; 0.9.2-r0 is above it"},
+				{ID: "CVE-2019-14249", State: "resolved", Affects: ss(link(libdwarf)), Evidence: "AS v3.22/main.json package libdwarf: secfixes \"0.6.0-r0\"; 0.9.2-r0 is above it"},
 				{ID: "CVE-2024-54661", State: "not_affected", Justification: "code_not_present", Affects: ss(link(socat)), Evidence: "AS v3.22/main.json package socat: secfixes \"0\""},
-				{ID: "CVE-2026-56123", State: "resolved", Affects: ss(link(socat)), Evidence: "AS v3.22/main.json package socat: secfixes \"1.8.1.2-r0\""},
+				// socat secfixes "1.8.1.2-r0": [CVE-2026-56123]: the SBOM's
+				// 1.8.0.3-r0 is below the fixed-in version, so the CVE is not
+				// synthesised (Phase 5e).
 			},
 		},
 		// CycloneDX analysis vocabulary (pkg/api: under_investigation ->
@@ -424,16 +426,16 @@ func analyzeCases() []Case {
 				zlib1gDeb12, trivySource("zlib", "1.2.13.dfsg", "1", "1"))},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "debian", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "via_source_package"),
-				Products: ss("pkg:deb/debian/zlib1g?distro=debian-12.15"),
-				Evidence: "DO definition oval:org.debian:def:118596735315433746990801407057633161948 (CVE-2022-37434 zlib): zlib1g is built from zlib (Trivy 0.74.0 debian:12 SrcName); answered under the binary, the identifier Trivy applies VEX to"}},
+				Products: ss(zlib1gDeb12),
+				Evidence: "DO definition oval:org.debian:def:118596735315433746990801407057633161948 (CVE-2022-37434 zlib): evr less than 1:1.2.11.dfsg-4.1; zlib1g is built from zlib 1:1.2.13.dfsg-1 (Trivy 0.74.0 debian:12 SrcName/SrcVersion/SrcRelease/SrcEpoch), above it; answered under the binary as sent, the identifier Trivy applies VEX to"}},
 		},
 		{
 			Name: "statements/sbom/two binaries of one source package are each echoed", Endpoint: epStatements,
 			Body:   body{"sbom": libcPair()},
 			Status: 200, Rows: 1, Headers: map[string]string{"X-Reel-Mode": "broad"},
 			Want: []Stmt{{CVE: "CVE-1999-0199", Supplier: "debian", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "via_source_package"),
-				Products: ss("pkg:deb/debian/libc-bin?distro=debian-12.15", "pkg:deb/debian/libc6?distro=debian-12.15"),
-				Evidence: "DO definition oval:org.debian:def:302398480618719661759273474285073383836 (CVE-1999-0199 glibc): glibc DPKG is earlier than 2.2-1; libc6 and libc-bin are both built from glibc (Trivy 0.74.0 debian:12)"}},
+				Products: ss(libcBin, libc6),
+				Evidence: "DO definition oval:org.debian:def:302398480618719661759273474285073383836 (CVE-1999-0199 glibc): glibc DPKG is earlier than 2.2-1 (evr 0:2.2-1); libc6 and libc-bin are both built from glibc 2.36-9+deb12u14 (Trivy 0.74.0 debian:12), above it"}},
 		},
 		{
 			Name: "analyze/deb/two binaries of one source package are each affected", Endpoint: epAnalyze,

@@ -38,7 +38,7 @@ type Statement struct {
 	Versions []string
 	// VersionKind says how Versions are read: '' (legacy, not yet converted),
 	// 'exact' (VersionKindExact: the queried version must be in the list) or
-	// 'boundary' (the versions are fixed-in boundaries).
+	// 'boundary' (VersionKindBoundary: the versions are fixed-in boundaries).
 	VersionKind string
 	// Stream is the vendor product stream a boundary holds within (CSAF's
 	// relates_to product). Part of the primary key; empty for every feed until
@@ -211,6 +211,19 @@ type QueryFilters struct {
 	// another row. Applied in the query, like ArchAllow, so Limit counts rows
 	// the caller keeps.
 	ExactVersions []BaseVersion
+	// BoundaryVersions pairs each queried base identifier with the version
+	// compared against its boundary rows (csaf.MatchVersion form; empty when
+	// none): the caller's own version, or for a base reached through a
+	// binary package's source package, the source package's version. It
+	// narrows only rows whose VersionKind is 'boundary'; every other row
+	// passes through. A base named at least once without a version, and a
+	// base not listed here, keep every boundary row. A base named only with
+	// versions keeps a boundary row when one of those versions is at or above
+	// the row's fixed-in version (BoundaryReaches). The comparison is the
+	// ecosystem's version ordering, which SQL cannot do, so the stores apply
+	// it while reading rows, before Offset and Limit: those still count only
+	// rows the caller keeps.
+	BoundaryVersions []BaseVersion
 	// SourceBases are base identifiers the caller reached only through a
 	// binary package's source package (pkg/api's via_source_package). An
 	// exact row under one never matches: an exact list names the builds the

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -47,6 +48,21 @@ var now = func() time.Time { return time.Now().UTC() }
 // calls produce byte-identical documents (sans timestamp, which is emitted
 // once at doc level).
 func Encode(stmts []db.Statement, baseToInputs map[string][]string, baseToReason map[string]string) Document {
+	return EncodeVersioned(stmts, baseToInputs, nil, baseToReason)
+}
+
+// Echo is one caller input that reached a base identifier, as a boundary row
+// (db.VersionKindBoundary) is rendered for it. ID is the identifier put in
+// products[]: the input as the caller sent it when it names a version, else
+// its base form. Version is the version compared with the row's fixed-in
+// version (csaf.MatchVersion form; for a binary package answered through its
+// source package, the source package's version), empty for none.
+type Echo struct{ ID, Version string }
+
+// EncodeVersioned is Encode with the inputs' echoes for boundary rows,
+// keyed by base identifier like baseToInputs (see rowProducts). Without
+// echoes for a base it renders its boundary rows as Encode renders any row.
+func EncodeVersioned(stmts []db.Statement, baseToInputs map[string][]string, baseToEchoes map[string][]Echo, baseToReason map[string]string) Document {
 	ts := now().Format(time.RFC3339)
 
 	sorted := make([]db.Statement, len(stmts))
@@ -57,7 +73,7 @@ func Encode(stmts []db.Statement, baseToInputs map[string][]string, baseToReason
 
 	out := make([]Statement, 0, len(sorted))
 	for _, s := range sorted {
-		out = append(out, toStatement(s, baseToInputs, baseToReason))
+		out = append(out, toStatement(s, baseToInputs, baseToEchoes, baseToReason))
 	}
 	out = group(out)
 
@@ -210,7 +226,9 @@ func stmtKey(s db.Statement) string {
 //     original inputs (base form) that expanded to match this row. With no
 //     inputs for the base — a CVE-only query names no product — the row is
 //     rendered under its own ProductID. An exact-list row is the exception:
-//     it is rendered per version (see rowProducts).
+//     it is rendered per version. A boundary row with echoes (baseToEchoes)
+//     is another: it names only the inputs it was checked against (see
+//     rowProducts).
 //   - PURL inputs land in identifiers.purl AND @id (Trivy matches on PURL).
 //   - CPE inputs land in identifiers.cpe23 only (Trivy ignores CPEs; other
 //     consumers can still use them).
@@ -220,8 +238,8 @@ func stmtKey(s db.Statement) string {
 //   - Supplier carries the source vendor; status_notes carries
 //     source_format + match_reason (+ scope for product-scoped rows) for
 //     diagnostics (reel-vex fields with no direct OpenVEX equivalent).
-func toStatement(s db.Statement, baseToInputs map[string][]string, baseToReason map[string]string) Statement {
-	ids := rowProducts(s, baseToInputs)
+func toStatement(s db.Statement, baseToInputs map[string][]string, baseToEchoes map[string][]Echo, baseToReason map[string]string) Statement {
+	ids := rowProducts(s, baseToInputs, baseToEchoes)
 	products := make([]Component, 0, len(ids))
 	for _, id := range ids {
 		products = append(products, componentFor(id))
@@ -272,7 +290,8 @@ func toStatement(s db.Statement, baseToInputs map[string][]string, baseToReason 
 	return out
 }
 
-// rowProducts returns the identifiers a row is rendered under, sorted.
+// rowProducts returns the identifiers a row is rendered under, sorted and
+// without repeats.
 //
 // An exact-list row (db.VersionKindExact) is rendered as the vendor published
 // it: its versionless product_id with each listed version put back, one
@@ -285,9 +304,21 @@ func toStatement(s db.Statement, baseToInputs map[string][]string, baseToReason 
 // base form carries no version, and two verdicts of one package would read as
 // contradictory statements about the same name.
 //
+// A boundary row (db.VersionKindBoundary: a fixed-in version) is rendered for
+// the inputs that reached its base (baseToEchoes): an input naming a version
+// only when that version is at or above the fixed-in version
+// (db.BoundaryReaches), and then as the caller sent it, versioned — so the
+// statement never names a version it was not checked against; an input naming
+// none in its base form, as every other row. A fixed version below the
+// boundary is still vulnerable, and echoing it — or a versionless base form
+// that a scanner reads as every version — would suppress a true finding. The
+// store has already dropped a row no input reaches; should none reach it
+// anyway, it is rendered under its own product_id, the vendor's identifier,
+// never the caller's.
+//
 // Every other row echoes the caller's inputs that expanded to its base_id
 // (baseToInputs), falling back to its own product_id when there are none.
-func rowProducts(s db.Statement, baseToInputs map[string][]string) []string {
+func rowProducts(s db.Statement, baseToInputs map[string][]string, baseToEchoes map[string][]Echo) []string {
 	var ids []string
 	switch {
 	case s.VersionKind == db.VersionKindExact && len(s.Versions) > 0:
@@ -297,13 +328,22 @@ func rowProducts(s db.Statement, baseToInputs map[string][]string) []string {
 		}
 	case s.VersionKind == db.VersionKindExact:
 		ids = []string{s.ProductID}
+	case s.VersionKind == db.VersionKindBoundary && len(s.Versions) > 0 && len(baseToEchoes[s.BaseID]) > 0:
+		for _, e := range baseToEchoes[s.BaseID] {
+			if e.Version == "" || db.BoundaryReaches(s, e.Version) {
+				ids = append(ids, e.ID)
+			}
+		}
+		if len(ids) == 0 {
+			ids = []string{s.ProductID}
+		}
 	case len(baseToInputs[s.BaseID]) > 0:
 		ids = append([]string(nil), baseToInputs[s.BaseID]...)
 	default:
 		ids = []string{s.ProductID}
 	}
 	sort.Strings(ids)
-	return ids
+	return slices.Compact(ids)
 }
 
 // componentFor classifies an identifier and places it in the right
