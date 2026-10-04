@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -30,9 +31,10 @@ const archiveHTTPTimeout = 10 * time.Minute
 // syncFromArchive performs a one-shot bulk cold-start: it downloads the
 // vendor's full CSAF VEX archive (one ~300 MB tar.zst instead of ~317K
 // per-document GETs that take hours), walks it locally, and emits every
-// statement. Returns the archive's date — the floor for the follow-up
-// changes.csv delta — ok=true if an archive was found and processed, and how
-// many archive entries were skipped because they failed to extract.
+// statement, each document dated by its own current_release_date. Returns the
+// archive's date — the floor for the follow-up changes.csv delta — ok=true if
+// an archive was found and processed, and how many archive entries were
+// skipped because they failed to extract.
 // refreshed is called with the path of every entry fully emitted, including
 // entries that yield no statements; it is called as the walk goes, so the
 // entries read before a part-way failure have already been reported.
@@ -71,12 +73,14 @@ func (a *Adapter) syncFromArchive(ctx context.Context, emit func(source.Statemen
 	defer zr.Close()
 	tr := tar.NewReader(zr)
 
-	// All archive docs share the archive date as their Updated timestamp; the
-	// follow-up changes.csv delta (since archiveDate) refreshes any that changed
-	// after the archive was cut, with their precise dates.
-	updated := archiveDate
-	if updated.IsZero() {
-		updated = time.Now().UTC()
+	// Each archived document is dated by its own
+	// document.tracking.current_release_date, the date the vendor last changed
+	// it; the archive date is only the fallback for a document without a
+	// readable one. The follow-up changes.csv delta (since archiveDate)
+	// refreshes any that changed after the archive was cut.
+	fallback := archiveDate
+	if fallback.IsZero() {
+		fallback = time.Now().UTC()
 	}
 
 	var docs, emitted int
@@ -105,6 +109,7 @@ func (a *Adapter) syncFromArchive(ctx context.Context, emit func(source.Statemen
 			continue
 		}
 		docs++
+		updated := releaseDate(data, fallback)
 		for _, s := range stmts {
 			if err := emit(source.Statement{
 				CVE:           s.CVE,
@@ -178,6 +183,26 @@ func (a *Adapter) fetchArchiveBytes(ctx context.Context, url string) ([]byte, ti
 	lastModified, _ := http.ParseTime(resp.Header.Get("Last-Modified"))
 	body, err := io.ReadAll(resp.Body)
 	return body, lastModified.UTC(), err
+}
+
+// releaseDate returns a CSAF document's document.tracking.current_release_date
+// in UTC, or fallback when the document has none that parses as RFC 3339.
+func releaseDate(data []byte, fallback time.Time) time.Time {
+	var doc struct {
+		Document struct {
+			Tracking struct {
+				CurrentReleaseDate string `json:"current_release_date"`
+			} `json:"tracking"`
+		} `json:"document"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return fallback
+	}
+	t, err := time.Parse(time.RFC3339, doc.Document.Tracking.CurrentReleaseDate)
+	if err != nil {
+		return fallback
+	}
+	return t.UTC()
 }
 
 // parseArchiveDate extracts the date from "csaf_vex_2026-05-23.tar.zst".

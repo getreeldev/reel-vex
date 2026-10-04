@@ -279,3 +279,48 @@ func TestNormalizeAlmaLinuxDistro(t *testing.T) {
 		}
 	}
 }
+
+func TestExpand_DebianAndOracleDistroNormalization(t *testing.T) {
+	// Debian OVAL rows are stored as ?distro=debian-<major> and Oracle's as
+	// ?distro=oracle-<major>; Trivy sends the point release. Each normalises
+	// within its own namespace only.
+	r := New(resolverTestDB(t))
+	cases := []struct{ in, want, notWant string }{
+		{"pkg:deb/debian/zlib@1:1.2.13.dfsg-1?arch=source&distro=debian-12.11", "pkg:deb/debian/zlib?distro=debian-12", ""},
+		{"pkg:rpm/oracle/sudo@1.9.5p2-1.el8_9?arch=x86_64&distro=oracle-8.10", "pkg:rpm/oracle/sudo?distro=oracle-8", ""},
+		// Gated to the namespace: a debian-shaped distro on an Ubuntu PURL, or an
+		// oracle-shaped one on a Red Hat PURL, is left alone.
+		{"pkg:deb/ubuntu/zlib@1:1.2.13?distro=debian-12.11", "", "pkg:deb/ubuntu/zlib?distro=debian-12"},
+		{"pkg:rpm/redhat/sudo@1.9.5p2?distro=oracle-8.10", "", "pkg:rpm/redhat/sudo?distro=oracle-8"},
+	}
+	for _, c := range cases {
+		ids := make(map[string]string)
+		for _, cand := range r.Expand(c.in) {
+			ids[cand.ID] = cand.MatchReason
+		}
+		if c.want != "" && ids[c.want] != "direct" {
+			t.Errorf("%s: missing normalized candidate %q in %v", c.in, c.want, ids)
+		}
+		if _, ok := ids[c.notWant]; c.notWant != "" && ok {
+			t.Errorf("%s: unexpected candidate %q in %v", c.in, c.notWant, ids)
+		}
+	}
+}
+
+func TestNormalizeMajorDistro(t *testing.T) {
+	cases := []struct{ in, prefix, want string }{
+		{"debian-12.11", "debian-", "debian-12"},
+		{"debian-12", "debian-", "debian-12"},
+		{"debian-", "debian-", ""},
+		{"ubuntu-22.04", "debian-", ""},
+		{"oracle-8.10", "oracle-", "oracle-8"},
+		{"oracle-9", "oracle-", "oracle-9"},
+		{"redhat-9.3", "oracle-", ""},
+		{"", "oracle-", ""},
+	}
+	for _, c := range cases {
+		if got := normalizeMajorDistro(c.in, c.prefix); got != c.want {
+			t.Errorf("normalizeMajorDistro(%q, %q) = %q, want %q", c.in, c.prefix, got, c.want)
+		}
+	}
+}

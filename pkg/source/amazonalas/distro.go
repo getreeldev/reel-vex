@@ -27,6 +27,12 @@ func (d distroSpec) baseID(name string) string {
 	return "pkg:rpm/amazon/" + name + "?distro=amazon-" + d.major
 }
 
+// productID is baseID with the version where a PURL puts it, before the
+// qualifiers: pkg:rpm/amazon/<name>@<version>?distro=amazon-<major>.
+func (d distroSpec) productID(name, version string) string {
+	return "pkg:rpm/amazon/" + name + "@" + version + "?distro=amazon-" + d.major
+}
+
 // distroFromMirrorURL infers the Amazon Linux distro from a core-repo
 // mirror.list URL. The two supported shapes:
 //

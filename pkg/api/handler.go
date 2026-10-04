@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
@@ -536,9 +537,10 @@ func (s *Server) handleIngestTrigger(w http.ResponseWriter, r *http.Request) {
 //   - baseToReason: match_reason that would apply if a statement's base_id
 //     matches that candidate (first/stronger rule wins on collision).
 //   - baseToInputs: the set of user inputs (in base form — stripped of PURL
-//     qualifiers and version) that expanded to this candidate. Used by the
-//     OpenVEX emitter to echo the user's PURLs into products[] so Trivy
-//     can match statements keyed by a different identifier (typically CPE).
+//     qualifiers and version, see echoBase) that expanded to this candidate.
+//     Used by the OpenVEX emitter to echo the user's PURLs into products[] so
+//     Trivy can match statements keyed by a different identifier (typically
+//     CPE).
 //   - versions: each candidate paired with the version its input named
 //     (csaf.MatchVersion; empty for none), for db.QueryFilters.ExactVersions,
 //     so an exact-list row is matched against the caller's own version.
@@ -552,7 +554,7 @@ func (s *Server) expandProducts(products []string) (map[string]string, map[strin
 	var versions []db.BaseVersion
 
 	for _, p := range products {
-		inputBase, _ := csaf.SplitPURL(p)
+		inputBase := echoBase(p)
 		version := csaf.MatchVersion(p)
 		for _, cand := range s.resolver.Expand(p) {
 			versions = append(versions, db.BaseVersion{Base: cand.ID, Version: version})
@@ -569,6 +571,25 @@ func (s *Server) expandProducts(products []string) (map[string]string, map[strin
 		}
 	}
 	return baseToReason, baseToInputs, versions
+}
+
+// echoBase is the caller's identifier in the base form csaf.SplitPURL gives,
+// with the distro qualifier as the caller wrote it: SplitPURL decodes it for
+// matching (Trivy's distro=amazon-2%20%28Karoo%29 becomes "amazon-2 (Karoo)"),
+// and the decoded form echoed back is not a valid PURL.
+func echoBase(id string) string {
+	base, _ := csaf.SplitPURL(id)
+	d := strings.Index(base, "?distro=")
+	q := strings.IndexByte(id, '?')
+	if d < 0 || q < 0 {
+		return base
+	}
+	for _, p := range strings.Split(id[q+1:], "&") {
+		if raw, ok := strings.CutPrefix(p, "distro="); ok {
+			return base[:d] + "?distro=" + raw
+		}
+	}
+	return base
 }
 
 type errorResponse struct {

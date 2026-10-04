@@ -105,7 +105,7 @@ func day2Cases() []Case {
 			Status: 204, Rows: 0,
 		},
 		{
-			Name: "day2/redhat/documents still in index.txt are kept", KnownBug: archiveDateBug, Endpoint: epStatements,
+			Name: "day2/redhat/documents still in index.txt are kept", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2025-6270")}, Status: 200, Rows: 2,
 			Want: []Stmt{{CVE: "CVE-2025-6270", Supplier: "redhat", Status: "affected", Timestamp: tsRH6270, Notes: notes("csaf", ""),
 				Products: ss("cpe:/a:redhat:enterprise_linux_ai:1", "pkg:rpm/redhat/hdf5?arch=src"),

@@ -1701,3 +1701,20 @@ func TestCORSExposesRetryAfter(t *testing.T) {
 		}
 	}
 }
+
+// TestEchoBase: the caller's identifier is echoed in base form with its distro
+// qualifier encoded as the caller wrote it.
+func TestEchoBase(t *testing.T) {
+	cases := map[string]string{
+		"pkg:rpm/amazon/ca-certificates@2021.2.50-72.amzn2.0.5?arch=noarch&distro=amazon-2%20%28Karoo%29":        "pkg:rpm/amazon/ca-certificates?distro=amazon-2%20%28Karoo%29",
+		"pkg:rpm/amazon/openssl@1:3.0.8-1.amzn2023.0.6?arch=x86_64&distro=amazon-2023.7.20250512+(Amazon Linux)": "pkg:rpm/amazon/openssl?distro=amazon-2023.7.20250512+(Amazon Linux)",
+		"pkg:deb/debian/zlib@1:1.2.13.dfsg-1?arch=source&distro=debian-12.11":                                    "pkg:deb/debian/zlib?distro=debian-12.11",
+		"pkg:rpm/redhat/openssl@3.0.7?arch=x86_64":                                                               "pkg:rpm/redhat/openssl",
+		"cpe:/o:redhat:enterprise_linux:8":                                                                       "cpe:/o:redhat:enterprise_linux:8",
+	}
+	for in, want := range cases {
+		if got := echoBase(in); got != want {
+			t.Errorf("echoBase(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

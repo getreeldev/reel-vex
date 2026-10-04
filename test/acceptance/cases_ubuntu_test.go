@@ -264,9 +264,8 @@ func ubuntuCases() []Case {
 		// Canonical writes some trusty ESM rows as "trusty/esm": codename first.
 		{
 			Name: "ubuntu/exact/trusty/esm is Ubuntu 14.04", Endpoint: epStatements,
-			KnownBug: "ubuntuvex.Normalize takes the last /-segment as the codename; Canonical's distro=trusty/esm (codename first) stays unnormalised",
-			Body:     body{"cves": ss("CVE-2022-37434"), "products": ss("pkg:deb/ubuntu/klibc-utils@2.0.3-0ubuntu1.14.04.3+esm3?arch=amd64&distro=ubuntu-14.04")},
-			Status:   200, Rows: 5,
+			Body:   body{"cves": ss("CVE-2022-37434"), "products": ss("pkg:deb/ubuntu/klibc-utils@2.0.3-0ubuntu1.14.04.3+esm3?arch=amd64&distro=ubuntu-14.04")},
+			Status: 200, Rows: 5,
 			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "ubuntu", Status: "fixed", Timestamp: tsUV37434, Notes: direct,
 				Products: ss(
 					"pkg:deb/ubuntu/klibc-utils@2.0.3-0ubuntu1.14.04.3+esm3?arch=amd64&distro=ubuntu-14.04",

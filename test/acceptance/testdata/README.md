@@ -190,8 +190,8 @@ dates CSAF rows by `changes.csv`.
 ## Dates the cases expect
 
 - CSAF: the document's own date (`document.tracking.current_release_date`, equal to its
-  `changes.csv` date for every document here). The two archive-seeded Red Hat documents
-  are stamped with the archive's date today, a KnownBug until Phase 5c.
+  `changes.csv` date for every document here), including the two archive-seeded Red Hat
+  documents.
 - OpenVEX (Canonical, Rancher): the statement's timestamp, else the document's.
 - updateinfo: the advisory's `<updated date>`.
 - OVAL and secdb: the file's Last-Modified (the server's day-1 date). OVAL definitions

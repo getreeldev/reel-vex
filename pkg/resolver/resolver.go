@@ -102,6 +102,22 @@ func (r *Resolver) Expand(id string) []Candidate {
 				add(bare+"?distro="+norm, "direct")
 			}
 		}
+		// deb (Debian): the OVAL rows are stored major-scoped as
+		// ?distro=debian-<major>; Trivy emits the point release (debian-12.11).
+		// Normalize to debian-<major>. Additive; debian-only.
+		if strings.HasPrefix(bare, "pkg:deb/debian/") {
+			if norm := normalizeMajorDistro(base[i+len("?distro="):], "debian-"); norm != "" {
+				add(bare+"?distro="+norm, "direct")
+			}
+		}
+		// rpm (Oracle Linux): stored major-scoped as ?distro=oracle-<major>, one
+		// OVAL file per release; Trivy emits the point release (oracle-8.10).
+		// Normalize to oracle-<major>. Additive; oracle-only.
+		if strings.HasPrefix(bare, "pkg:rpm/oracle/") {
+			if norm := normalizeMajorDistro(base[i+len("?distro="):], "oracle-"); norm != "" {
+				add(bare+"?distro="+norm, "direct")
+			}
+		}
 	}
 
 	// via_alias: repository_id qualifier on a PURL → CPEs in the alias table.
@@ -218,4 +234,24 @@ func normalizeAlmaLinuxDistro(d string) string {
 		return ""
 	}
 	return "almalinux-" + major
+}
+
+// normalizeMajorDistro maps a scanner-supplied "<prefix><major>[.<minor>...]"
+// distro qualifier to "<prefix><major>" (debian-12.11 → debian-12, oracle-8.10
+// → oracle-8). Returns "" for a distro without that prefix or without a major,
+// so no spurious candidate is added.
+func normalizeMajorDistro(d, prefix string) string {
+	if !strings.HasPrefix(d, prefix) {
+		return ""
+	}
+	major := strings.SplitN(strings.TrimPrefix(d, prefix), ".", 2)[0]
+	if f := strings.Fields(major); len(f) > 0 {
+		major = f[0]
+	} else {
+		major = ""
+	}
+	if major == "" {
+		return ""
+	}
+	return prefix + major
 }

@@ -91,11 +91,27 @@ func TestNormalize(t *testing.T) {
 			in:   "pkg:deb/ubuntu/linux?distro=bluefield/jammy",
 			want: "pkg:deb/ubuntu/linux?distro=ubuntu-22.04",
 		},
-		// Hypothetical future track — last-segment-as-codename rule generalises.
+		// Hypothetical future track — the known-codename rule generalises.
 		{
-			name: "future-track/noble → ubuntu-24.04 (last segment as codename)",
+			name: "future-track/noble → ubuntu-24.04 (the segment that is a codename)",
 			in:   "pkg:deb/ubuntu/linux?distro=brand-new-track/noble",
 			want: "pkg:deb/ubuntu/linux?distro=ubuntu-24.04",
+		},
+		// Codename first: Canonical writes trusty's ESM rows this way.
+		{
+			name: "trusty/esm → ubuntu-14.04 (codename first)",
+			in:   "pkg:deb/ubuntu/zlib@1:1.2.8.dfsg-1ubuntu1.1+esm2?arch=source&distro=trusty/esm",
+			want: "pkg:deb/ubuntu/zlib@1:1.2.8.dfsg-1ubuntu1.1+esm2?arch=source&distro=ubuntu-14.04",
+		},
+		{
+			name: "unknown track with an unknown codename passes through",
+			in:   "pkg:deb/ubuntu/linux?distro=esm-infra/notarealcodename",
+			want: "pkg:deb/ubuntu/linux?distro=esm-infra/notarealcodename",
+		},
+		{
+			name: "unknown codename before a track passes through",
+			in:   "pkg:deb/ubuntu/linux?distro=notarealcodename/esm",
+			want: "pkg:deb/ubuntu/linux?distro=notarealcodename/esm",
 		},
 		// Other-qualifier preservation.
 		{

@@ -114,8 +114,7 @@ func amazonCases() []Case {
 		},
 		{
 			Name: "amazon/cve-only/one package fixed in both distros", Endpoint: epStatements,
-			KnownBug: "amazonalas writes product_id as <base>@<version> after the distro qualifier (pkg:rpm/amazon/ca-certificates?distro=amazon-2@2021.2.50-72.amzn2.0.5), which is not a PURL; the version belongs before the qualifiers",
-			Body:     body{"cves": ss("CVE-2022-23491")}, Status: 200, Rows: 2,
+			Body: body{"cves": ss("CVE-2022-23491")}, Status: 200, Rows: 2,
 			Want: []Stmt{
 				{CVE: "CVE-2022-23491", Supplier: "amazon", Status: "fixed", Timestamp: tsALCa2, Notes: notes("updateinfo", ""),
 					Products: ss("pkg:rpm/amazon/ca-certificates@2021.2.50-72.amzn2.0.5?distro=amazon-2"),
@@ -140,9 +139,8 @@ func amazonCases() []Case {
 			// What Trivy writes for Amazon Linux 2: distro "<family>-<name>" with
 			// the OS name "2 (Karoo)", percent-encoded by packageurl-go.
 			Name: "amazon/purl/Trivy AL2 distro amazon-2 (Karoo), percent-encoded", Endpoint: epStatements,
-			KnownBug: "the caller's identifier is echoed with its distro qualifier percent-decoded (?distro=amazon-2 (Karoo)), which is not a valid PURL; the base form of the caller's PURL keeps the encoding",
-			Body:     body{"cves": ss("CVE-2022-23491"), "products": ss("pkg:rpm/amazon/ca-certificates@2021.2.50-72.amzn2.0.5?arch=noarch&distro=amazon-2%20%28Karoo%29")},
-			Status:   200, Rows: 1,
+			Body:   body{"cves": ss("CVE-2022-23491"), "products": ss("pkg:rpm/amazon/ca-certificates@2021.2.50-72.amzn2.0.5?arch=noarch&distro=amazon-2%20%28Karoo%29")},
+			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2022-23491", Supplier: "amazon", Status: "fixed", Timestamp: tsALCa2, Notes: notes("updateinfo", "direct"),
 				Products: ss("pkg:rpm/amazon/ca-certificates?distro=amazon-2%20%28Karoo%29"),
 				Evidence: "AL amzn2 updateinfo <update> ALAS2-2023-1957: reference CVE-2022-23491, package ca-certificates"}},
@@ -204,9 +202,8 @@ func oracleCases() []Case {
 		{
 			// What Trivy writes for Oracle Linux: distro "oracle-<VERSION_ID>".
 			Name: "oracle/purl/Trivy point-release distro", Endpoint: epStatements,
-			KnownBug: "Trivy sends distro=oracle-8.10; stored rows carry distro=oracle-8 and the resolver does not normalise an Oracle point release (Phase 5c)",
-			Body:     body{"cves": ss("CVE-2023-28486"), "products": ss("pkg:rpm/oracle/sudo@1.9.5p2-1.el8_9?arch=x86_64&distro=oracle-8.10")},
-			Status:   200, Rows: 1,
+			Body:   body{"cves": ss("CVE-2023-28486"), "products": ss("pkg:rpm/oracle/sudo@1.9.5p2-1.el8_9?arch=x86_64&distro=oracle-8.10")},
+			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2023-28486", Supplier: "oracle", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"), Products: ss("pkg:rpm/oracle/sudo?distro=oracle-8.10"), Evidence: ev}},
 		},
 		{

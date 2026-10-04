@@ -8,11 +8,11 @@ import "strings"
 // Canonical's `?distro=` qualifier comes in many shapes — `<codename>` for
 // mainline, `<track>/<codename>` for support tiers (esm-apps, esm-infra,
 // esm-infra-legacy, fips, fips-preview, fips-updates, realtime, bluefield,
-// and almost certainly more in the future). The track is metadata about
-// which support tier the row is from; the codename is the underlying
-// release. Scanners only emit `ubuntu-<version>`, so reducing every
-// `<track>/<codename>` to its codename is the correct collapse for query
-// matching. Many-to-one is by design — rows from different tracks for the
+// and almost certainly more in the future), and `<codename>/<track>` in some
+// documents (`trusty/esm`). The track is metadata about which support tier
+// the row is from; the codename is the underlying release. Scanners only emit
+// `ubuntu-<version>`, so reducing every track-qualified value to its codename
+// is the correct collapse for query matching. Many-to-one is by design — rows from different tracks for the
 // same release dedupe at emit time.
 //
 // Update this table when Canonical ships a new release codename (rare).
@@ -35,9 +35,10 @@ var codenameToVersion = map[string]string{
 
 // Normalize rewrites the `?distro=` qualifier in rawPurl to the
 // scanner-convention `ubuntu-<version>` form. Inputs of every shape we've
-// seen from Canonical work the same way: take the last `/`-separated
-// segment as the codename, look it up. Non-PURL identifiers, PURLs without
-// a distro qualifier, and unknown codenames pass through unchanged.
+// seen from Canonical work the same way: whichever `/`-separated segment is
+// a known codename is the release. Non-PURL identifiers, PURLs without a
+// distro qualifier, and values naming no known codename pass through
+// unchanged.
 //
 // Other qualifiers (arch, epoch, etc.) and any fragment are preserved
 // verbatim — only the distro qualifier value is rewritten.
@@ -65,15 +66,15 @@ func Normalize(rawPurl string) string {
 		if p[:eq] != "distro" {
 			continue
 		}
-		// Take the last `/`-separated segment as the codename. Works for
-		// bare `xenial`, `esm-infra/xenial`, `fips-updates/jammy`, and any
-		// future `<track>/<codename>` variant Canonical introduces.
-		val := p[eq+1:]
-		codename := val
-		if slash := strings.LastIndexByte(val, '/'); slash >= 0 {
-			codename = val[slash+1:]
+		// Take whichever `/`-separated segment is a known codename. Works for
+		// bare `xenial`, track first (`esm-infra/xenial`, `fips-updates/jammy`),
+		// codename first (`trusty/esm`), and any future track Canonical
+		// introduces in either position.
+		segs := strings.Split(p[eq+1:], "/")
+		mapped, ok := "", false
+		for j := len(segs) - 1; j >= 0 && !ok; j-- {
+			mapped, ok = codenameToVersion[segs[j]]
 		}
-		mapped, ok := codenameToVersion[codename]
 		if !ok {
 			return rawPurl
 		}

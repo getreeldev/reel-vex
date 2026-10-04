@@ -108,6 +108,9 @@ func TestAdapter_Lifecycle(t *testing.T) {
 		if !s.Updated.Equal(lastModified) {
 			t.Errorf("%s: Updated got %v, want %v", s.CVE, s.Updated, lastModified)
 		}
+		if q := strings.IndexByte(s.ProductID, '?'); q >= 0 && strings.Contains(s.ProductID[q:], "@") {
+			t.Errorf("%s: ProductID %q puts the version after the qualifiers", s.CVE, s.ProductID)
+		}
 		if !strings.Contains(s.BaseID, "?distro=almalinux-9") {
 			t.Errorf("%s: BaseID %q missing ?distro=almalinux-9", s.CVE, s.BaseID)
 		}

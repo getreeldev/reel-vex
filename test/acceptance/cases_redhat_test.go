@@ -7,9 +7,7 @@ package acceptance
 // its document: document.tracking.current_release_date, which is also the date
 // changes.csv gives it. Two documents reach the adapter through the bulk archive
 // csaf_vex_2026-09-27.tar.zst, the rest through changes.csv lines after that
-// date. The archive path stamps its documents with the archive's date instead
-// (pkg/source/csafadapter/archive.go: "All archive docs share the archive
-// date"), so the cases on those two documents carry a KnownBug until Phase 5c.
+// date.
 // Composite products inherit the identifiers of both sides of their
 // relationship (the component's PURL and the platform's CPE).
 const (
@@ -20,9 +18,6 @@ const (
 	tsRH88265  = "2026-10-02T13:59:45Z" // changes.csv "2026/cve-2026-88265.json"
 	tsRH34034  = "2026-10-03T03:00:07Z" // changes.csv "2023/cve-2023-34034.json"
 	tsRH101295 = "2026-09-30T15:14:19Z" // changes.csv "2026/cve-2026-101295.json"
-
-	// archiveDateBug is the KnownBug of every case on an archive-seeded document.
-	archiveDateBug = "rows seeded from the bulk archive are dated by the archive (2026-09-27), not by the document's own tracking.current_release_date (Phase 5c)"
 )
 
 var rh20012Fixed = []string{
@@ -120,7 +115,7 @@ func redhatCases() []Case {
 			},
 		},
 		{
-			Name: "redhat/cve-only/archive-seeded document", Endpoint: epStatements, KnownBug: archiveDateBug,
+			Name: "redhat/cve-only/archive-seeded document", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2025-6270")}, Status: 200, Rows: 2,
 			Want: []Stmt{{CVE: "CVE-2025-6270", Supplier: "redhat", Status: "affected", Timestamp: tsRH6270, Notes: notes("csaf", ""),
 				Products: ss("cpe:/a:redhat:enterprise_linux_ai:1", "pkg:rpm/redhat/hdf5?arch=src"),
@@ -143,7 +138,6 @@ func redhatCases() []Case {
 		{
 			Name: "redhat/cve-only/archive-seeded, one source package in two streams", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2026-47699")}, Status: 200, Rows: 5,
-			KnownBug: archiveDateBug,
 			Want: []Stmt{
 				{CVE: "CVE-2026-47699", Supplier: "redhat", Status: "not_affected", Justification: "vulnerable_code_not_present", Timestamp: tsRH47699, Notes: notes("csaf", ""),
 					Products: ss("cpe:/o:redhat:enterprise_linux:10", "pkg:rpm/redhat/trustee-guest-components?arch=src", "pkg:rpm/redhat/trustee-kbs"),
@@ -244,7 +238,7 @@ func redhatCases() []Case {
 				Evidence: "RH 2026/cve-2026-94282.json product_status.under_investigation: red_hat_enterprise_linux_10:libXi.src (pkg:rpm/redhat/libXi?arch=src)"}},
 		},
 		{
-			Name: "redhat/purl/known_not_affected, Trivy rpm", Endpoint: epStatements, KnownBug: archiveDateBug,
+			Name: "redhat/purl/known_not_affected, Trivy rpm", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2026-47699"), "products": ss("pkg:rpm/redhat/trustee-kbs@0.10.0-1.el10?arch=x86_64&distro=redhat-10.0")},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2026-47699", Supplier: "redhat", Status: "not_affected", Justification: "vulnerable_code_not_present", Timestamp: tsRH47699, Notes: notes("csaf", "direct"),
@@ -254,7 +248,7 @@ func redhatCases() []Case {
 		{
 			// The vendor last changed both documents before the archive was cut;
 			// a since between those dates and the archive date excludes them.
-			Name: "redhat/filter/since excludes archive-seeded documents changed before it", Endpoint: epStatements, KnownBug: archiveDateBug,
+			Name: "redhat/filter/since excludes archive-seeded documents changed before it", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2025-6270", "CVE-2026-47699"), "since": "2026-09-25T00:00:00Z"},
 			Status: 204, Rows: 0,
 		},

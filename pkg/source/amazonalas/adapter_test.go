@@ -208,7 +208,7 @@ func TestAdapter_Sync_amzn2(t *testing.T) {
 		if s.Version != "4.14.51-66.38.amzn2" {
 			t.Errorf("kernel-headers Version got %q, want 4.14.51-66.38.amzn2", s.Version)
 		}
-		if s.ProductID != khBase+"@4.14.51-66.38.amzn2" {
+		if s.ProductID != "pkg:rpm/amazon/kernel-headers@4.14.51-66.38.amzn2?distro=amazon-2" {
 			t.Errorf("kernel-headers ProductID got %q", s.ProductID)
 		}
 	}
@@ -240,7 +240,7 @@ func TestAdapter_Sync_amzn2(t *testing.T) {
 	if bind.CVE != "CVE-2021-25220" {
 		t.Errorf("bind CVE got %q", bind.CVE)
 	}
-	if bind.ProductID != "pkg:rpm/amazon/bind?distro=amazon-2@32:9.11.4-26.P2.amzn2.5.2" {
+	if bind.ProductID != "pkg:rpm/amazon/bind@32:9.11.4-26.P2.amzn2.5.2?distro=amazon-2" {
 		t.Errorf("bind ProductID got %q", bind.ProductID)
 	}
 }

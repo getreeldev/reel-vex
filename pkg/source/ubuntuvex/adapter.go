@@ -12,9 +12,10 @@
 // statements; each statement carries one or more product identifiers in
 // PURL form.
 //
-// Identifier translation: Canonical emits the `?distro=` qualifier in four
+// Identifier translation: Canonical emits the `?distro=` qualifier in several
 // shapes (`ubuntu/<codename>`, `esm-apps/<codename>`, `esm-infra/<codename>`,
-// `esm-infra-legacy/<codename>`); scanners speak `ubuntu-<version>`.
+// `esm-infra-legacy/<codename>`, and codename first, `trusty/esm`); scanners
+// speak `ubuntu-<version>`.
 // Normalize() in distro.go rewrites the qualifier, folding the tracks of one
 // release onto one identifier.
 //

@@ -94,9 +94,10 @@ func parseRepoMd(b []byte) (RepoMd, error) {
 //   - Status "fixed"; the advisory ships the patched RPM
 //   - Version is "version-release", prefixed "epoch:" when epoch != "0"
 //   - BaseID is the distro-qualified, version-less PURL base (the matchable
-//     identity); ProductID appends "@version" so two advisories that fix the
-//     same package for the same CVE at different versions stay distinct rows
-//     under the (vendor,cve,product_id,...) primary key.
+//     identity); ProductID adds "@version" before the qualifier, so two
+//     advisories that fix the same package for the same CVE at different
+//     versions stay distinct rows under the (vendor,cve,product_id,...)
+//     primary key.
 func emitStatements(ui UpdateInfo, distro distroSpec, emit func(source.Statement) error) (counts, error) {
 	var c counts
 	for _, alas := range ui.ALASList {
@@ -128,7 +129,7 @@ func emitStatements(ui UpdateInfo, distro distroSpec, emit func(source.Statement
 				version := packageVersion(p)
 				if err := emit(source.Statement{
 					CVE:       cve,
-					ProductID: baseID + "@" + version,
+					ProductID: distro.productID(p.Name, version),
 					BaseID:    baseID,
 					Version:   version,
 					IDType:    "purl",

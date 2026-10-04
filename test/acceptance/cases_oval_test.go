@@ -93,9 +93,8 @@ func debianCases() []Case {
 		},
 		{
 			Name: "debian/purl/Trivy point-release distro", Endpoint: epStatements,
-			KnownBug: "a scanner's deb distro for Debian is the point release (Trivy: debian-12.11); the resolver normalises apk, Amazon and AlmaLinux point releases but not Debian's, so the bookworm rows (distro=debian-12) are never reached",
-			Body:     body{"cves": ss("CVE-2022-37434"), "products": ss("pkg:deb/debian/zlib@1:1.2.13.dfsg-1?arch=source&distro=debian-12.11")},
-			Status:   200, Rows: 1,
+			Body:   body{"cves": ss("CVE-2022-37434"), "products": ss("pkg:deb/debian/zlib@1:1.2.13.dfsg-1?arch=source&distro=debian-12.11")},
+			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "debian", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"),
 				Products: ss("pkg:deb/debian/zlib?distro=debian-12.11"),
 				Evidence: "DO definition oval:org.debian:def:118596735315433746990801407057633161948 (platform Debian GNU/Linux 12): zlib < 1:1.2.11.dfsg-4.1"}},

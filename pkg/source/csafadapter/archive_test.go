@@ -49,7 +49,8 @@ func buildZstdTar(t *testing.T, files map[string][]byte) []byte {
 
 // TestSync_BulkArchiveColdStart verifies the cold-start path downloads and
 // walks the bulk archive (instead of per-document crawling), stamps statements
-// with the archive date, and uses that date as the floor for the changes.csv
+// with the document's own current_release_date (not the archive date), and
+// uses the archive date as the floor for the changes.csv
 // delta (so it does NOT re-crawl pre-archive documents).
 func TestSync_BulkArchiveColdStart(t *testing.T) {
 	fixture, err := os.ReadFile(fixturePath(t, "secdata-1220-cve-2024-0217.json"))
@@ -112,7 +113,8 @@ func TestSync_BulkArchiveColdStart(t *testing.T) {
 	if !sawBaseCPE {
 		t.Error("expected base RHEL 8 CPE statement from the archived doc")
 	}
-	if want := time.Date(2026, 5, 23, 0, 0, 0, 0, time.UTC); !updated.Equal(want) {
+	// The fixture's document.tracking.current_release_date.
+	if want := time.Date(2025, 11, 21, 14, 53, 29, 0, time.UTC); !updated.Equal(want) {
 		t.Errorf("archive statement Updated: got %v, want %v", updated, want)
 	}
 	if docFetched {
@@ -233,5 +235,26 @@ func TestSync_NoArchiveFallsBackToCrawl(t *testing.T) {
 	}
 	if count == 0 {
 		t.Fatal("expected statements from the crawl, got 0")
+	}
+}
+
+// TestReleaseDate: an archived document is dated by its own
+// current_release_date; one without a readable date falls back.
+func TestReleaseDate(t *testing.T) {
+	fallback := time.Date(2026, 5, 23, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		doc  string
+		want time.Time
+	}{
+		{`{"document":{"tracking":{"current_release_date":"2025-11-21T14:53:29+00:00"}}}`, time.Date(2025, 11, 21, 14, 53, 29, 0, time.UTC)},
+		{`{"document":{"tracking":{"current_release_date":"2025-11-21T16:53:29+02:00"}}}`, time.Date(2025, 11, 21, 14, 53, 29, 0, time.UTC)},
+		{`{"document":{"tracking":{}}}`, fallback},
+		{`{"document":{"tracking":{"current_release_date":"21 Nov 2025"}}}`, fallback},
+		{`not json`, fallback},
+	}
+	for _, c := range cases {
+		if got := releaseDate([]byte(c.doc), fallback); !got.Equal(c.want) || got.Location() != time.UTC {
+			t.Errorf("releaseDate(%s) = %v, want %v", c.doc, got, c.want)
+		}
 	}
 }

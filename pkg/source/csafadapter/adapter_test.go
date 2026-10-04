@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,6 +97,9 @@ func TestCSAFAdapter_LifecycleAgainstHTTPTest(t *testing.T) {
 	var sawBaseCPE bool
 	res, err := a.Sync(context.Background(), time.Time{}, func(s source.Statement) error {
 		count++
+		if q := strings.IndexByte(s.ProductID, '?'); q >= 0 && strings.Contains(s.ProductID[q:], "@") {
+			t.Errorf("%s: ProductID %q puts the version after the qualifiers", s.CVE, s.ProductID)
+		}
 		if s.ProductID == "cpe:/o:redhat:enterprise_linux:8" {
 			sawBaseCPE = true
 		}
