@@ -206,3 +206,105 @@ func TestHandleStatements_SourcePackageAdmitsNoExactRow(t *testing.T) {
 		t.Errorf("openssl itself:\n got %v\nwant %v", got, want)
 	}
 }
+
+// TestAnalyze_SourcePackageAdmitsNoExactRow: on /v1/analyze an exact-list row
+// keyed by a package name is about the binary of that name only, never about
+// another binary built from a source package of that name. The SBOM holds
+// openssl (named like its source) and libssl3 (source openssl); a Rancher-like
+// exact row states openssl not_affected with no version.
+func TestAnalyze_SourcePackageAdmitsNoExactRow(t *testing.T) {
+	database := dbtest.New()
+	t.Cleanup(func() { database.Close() })
+	const (
+		cve     = "CVE-2024-7777"
+		img     = "pkg:oci/rancher/rancher-agent"
+		openssl = "pkg:deb/debian/openssl@3.0.11-1?arch=amd64"
+		libssl3 = "pkg:deb/debian/libssl3@3.0.11-1?arch=amd64"
+	)
+	if err := database.BulkInsert([]db.Statement{{Vendor: "rancher", CVE: cve, ProductID: "pkg:deb/debian/openssl",
+		BaseID: "pkg:deb/debian/openssl", VersionKind: db.VersionKindExact, IDType: "purl", Status: "not_affected",
+		Justification: "vulnerable_code_not_present", Updated: "2026-04-01T00:00:00Z", SourceFormat: "openvex", Scope: img}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(database, nil)
+	src := []any{map[string]any{"name": propSrcName, "value": "openssl"}}
+	post := func(vulns []any) map[string]any {
+		t.Helper()
+		sbom := map[string]any{
+			"bomFormat": "CycloneDX", "specVersion": "1.5", "serialNumber": "urn:uuid:1",
+			"metadata": map[string]any{"component": map[string]any{"purl": img + "@sha256:abc"}},
+			"components": []any{
+				map[string]any{"type": "library", "purl": openssl, "bom-ref": "a", "properties": src},
+				map[string]any{"type": "library", "purl": libssl3, "bom-ref": "b", "properties": src},
+			},
+		}
+		if vulns != nil {
+			sbom["vulnerabilities"] = vulns
+		}
+		body, _ := json.Marshal(map[string]any{"sbom": sbom})
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, httptest.NewRequest("POST", "/v1/analyze", bytes.NewReader(body)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", w.Code, w.Body.String())
+		}
+		var res map[string]any
+		json.Unmarshal(w.Body.Bytes(), &res)
+		return res
+	}
+	vuln := func(res map[string]any) map[string]any {
+		t.Helper()
+		vulns, _ := res["vulnerabilities"].([]any)
+		if len(vulns) != 1 {
+			t.Fatalf("vulnerabilities = %v", res["vulnerabilities"])
+		}
+		return vulns[0].(map[string]any)
+	}
+	affecting := func(refs ...string) []any {
+		aff := []any{}
+		for _, r := range refs {
+			aff = append(aff, map[string]any{"ref": r})
+		}
+		return []any{map[string]any{"id": cve, "affects": aff}}
+	}
+
+	t.Run("synthesise: openssl only", func(t *testing.T) {
+		v := vuln(post(nil))
+		if affects, _ := v["affects"].([]any); len(affects) != 1 || affects[0].(map[string]any)["ref"] != "urn:cdx:1/1#a" {
+			t.Errorf("affects = %v, want openssl (a) only", affects)
+		}
+	})
+	t.Run("annotate: libssl3 gets no verdict through its source package", func(t *testing.T) {
+		if a := vuln(post(affecting(libssl3)))["analysis"]; a != nil {
+			t.Errorf("libssl3 alone: analysis = %v, want none", a)
+		}
+		if a := vuln(post(affecting(openssl, libssl3)))["analysis"]; a != nil {
+			t.Errorf("openssl and libssl3: analysis = %v, want none", a)
+		}
+	})
+	t.Run("annotate: openssl gets its own", func(t *testing.T) {
+		if a, _ := vuln(post(affecting(openssl)))["analysis"].(map[string]any); a["state"] != "not_affected" {
+			t.Errorf("openssl: analysis = %v", a)
+		}
+	})
+}
+
+// TestExpandProducts_StrongestReason: a base several products reach keeps the
+// strongest match_reason, whatever order the products came in. A repository_id
+// PURL reaches the CPE via_alias; the CPE named itself is direct.
+func TestExpandProducts_StrongestReason(t *testing.T) {
+	database := dbtest.New()
+	t.Cleanup(func() { database.Close() })
+	const cpe = "cpe:/o:redhat:enterprise_linux:8::baseos"
+	if err := database.BulkUpsertAliases([]db.Alias{{Vendor: "redhat", SourceNS: "repository_id", SourceID: "rhel-8-for-x86_64-baseos-rpms",
+		TargetNS: "cpe", TargetID: cpe, Updated: "2024-01-05T00:00:00Z"}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(database, nil)
+	aliased := "pkg:rpm/redhat/openssl@3.0.7-27.el8?arch=x86_64&repository_id=rhel-8-for-x86_64-baseos-rpms"
+	for _, products := range [][]string{{aliased, cpe}, {cpe, aliased}} {
+		reason, _, _, _ := srv.expandProducts(products, nil)
+		if reason[cpe] != "direct" {
+			t.Errorf("%v: reason[%s] = %q, want direct", products, cpe, reason[cpe])
+		}
+	}
+}

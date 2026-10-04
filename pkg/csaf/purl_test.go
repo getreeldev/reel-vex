@@ -1,6 +1,9 @@
 package csaf
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSplitPURL(t *testing.T) {
 	cases := []struct {
@@ -42,6 +45,15 @@ func TestSplitPURL(t *testing.T) {
 			"pkg:rpm/redhat/log4j",
 			"1.2",
 		},
+		// The version is after the first '@' of the last path segment, as
+		// StripPURLVersion reads it: a namespace's '@' is not one, and a
+		// second '@' belongs to the version.
+		{"pkg:npm/@angular/core", "pkg:npm/@angular/core", ""},
+		{"pkg:npm/@angular/core@16.0.0", "pkg:npm/@angular/core", "16.0.0"},
+		{"pkg:deb/ubuntu/openssl@3.0.13@4?distro=ubuntu-24.04", "pkg:deb/ubuntu/openssl?distro=ubuntu-24.04", "3.0.13@4"},
+		// The subpath is never part of the base, with qualifiers or without.
+		{"pkg:deb/debian/foo@1.0?distro=debian-12#sub", "pkg:deb/debian/foo?distro=debian-12", "1.0"},
+		{"pkg:golang/github.com/foo/bar#sub/pkg", "pkg:golang/github.com/foo/bar", ""},
 		// Empty
 		{"", "", ""},
 	}
@@ -49,6 +61,11 @@ func TestSplitPURL(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
 			base, version := SplitPURL(tc.in)
+			if vl, v := StripPURLVersion(tc.in); v != tc.wantVersion {
+				t.Errorf("StripPURLVersion version %q disagrees with %q", v, tc.wantVersion)
+			} else if b, _ := SplitPURL(vl); b != tc.wantBase {
+				t.Errorf("base of the versionless %q: got %q, want %q", vl, b, tc.wantBase)
+			}
 			if base != tc.wantBase {
 				t.Errorf("base: got %q, want %q", base, tc.wantBase)
 			}
@@ -174,6 +191,42 @@ func TestStripAndInsertPURLVersion(t *testing.T) {
 	}
 	if got := InsertPURLVersion("pkg:apk/alpine/zlib", ""); got != "pkg:apk/alpine/zlib" {
 		t.Errorf("an empty version must leave the identifier unchanged, got %q", got)
+	}
+}
+
+// TestRenderPURLVersion: a deb or rpm version with an inline epoch is written
+// the way Trivy writes the package — the epoch as a qualifier, the version
+// percent-encoded — and reads back to the stored version through MatchVersion.
+func TestRenderPURLVersion(t *testing.T) {
+	cases := []struct{ versionless, version, want string }{
+		{"pkg:deb/ubuntu/bind9?arch=amd64&distro=ubuntu-18.04", "1:9.11.3+dfsg-1ubuntu1.17",
+			"pkg:deb/ubuntu/bind9@9.11.3%2Bdfsg-1ubuntu1.17?arch=amd64&distro=ubuntu-18.04&epoch=1"},
+		{"pkg:deb/ubuntu/bind9?arch=amd64&distro=ubuntu-18.04", "1%3A9.11.3%2Bdfsg-1ubuntu1.17",
+			"pkg:deb/ubuntu/bind9@9.11.3%2Bdfsg-1ubuntu1.17?arch=amd64&distro=ubuntu-18.04&epoch=1"},
+		{"pkg:rpm/redhat/microcode_ctl", "4:20250211-1.el9", "pkg:rpm/redhat/microcode_ctl@20250211-1.el9?epoch=4"},
+		{"pkg:deb/debian/foo?distro=debian-12#sub", "2:1.0~rc1", "pkg:deb/debian/foo@1.0~rc1?distro=debian-12&epoch=2#sub"},
+		// Epoch 0 is no epoch: Trivy writes no qualifier for it.
+		{"pkg:deb/ubuntu/foo?arch=amd64", "0:1.2", "pkg:deb/ubuntu/foo@1.2?arch=amd64"},
+		// No epoch: as written, '+' included.
+		{"pkg:deb/ubuntu/openssl?arch=amd64&distro=ubuntu-22.04", "3.0.2-0ubuntu1.10+esm1",
+			"pkg:deb/ubuntu/openssl@3.0.2-0ubuntu1.10+esm1?arch=amd64&distro=ubuntu-22.04"},
+		// An epoch qualifier already there is not doubled.
+		{"pkg:deb/ubuntu/foo?epoch=1", "1:1.2", "pkg:deb/ubuntu/foo@1:1.2?epoch=1"},
+		// Not deb or rpm, or not an epoch: as written.
+		{"pkg:oci/ubi9", "sha256:abc", "pkg:oci/ubi9@sha256:abc"},
+		{"pkg:rpm/redhat/foo", "x:1.0", "pkg:rpm/redhat/foo@x:1.0"},
+		{"pkg:golang/golang.org/x/net", "v0.17.0", "pkg:golang/golang.org/x/net@v0.17.0"},
+		{"pkg:deb/ubuntu/foo", "", "pkg:deb/ubuntu/foo"},
+	}
+	for _, c := range cases {
+		got := RenderPURLVersion(c.versionless, c.version)
+		if got != c.want {
+			t.Errorf("RenderPURLVersion(%q, %q) = %q, want %q", c.versionless, c.version, got, c.want)
+			continue
+		}
+		if v := UnescapeVersion(c.version); strings.Trim(strings.SplitN(v, ":", 2)[0], "0") != "" && MatchVersion(got) != v {
+			t.Errorf("MatchVersion(%q) = %q, want the stored %q", got, MatchVersion(got), v)
+		}
 	}
 }
 

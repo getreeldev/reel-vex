@@ -203,7 +203,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // CPE-prefix matching — and the OpenVEX encoder echoes the user's input
 // PURLs into products[] so Trivy can match them. Without Products the
 // encoder falls back to each statement's stored product_id, which may be
-// a CPE for OVAL-derived rows. Exact-list rows (Ubuntu OpenVEX, Rancher)
+// a CPE — chiefly Red Hat CSAF's, which keys many statements by CPE alone. Exact-list rows (Ubuntu OpenVEX, Rancher)
 // are the exception either way: a product's version selects the verdict
 // stated for it, and each row is rendered per listed version (see
 // db.QueryFilters.ExactVersions and pkg/openvex).
@@ -556,10 +556,12 @@ func (s *Server) handleIngestTrigger(w http.ResponseWriter, r *http.Request) {
 }
 
 // expandProducts turns the user-supplied product list into two maps, keyed
-// by candidate base identifier, and a list of (candidate, version) pairs:
+// by candidate base identifier, a list of (candidate, version) pairs and the
+// candidates reached only through a source package:
 //
 //   - baseToReason: match_reason that would apply if a statement's base_id
-//     matches that candidate (first/stronger rule wins on collision).
+//     matches that candidate. When several products reach one candidate, the
+//     strongest rule wins (reasonRank), whatever the order of the products.
 //   - baseToInputs: the set of user inputs (in base form — stripped of PURL
 //     qualifiers and version, see echoBase) that expanded to this candidate.
 //     Used by the OpenVEX emitter to echo the user's PURLs into products[] so
@@ -568,6 +570,7 @@ func (s *Server) handleIngestTrigger(w http.ResponseWriter, r *http.Request) {
 //   - versions: each candidate paired with the version its input named
 //     (csaf.MatchVersion; empty for none), for db.QueryFilters.ExactVersions,
 //     so an exact-list row is matched against the caller's own version.
+//   - sourceBases: see below.
 //
 // Delegates expansion to resolver.Resolver so alias lookups and CPE prefix
 // expansion run alongside the direct base.
@@ -600,7 +603,7 @@ func (s *Server) expandProducts(products []string, sources map[string]string) (b
 		version := csaf.MatchVersion(p)
 		for _, cand := range s.resolver.Expand(p) {
 			versions = append(versions, db.BaseVersion{Base: cand.ID, Version: version})
-			if _, exists := baseToReason[cand.ID]; !exists {
+			if r, exists := baseToReason[cand.ID]; !exists || reasonRank[cand.MatchReason] < reasonRank[r] {
 				baseToReason[cand.ID] = cand.MatchReason
 			}
 			echo(cand.ID, inputBase)
@@ -627,21 +630,24 @@ func (s *Server) expandProducts(products []string, sources map[string]string) (b
 // source package an SBOM component was built from.
 const matchViaSourcePackage = "via_source_package"
 
+// reasonRank orders the match reasons a product's expansion can give, strongest
+// first (lowest), as docs/api.md documents them. from_user_vex is not here: it
+// is set over these on /v1/analyze, never ranked against them.
+var reasonRank = map[string]int{"direct": 1, "via_alias": 2, "via_cpe_prefix": 3, matchViaSourcePackage: 4}
+
 // echoBase is the caller's identifier in the base form csaf.SplitPURL gives,
 // with the distro qualifier as the caller wrote it: SplitPURL decodes it for
 // matching (Trivy's distro=amazon-2%20%28Karoo%29 becomes "amazon-2 (Karoo)"),
-// and the decoded form echoed back is not a valid PURL.
+// and the decoded form echoed back is not a valid PURL. Like the base, it
+// carries no subpath.
 func echoBase(id string) string {
 	base, _ := csaf.SplitPURL(id)
 	d := strings.Index(base, "?distro=")
-	q := strings.IndexByte(id, '?')
-	if d < 0 || q < 0 {
+	if d < 0 {
 		return base
 	}
-	for _, p := range strings.Split(id[q+1:], "&") {
-		if raw, ok := strings.CutPrefix(p, "distro="); ok {
-			return base[:d] + "?distro=" + raw
-		}
+	if raw := purlQualifier(id, "distro"); raw != "" {
+		return base[:d] + "?distro=" + raw
 	}
 	return base
 }

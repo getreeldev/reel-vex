@@ -34,8 +34,9 @@ var now = func() time.Time { return time.Now().UTC() }
 // those inputs land in products[] so a consumer like Trivy can match
 // statements keyed by CPE using the PURL the user originally sent.
 // baseToReason maps each candidate base_id to the rule that produced it
-// ("direct", "via_alias", "via_cpe_prefix") — carried into each statement's
-// status_notes for diagnostic traceability.
+// ("direct", "via_alias", "via_cpe_prefix", "via_source_package", or
+// "from_user_vex" for a user-VEX row on /v1/analyze) — carried into each
+// statement's status_notes for diagnostic traceability.
 //
 // Rows are converted 1:1 and then grouped (see group): rows that make the
 // same assertion about different subjects collapse into one statement whose
@@ -206,10 +207,10 @@ func stmtKey(s db.Statement) string {
 // toStatement converts one DB row into an OpenVEX Statement. Rules:
 //
 //   - Products come from baseToInputs[stmt.BaseID]; these are the user's
-//     original inputs (base form) that expanded to match this row. Fallback
-//     to the statement's own ProductID when the map is empty (defensive —
-//     the join shouldn't allow it in practice). An exact-list row is the
-//     exception: it is rendered per version (see rowProducts).
+//     original inputs (base form) that expanded to match this row. With no
+//     inputs for the base — a CVE-only query names no product — the row is
+//     rendered under its own ProductID. An exact-list row is the exception:
+//     it is rendered per version (see rowProducts).
 //   - PURL inputs land in identifiers.purl AND @id (Trivy matches on PURL).
 //   - CPE inputs land in identifiers.cpe23 only (Trivy ignores CPEs; other
 //     consumers can still use them).
@@ -274,9 +275,10 @@ func toStatement(s db.Statement, baseToInputs map[string][]string, baseToReason 
 // rowProducts returns the identifiers a row is rendered under, sorted.
 //
 // An exact-list row (db.VersionKindExact) is rendered as the vendor published
-// it: its versionless product_id with each listed version put back before the
-// qualifiers, one identifier per version, or the versionless product_id itself
-// when the list is empty (the vendor stated no version). The store has already
+// it: its versionless product_id with each listed version put back, one
+// identifier per version (csaf.RenderPURLVersion: a deb or rpm epoch becomes
+// the epoch qualifier, as scanners write it), or the versionless product_id
+// itself when the list is empty (the vendor stated no version). The store has already
 // narrowed the list to the version a versioned query matched, so a no-version
 // query gets every listed version under its own verdict and a versioned one
 // only its own. The caller's identifier is never echoed for such a row: its
@@ -291,7 +293,7 @@ func rowProducts(s db.Statement, baseToInputs map[string][]string) []string {
 	case s.VersionKind == db.VersionKindExact && len(s.Versions) > 0:
 		ids = make([]string, 0, len(s.Versions))
 		for _, v := range s.Versions {
-			ids = append(ids, csaf.InsertPURLVersion(s.ProductID, v))
+			ids = append(ids, csaf.RenderPURLVersion(s.ProductID, v))
 		}
 	case s.VersionKind == db.VersionKindExact:
 		ids = []string{s.ProductID}

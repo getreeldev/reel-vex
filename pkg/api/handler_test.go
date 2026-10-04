@@ -1737,6 +1737,7 @@ func TestEchoBase(t *testing.T) {
 		"pkg:deb/debian/zlib@1:1.2.13.dfsg-1?arch=source&distro=debian-12.11":                                    "pkg:deb/debian/zlib?distro=debian-12.11",
 		"pkg:rpm/redhat/openssl@3.0.7?arch=x86_64":                                                               "pkg:rpm/redhat/openssl",
 		"cpe:/o:redhat:enterprise_linux:8":                                                                       "cpe:/o:redhat:enterprise_linux:8",
+		"pkg:deb/debian/foo@1.0?arch=amd64&distro=debian-12#sub/dir":                                             "pkg:deb/debian/foo?distro=debian-12",
 	}
 	for in, want := range cases {
 		if got := echoBase(in); got != want {

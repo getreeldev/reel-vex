@@ -377,7 +377,8 @@ func TestEncode_ValidatesAgainstSchema(t *testing.T) {
 
 // TestEncode_ExactListRows: an exact-list row is rendered per version as the
 // vendor published it — the versionless product_id with @version put back
-// before its qualifiers — never as the caller's echoed base; an empty list
+// before its qualifiers, an inline deb epoch as the epoch qualifier Trivy
+// writes — never as the caller's echoed base; an empty list
 // renders the bare product_id; a legacy row (empty version_kind) still echoes
 // the caller's base. Grouping by assertion applies to the rendered products.
 func TestEncode_ExactListRows(t *testing.T) {
@@ -393,6 +394,7 @@ func TestEncode_ExactListRows(t *testing.T) {
 		row("openssl", "amd64", "fixed", "1.10", "1.11"),
 		row("openssl", "arm64", "fixed", "1.12"),
 		row("bash", "amd64", "fixed"),
+		row("zlib1g", "amd64", "fixed", "1:1.2.11.dfsg-2ubuntu9.2"),
 		{Vendor: "debian", CVE: "CVE-2024-1234", SourceFormat: "oval", Status: "fixed",
 			ProductID: "pkg:deb/debian/zlib@1.0", BaseID: "pkg:deb/debian/zlib?distro=debian-12", Versions: []string{"1.0"},
 			Updated: "2026-04-01T00:00:00Z"},
@@ -420,7 +422,8 @@ func TestEncode_ExactListRows(t *testing.T) {
 			"pkg:deb/ubuntu/glibc@2.35-2?arch=amd64&distro=ubuntu-22.04 " +
 			"pkg:deb/ubuntu/openssl@1.10?arch=amd64&distro=ubuntu-22.04 " +
 			"pkg:deb/ubuntu/openssl@1.11?arch=amd64&distro=ubuntu-22.04 " +
-			"pkg:deb/ubuntu/openssl@1.12?arch=arm64&distro=ubuntu-22.04",
+			"pkg:deb/ubuntu/openssl@1.12?arch=arm64&distro=ubuntu-22.04 " +
+			"pkg:deb/ubuntu/zlib1g@1.2.11.dfsg-2ubuntu9.2?arch=amd64&distro=ubuntu-22.04&epoch=1",
 		"ubuntu affected pkg:deb/ubuntu/glibc@2.35-1?arch=amd64&distro=ubuntu-22.04",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {

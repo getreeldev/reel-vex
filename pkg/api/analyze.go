@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"sort"
 	"strconv"
@@ -259,36 +260,17 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 
 	// 6b. Empty-vulns path: synthesise vulnerabilities[] from the merged set so
 	//     annotateSBOM (below) populates analysis on them. Each affects[].ref is
-	//     the FULL component identifier that resolved to the statement's base_id
-	//     — not the resolver's base form (respBaseToInputs holds bases, which
+	//     the FULL component identifier a statement is about (idMatch.admits) —
+	//     not the resolver's base form (respBaseToInputs holds bases, which
 	//     would not match a component's versioned purl in the BOM-Link rewrite).
 	//     The non-empty path leaves the SBOM's own vulnerabilities[] untouched.
+	match := s.sbomMatches(sbomComponentIDs, sources)
 	if synthesize {
-		baseToComponents := make(map[string][]string)
-		seen := make(map[string]map[string]bool)
-		addComp := func(base, full string) {
-			if seen[base] == nil {
-				seen[base] = make(map[string]bool)
-			}
-			if !seen[base][full] {
-				seen[base][full] = true
-				baseToComponents[base] = append(baseToComponents[base], full)
-			}
-		}
-		for _, cid := range sbomComponentIDs {
-			for _, cand := range s.resolver.Expand(cid) {
-				addComp(cand.ID, cid)
-			}
-			if src := sources[cid]; src != "" {
-				for _, cand := range s.resolver.Expand(src) {
-					addComp(cand.ID, cid)
-				}
-			}
-		}
+		userRefs := make(map[string][]string)
 		for _, c := range userStmts {
-			addComp(c.BaseID, c.ProductID)
+			userRefs[c.BaseID] = append(userRefs[c.BaseID], c.ProductID)
 		}
-		synthesizeVulnerabilities(sbom, merged, baseToComponents)
+		synthesizeVulnerabilities(sbom, merged, match, userRefs)
 	}
 
 	// 7. Output.
@@ -308,7 +290,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if hasSBOM {
 		if len(merged) > 0 {
-			annotateSBOM(sbom, merged, userCVEs)
+			annotateSBOM(sbom, merged, userCVEs, match)
 		}
 		// Rewrite affects[].ref to BOM-Link form regardless of whether vendor
 		// data matched, so the response stays consumable by Trivy --vex even
@@ -428,8 +410,11 @@ func componentProperties(comp map[string]any) map[string]string {
 // sourcePURL returns the purl of the source package a Debian binary package
 // was built from, as the vendor rows name it — pkg:deb/debian/<SrcName> with
 // the binary's distro qualifier as written, and the source version
-// [SrcVersion-SrcRelease] with a non-zero SrcEpoch as the epoch qualifier, so
-// csaf.MatchVersion folds it in the way it folds a binary's:
+// [SrcVersion-SrcRelease] with a non-zero SrcEpoch as the epoch qualifier. The
+// version is carried for matching against the fixed-in boundaries Debian
+// states per source package, which the next phase (boundary feeds) compares;
+// nothing compares it today, because a source candidate is paired with no
+// version and never admits an exact-list row:
 //
 //	pkg:deb/debian/zlib1g@1.2.13.dfsg-1?arch=amd64&distro=debian-12.15&epoch=1
 //	  SrcName zlib, SrcVersion 1.2.13.dfsg, SrcRelease 1, SrcEpoch 1
@@ -538,34 +523,89 @@ func extractRootScopes(sbom map[string]any) []string {
 
 // annotateSBOM adds VEX analysis to vulnerabilities in the SBOM.
 //
+// A vulnerability that names its components (affects[].ref, a bom-ref, a purl
+// or a BOM-Link, as Trivy writes them) is judged per component: a row counts
+// for a component only when it is a statement about it (idMatch.admits — an
+// exact-list row only at a listed version, and never through a source
+// package), each component's verdict is the rollup of its own rows, and the
+// vulnerability is annotated only when every component it names has a verdict
+// and they agree. One analysis applies to every component of the entry, so a
+// verdict stated for one version or one package must not be read as the
+// other's: when they disagree, or one has none, the entry is left as it came.
+// A vulnerability that names no component the SBOM holds has nothing to
+// attribute rows to, and gets the rollup of every row of its CVE.
+//
 // userCVEs gates the override semantic: for any CVE the user asserted
-// on, vendor rows are excluded from the per-CVE rollup so the user's
-// claim wins absolutely — even when a higher-priority vendor not_affected
-// sits at a different base_id for the same CVE.
-func annotateSBOM(sbom map[string]any, stmts []db.Statement, userCVEs map[string]bool) {
-	type resolved struct {
-		state         string
-		justification string
-		detail        string
-	}
-	byCVE := make(map[string]*resolved)
-
+// on, vendor rows are excluded and the user's rows are rolled up for the whole
+// CVE, so the user's claim wins absolutely — even when a higher-priority
+// vendor not_affected sits at a different base_id for the same CVE.
+func annotateSBOM(sbom map[string]any, stmts []db.Statement, userCVEs map[string]bool, match sbomMatch) {
+	byCVE := make(map[string][]db.Statement)
 	for _, s := range stmts {
 		// Override gate: on user-asserted CVEs, drop vendor rows from
 		// the rollup. User rows have SourceFormat="" (no upstream feed);
-		// vendor rows always carry one of "csaf"/"oval".
+		// vendor rows always carry one (csaf, oval, openvex, secdb,
+		// updateinfo).
 		if userCVEs[s.CVE] && s.SourceFormat != "" {
 			continue
 		}
+		byCVE[s.CVE] = append(byCVE[s.CVE], s)
+	}
 
-		r, exists := byCVE[s.CVE]
-		if !exists {
-			r = &resolved{}
-			byCVE[s.CVE] = r
+	vulns, ok := sbom["vulnerabilities"].([]any)
+	if !ok {
+		return
+	}
+	refs := componentRefs(sbom)
+
+	for i, raw := range vulns {
+		vuln, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, ok := vuln["id"].(string)
+		if !ok {
+			continue
+		}
+		rows := byCVE[id]
+		if len(rows) == 0 {
+			continue
+		}
+		var r verdict
+		if comps := affectedComponents(vuln, refs); userCVEs[id] || len(comps) == 0 {
+			r = rollup(rows)
+		} else if r, ok = agreedVerdict(rows, comps, match); !ok {
+			continue
 		}
 
+		analysis := map[string]any{
+			"state":  r.state,
+			"detail": r.detail,
+		}
+		if r.justification != "" {
+			analysis["justification"] = r.justification
+		}
+		vuln["analysis"] = analysis
+		vulns[i] = vuln
+	}
+}
+
+// verdict is a CycloneDX analysis: its state and justification, and a detail
+// naming every statement that took part.
+type verdict struct {
+	state         string
+	justification string
+	detail        string
+}
+
+// rollup folds rows into one verdict: the highest-priority state
+// (statusPriority) with the justification of the first row that stated it,
+// and every row in the detail.
+func rollup(rows []db.Statement) verdict {
+	var r verdict
+	for i, s := range rows {
 		mappedState := mapStatusToCycloneDX(s.Status)
-		if !exists || statusPriority(mappedState) > statusPriority(r.state) {
+		if i == 0 || statusPriority(mappedState) > statusPriority(r.state) {
 			r.state = mappedState
 			r.justification = mapJustificationToCycloneDX(s.Justification)
 		}
@@ -582,36 +622,109 @@ func annotateSBOM(sbom map[string]any, stmts []db.Statement, userCVEs map[string
 		}
 		r.detail += entry
 	}
+	return r
+}
 
-	vulns, ok := sbom["vulnerabilities"].([]any)
-	if !ok {
-		return
+// agreedVerdict is the verdict that holds for every component of a
+// vulnerability: each component (its identifiers) gets the rollup of the rows
+// about it, and the components must agree on the state. The justification is
+// kept only when they agree on it too; the detail names every row that applied
+// to any of them. false when a component has no row, or the states differ.
+func agreedVerdict(rows []db.Statement, comps [][]string, match sbomMatch) (verdict, bool) {
+	var out verdict
+	used := make([]bool, len(rows))
+	for n, ids := range comps {
+		var own []db.Statement
+		for i, s := range rows {
+			if match.admits(ids, s) {
+				own = append(own, s)
+				used[i] = true
+			}
+		}
+		if len(own) == 0 {
+			return verdict{}, false
+		}
+		r := rollup(own)
+		switch {
+		case n == 0:
+			out = r
+		case r.state != out.state:
+			return verdict{}, false
+		case r.justification != out.justification:
+			out.justification = ""
+		}
 	}
+	var applied []db.Statement
+	for i, s := range rows {
+		if used[i] {
+			applied = append(applied, s)
+		}
+	}
+	out.detail = rollup(applied).detail
+	return out, true
+}
 
-	for i, raw := range vulns {
-		vuln, ok := raw.(map[string]any)
+// componentRefs maps every name an affects[].ref may use for a component —
+// its bom-ref, purl and cpe — to the component's identifiers.
+func componentRefs(sbom map[string]any) map[string][]string {
+	out := make(map[string][]string)
+	comps, _ := sbom["components"].([]any)
+	for _, raw := range comps {
+		comp, ok := raw.(map[string]any)
 		if !ok {
 			continue
 		}
-		id, ok := vuln["id"].(string)
-		if !ok {
+		var ids []string
+		for _, k := range []string{"purl", "cpe"} {
+			if v, _ := comp[k].(string); v != "" {
+				ids = append(ids, v)
+			}
+		}
+		if len(ids) == 0 {
 			continue
 		}
-		r, exists := byCVE[id]
-		if !exists {
-			continue
+		bomRef, _ := comp["bom-ref"].(string)
+		for _, name := range append([]string{bomRef}, ids...) {
+			if _, seen := out[name]; name != "" && !seen {
+				out[name] = ids
+			}
 		}
-
-		analysis := map[string]any{
-			"state":  r.state,
-			"detail": r.detail,
-		}
-		if r.justification != "" {
-			analysis["justification"] = r.justification
-		}
-		vuln["analysis"] = analysis
-		vulns[i] = vuln
 	}
+	return out
+}
+
+// affectedComponents returns the identifiers of each SBOM component a
+// vulnerability's affects[] names, once per component. A ref may be a bare
+// bom-ref, a purl, or a BOM-Link (urn:cdx:<serial>/<version>#<bom-ref>); a ref
+// naming no component the SBOM holds is skipped.
+func affectedComponents(vuln map[string]any, refs map[string][]string) [][]string {
+	affects, _ := vuln["affects"].([]any)
+	var out [][]string
+	seen := make(map[string]bool)
+	for _, a := range affects {
+		var ref string
+		switch v := a.(type) {
+		case map[string]any:
+			ref, _ = v["ref"].(string)
+		case string:
+			ref = v
+		}
+		if strings.HasPrefix(ref, "urn:cdx:") {
+			if _, frag, ok := strings.Cut(ref, "#"); ok {
+				if u, err := url.PathUnescape(frag); err == nil {
+					frag = u
+				}
+				ref = frag
+			}
+		}
+		ids, ok := refs[ref]
+		if !ok || seen[ids[0]] {
+			continue
+		}
+		seen[ids[0]] = true
+		out = append(out, ids)
+	}
+	return out
 }
 
 // rewriteAffectsAsBOMLinks rewrites each vulnerability's affects[].ref from
@@ -738,14 +851,18 @@ func statusPriority(state string) int {
 // synthesizeVulnerabilities populates sbom["vulnerabilities"] with one entry per
 // CVE in stmts — used on the empty-vulns /v1/analyze path so the downstream
 // annotate + BOM-Link steps run exactly as they do for a Trivy-populated SBOM.
-// Each affects[].ref is the full component identifier (PURL/CPE) that resolved
-// to the statement's base_id, so rewriteAffectsAsBOMLinks can bind it to the
-// component's bom-ref. Entries and refs are sorted for deterministic output.
-// Statements whose base maps to no component are skipped (nothing to attribute).
-func synthesizeVulnerabilities(sbom map[string]any, stmts []db.Statement, baseToComponents map[string][]string) {
+// Each affects[].ref is the full component identifier (PURL/CPE) a statement is
+// about (sbomMatch.refs), so rewriteAffectsAsBOMLinks can bind it to the
+// component's bom-ref; a user statement also names its own product
+// (userRefs, by base). Entries and refs are sorted for deterministic output.
+// Statements about no component are skipped (nothing to attribute).
+func synthesizeVulnerabilities(sbom map[string]any, stmts []db.Statement, match sbomMatch, userRefs map[string][]string) {
 	refsByCVE := make(map[string]map[string]bool)
 	for _, s := range stmts {
-		comps := baseToComponents[s.BaseID]
+		comps := match.refs(s)
+		if s.SourceFormat == "" {
+			comps = append(comps, userRefs[s.BaseID]...)
+		}
 		if len(comps) == 0 {
 			continue
 		}
@@ -780,6 +897,84 @@ func synthesizeVulnerabilities(sbom map[string]any, stmts []db.Statement, baseTo
 		})
 	}
 	sbom["vulnerabilities"] = vulns
+}
+
+// idMatch is one SBOM identifier (a component's purl or cpe) as /v1/analyze
+// attributes vendor rows to it.
+type idMatch struct {
+	id      string
+	version string          // csaf.MatchVersion(id); empty for none
+	bases   map[string]bool // the resolver's candidates for the identifier
+	source  map[string]bool // candidates reached only through its source package
+}
+
+// admits reports whether row s is a statement about this identifier. The
+// store's exact-list filter pools every version an SBOM names for one base,
+// so a row it returns may hold another component's version: an exact-list row
+// with a list is about this identifier only when the identifier names no
+// version or one in the list. A row reached through the source package never
+// is when it is an exact list, which names the vendor's builds of the package
+// itself (db.QueryFilters.SourceBases).
+func (m *idMatch) admits(s db.Statement) bool {
+	if m.bases[s.BaseID] {
+		return s.VersionKind != db.VersionKindExact || len(s.Versions) == 0 || m.version == "" || slices.Contains(s.Versions, m.version)
+	}
+	return m.source[s.BaseID] && s.VersionKind != db.VersionKindExact
+}
+
+// sbomMatch is every SBOM identifier's idMatch, by identifier and by each base
+// it reaches.
+type sbomMatch struct {
+	byID   map[string]*idMatch
+	byBase map[string][]*idMatch
+}
+
+// sbomMatches builds the idMatch of each identifier; sources maps a component
+// purl to its source package's purl (extractSourcePackages).
+func (s *Server) sbomMatches(ids []string, sources map[string]string) sbomMatch {
+	out := sbomMatch{byID: make(map[string]*idMatch, len(ids)), byBase: make(map[string][]*idMatch)}
+	for _, id := range ids {
+		if out.byID[id] != nil {
+			continue
+		}
+		m := &idMatch{id: id, version: csaf.MatchVersion(id), bases: make(map[string]bool), source: make(map[string]bool)}
+		for _, cand := range s.resolver.Expand(id) {
+			m.bases[cand.ID] = true
+			out.byBase[cand.ID] = append(out.byBase[cand.ID], m)
+		}
+		if src := sources[id]; src != "" {
+			for _, cand := range s.resolver.Expand(src) {
+				if !m.bases[cand.ID] && !m.source[cand.ID] {
+					m.source[cand.ID] = true
+					out.byBase[cand.ID] = append(out.byBase[cand.ID], m)
+				}
+			}
+		}
+		out.byID[id] = m
+	}
+	return out
+}
+
+// refs returns the identifiers row s is a statement about.
+func (sm sbomMatch) refs(s db.Statement) []string {
+	var out []string
+	for _, m := range sm.byBase[s.BaseID] {
+		if m.admits(s) {
+			out = append(out, m.id)
+		}
+	}
+	return out
+}
+
+// admits reports whether row s is a statement about any of one component's
+// identifiers.
+func (sm sbomMatch) admits(ids []string, s db.Statement) bool {
+	for _, id := range ids {
+		if m := sm.byID[id]; m != nil && m.admits(s) {
+			return true
+		}
+	}
+	return false
 }
 
 // mapKeysSorted returns a set's keys in sorted order — deterministic query args

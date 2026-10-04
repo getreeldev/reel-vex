@@ -15,17 +15,28 @@ import (
 // versions. `arch`, `epoch`, `repository_id` and other qualifiers are
 // scanner-side filters and are stripped.
 //
+// The subpath (`#...`) is not part of the base either: it names a part of the
+// package, and the statements are about the package. The version is found the
+// way StripPURLVersion finds it — the text after the first '@' of the last path
+// segment — so a namespace's '@' (npm scopes) is never read as one.
+//
 // Examples:
 //
 //	pkg:rpm/redhat/log4j@1.2.17-18.el8?arch=noarch
 //	    → base: pkg:rpm/redhat/log4j, version: 1.2.17-18.el8
-//	pkg:deb/ubuntu/openssl@3.0.13@4?distro=ubuntu-24.04
-//	    → base: pkg:deb/ubuntu/openssl?distro=ubuntu-24.04, version: 3.0.13@4
+//	pkg:deb/ubuntu/openssl@3.0.13-0ubuntu3.1?arch=amd64&distro=ubuntu-24.04
+//	    → base: pkg:deb/ubuntu/openssl?distro=ubuntu-24.04, version: 3.0.13-0ubuntu3.1
+//	pkg:npm/@angular/core
+//	    → base: pkg:npm/@angular/core, version: ""
 //	cpe:/a:redhat:log4j:1.2
 //	    → base: cpe:/a:redhat:log4j:1.2, version: "" (CPEs aren't decomposed)
 func SplitPURL(id string) (base, version string) {
 	if !strings.HasPrefix(id, "pkg:") {
 		return id, ""
+	}
+
+	if i := strings.IndexByte(id, '#'); i >= 0 {
+		id = id[:i]
 	}
 
 	var distro string
@@ -36,12 +47,9 @@ func SplitPURL(id string) (base, version string) {
 		id = id[:i]
 	}
 
-	if i := strings.IndexByte(id, '#'); i >= 0 {
-		id = id[:i]
-	}
-
-	if i := strings.LastIndexByte(id, '@'); i >= 0 {
-		base, version = id[:i], id[i+1:]
+	start := strings.LastIndexByte(id, '/') + 1
+	if i := strings.IndexByte(id[start:], '@'); i >= 0 {
+		base, version = id[:start+i], id[start+i+1:]
 	} else {
 		base = id
 	}
@@ -174,6 +182,62 @@ func InsertPURLVersion(versionless, version string) string {
 		end = i
 	}
 	return versionless[:end] + "@" + version + versionless[end:]
+}
+
+// RenderPURLVersion puts a vendor-stated version into a versionless PURL the
+// way a PURL writer does (packageurl-go, and so Trivy). For pkg:deb and pkg:rpm
+// a version with an inline epoch — Canonical writes
+// bind9@1:9.11.3+dfsg-1ubuntu1.17 — is written without it, percent-encoded as
+// packageurl-go encodes it, and a non-zero epoch is appended as the `epoch`
+// qualifier after the qualifiers already there:
+//
+//	pkg:deb/ubuntu/bind9?arch=amd64&distro=ubuntu-18.04, 1:9.11.3+dfsg-1ubuntu1.17
+//	    → pkg:deb/ubuntu/bind9@9.11.3%2Bdfsg-1ubuntu1.17?arch=amd64&distro=ubuntu-18.04&epoch=1
+//
+// That is the identifier Trivy writes for the package, and Trivy applies a VEX
+// statement only when the product's version equals the package's, so the
+// inline form suppresses nothing. Every other version, and an identifier that
+// already carries an epoch qualifier, is put back as written (InsertPURLVersion).
+func RenderPURLVersion(versionless, version string) string {
+	if !strings.HasPrefix(versionless, "pkg:deb/") && !strings.HasPrefix(versionless, "pkg:rpm/") {
+		return InsertPURLVersion(versionless, version)
+	}
+	v := UnescapeVersion(version)
+	epoch, rest, ok := strings.Cut(v, ":")
+	if !ok || epoch == "" || strings.Trim(epoch, "0123456789") != "" || purlHasQualifier(versionless, "epoch") {
+		return InsertPURLVersion(versionless, version)
+	}
+	out := InsertPURLVersion(versionless, strings.ReplaceAll(url.QueryEscape(rest), "+", "%20"))
+	if strings.Trim(epoch, "0") == "" {
+		return out
+	}
+	end := len(out)
+	if i := strings.IndexByte(out, '#'); i >= 0 {
+		end = i
+	}
+	sep := "?"
+	if strings.Contains(out[:end], "?") {
+		sep = "&"
+	}
+	return out[:end] + sep + "epoch=" + epoch + out[end:]
+}
+
+// purlHasQualifier reports whether a PURL carries the qualifier key.
+func purlHasQualifier(id, key string) bool {
+	q := strings.IndexByte(id, '?')
+	if q < 0 {
+		return false
+	}
+	qualifiers := id[q+1:]
+	if i := strings.IndexByte(qualifiers, '#'); i >= 0 {
+		qualifiers = qualifiers[:i]
+	}
+	for _, kv := range strings.Split(qualifiers, "&") {
+		if k, _, _ := strings.Cut(kv, "="); k == key {
+			return true
+		}
+	}
+	return false
 }
 
 // MatchVersion returns the version a caller's PURL names, in the form an

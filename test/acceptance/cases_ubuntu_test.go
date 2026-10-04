@@ -43,6 +43,17 @@ func archesAt(pkgAtVersion, distro string, arches ...string) []string {
 	return out
 }
 
+// withEpoch appends the epoch qualifier the hub renders an inline deb epoch
+// as (Canonical's zlib1g@1:1.2.11… is zlib1g@1.2.11…?…&epoch=1, the
+// identifier Trivy writes and matches a VEX product against).
+func withEpoch(ids []string, epoch string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, id+"&epoch="+epoch)
+	}
+	return out
+}
+
 var gcryptArches = ss("amd64", "amd64v3", "arm64", "armhf", "i386", "ppc64el", "riscv64", "s390x", "source")
 
 const (
@@ -250,14 +261,9 @@ func ubuntuCases() []Case {
 			Body:   body{"cves": ss("CVE-2022-37434"), "products": ss("pkg:deb/ubuntu/zlib1g@1.2.11.dfsg-2ubuntu9.2?arch=amd64&distro=ubuntu-22.04&epoch=1")},
 			Status: 200, Rows: 7,
 			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "ubuntu", Status: "fixed", Timestamp: tsUV37434, Notes: direct,
-				Products: ss(
-					"pkg:deb/ubuntu/zlib1g@1:1.2.11.dfsg-2ubuntu9.2?arch=amd64&distro=ubuntu-22.04",
-					"pkg:deb/ubuntu/zlib1g@1:1.2.11.dfsg-2ubuntu9.2?arch=arm64&distro=ubuntu-22.04",
-					"pkg:deb/ubuntu/zlib1g@1:1.2.11.dfsg-2ubuntu9.2?arch=armhf&distro=ubuntu-22.04",
-					"pkg:deb/ubuntu/zlib1g@1:1.2.11.dfsg-2ubuntu9.2?arch=i386&distro=ubuntu-22.04",
-					"pkg:deb/ubuntu/zlib1g@1:1.2.11.dfsg-2ubuntu9.2?arch=ppc64el&distro=ubuntu-22.04",
-					"pkg:deb/ubuntu/zlib1g@1:1.2.11.dfsg-2ubuntu9.2?arch=riscv64&distro=ubuntu-22.04",
-					"pkg:deb/ubuntu/zlib1g@1:1.2.11.dfsg-2ubuntu9.2?arch=s390x&distro=ubuntu-22.04"),
+				// Rendered as Trivy writes the package: the epoch as a qualifier.
+				Products: withEpoch(archesAt("pkg:deb/ubuntu/zlib1g@1.2.11.dfsg-2ubuntu9.2", "ubuntu-22.04",
+					"amd64", "arm64", "armhf", "i386", "ppc64el", "riscv64", "s390x"), "1"),
 				Evidence: "UV vex/cve/2022/CVE-2022-37434.json statements[0] fixed: zlib1g@1:1.2.11.dfsg-2ubuntu9.2 distro=jammy (7 arches)"}},
 		},
 

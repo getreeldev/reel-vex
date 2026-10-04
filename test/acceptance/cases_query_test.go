@@ -452,7 +452,7 @@ func analyzeCases() []Case {
 				zlib1g, trivySource("zlib", "1.2.11.dfsg", "2ubuntu9.2", "1"))},
 			Status: 200, Rows: 7,
 			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "ubuntu", Status: "fixed", Timestamp: tsUV37434, Notes: notes("openvex", "direct"),
-				Products: archesAt("pkg:deb/ubuntu/zlib1g@1:1.2.11.dfsg-2ubuntu9.2", "ubuntu-22.04", "amd64", "arm64", "armhf", "i386", "ppc64el", "riscv64", "s390x"),
+				Products: withEpoch(archesAt("pkg:deb/ubuntu/zlib1g@1.2.11.dfsg-2ubuntu9.2", "ubuntu-22.04", "amd64", "arm64", "armhf", "i386", "ppc64el", "riscv64", "s390x"), "1"),
 				Evidence: "UV vex/cve/2022/CVE-2022-37434.json statements[0] fixed: zlib1g@1:1.2.11.dfsg-2ubuntu9.2 distro=jammy (7 arches); the same statement's zlib@1:1.2.11.dfsg-2ubuntu9.2?arch=source&distro=jammy is not returned"}},
 		},
 

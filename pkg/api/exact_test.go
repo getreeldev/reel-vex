@@ -193,6 +193,10 @@ func renderDoc(doc openvex.Document) []string {
 	return out
 }
 
+// bind9Trivy is Canonical's bind9@1:9.11.3+dfsg-1ubuntu1.17 as rendered: the
+// identifier Trivy writes for the package, epoch as a qualifier.
+const bind9Trivy = "pkg:deb/ubuntu/bind9@9.11.3%2Bdfsg-1ubuntu1.17?arch=amd64&distro=ubuntu-18.04&epoch=1"
+
 func amd64(name, version string) string {
 	return "pkg:deb/ubuntu/" + name + "@" + version + "?arch=amd64&distro=ubuntu-22.04"
 }
@@ -233,13 +237,16 @@ func TestExactLists_Statements(t *testing.T) {
 			[]string{exactCVE + " ubuntu fixed " + arm64("openssl", "1.11")}, 1},
 		{"no products: every row expanded",
 			statementsRequest{CVEs: []string{epochCVE}},
-			[]string{epochCVE + " ubuntu fixed pkg:deb/ubuntu/bind9@1:9.11.3+dfsg-1ubuntu1.17?arch=amd64&distro=ubuntu-18.04"}, 1},
+			[]string{epochCVE + " ubuntu fixed " + bind9Trivy}, 1},
 		{"URL-encoded epoch and '+'",
 			statementsRequest{CVEs: []string{epochCVE}, Products: []string{"pkg:deb/ubuntu/bind9@1%3A9.11.3%2Bdfsg-1ubuntu1.17?arch=amd64&distro=ubuntu-18.04"}},
-			[]string{epochCVE + " ubuntu fixed pkg:deb/ubuntu/bind9@1:9.11.3+dfsg-1ubuntu1.17?arch=amd64&distro=ubuntu-18.04"}, 1},
+			[]string{epochCVE + " ubuntu fixed " + bind9Trivy}, 1},
 		{"the epoch qualifier folds into the version",
 			statementsRequest{CVEs: []string{epochCVE}, Products: []string{"pkg:deb/ubuntu/bind9@9.11.3%2Bdfsg-1ubuntu1.17?arch=amd64&distro=ubuntu-18.04&epoch=1"}},
-			[]string{epochCVE + " ubuntu fixed pkg:deb/ubuntu/bind9@1:9.11.3+dfsg-1ubuntu1.17?arch=amd64&distro=ubuntu-18.04"}, 1},
+			[]string{epochCVE + " ubuntu fixed " + bind9Trivy}, 1},
+		{"the rendered identifier, queried back, gets its own verdict",
+			statementsRequest{CVEs: []string{epochCVE}, Products: []string{bind9Trivy}},
+			[]string{epochCVE + " ubuntu fixed " + bind9Trivy}, 1},
 		{"without its epoch the version is another version",
 			statementsRequest{CVEs: []string{epochCVE}, Products: []string{"pkg:deb/ubuntu/bind9@9.11.3+dfsg-1ubuntu1.17?arch=amd64&distro=ubuntu-18.04"}}, nil, 0},
 		{"broad mode: a versioned product gets only its own verdicts",
@@ -362,6 +369,57 @@ func TestExactLists_Analyze(t *testing.T) {
 	t.Run("annotate: a base asked both with and without a version keeps its whole list", func(t *testing.T) {
 		_, res := post(t, sbom([]any{map[string]any{"id": exactCVE}}, amd64("glibc", "2.35-1"), "pkg:deb/ubuntu/glibc?arch=amd64&distro=ubuntu-22.04"))
 		if a := analysisOf(t, res); a["state"] != "resolved" || a["detail"] != "ubuntu: affected; ubuntu: fixed" {
+			t.Errorf("analysis = %v", a)
+		}
+	})
+	// One SBOM holding x/net at v0.17.0, which Rancher assessed in the image,
+	// and at v0.16.0, which it did not. The store pools both versions per base
+	// and returns the v0.17.0 row; it must not be read as v0.16.0's.
+	const xnet17, xnet16, xnet18 = "pkg:golang/golang.org/x/net@v0.17.0", "pkg:golang/golang.org/x/net@v0.16.0", "pkg:golang/golang.org/x/net@v0.18.0"
+	rancherSBOM := func(vulns []any, purls ...string) map[string]any {
+		m := sbom(vulns, purls...)
+		m["metadata"] = map[string]any{"component": map[string]any{"purl": rancherImg + "@sha256:abc"}}
+		return m
+	}
+	affecting := func(purls ...string) []any {
+		refs := []any{}
+		for _, p := range purls {
+			refs = append(refs, map[string]any{"ref": p})
+		}
+		return []any{map[string]any{"id": rancherCVE, "affects": refs}}
+	}
+	t.Run("annotate: one version's verdict is not another version's", func(t *testing.T) {
+		_, res := post(t, rancherSBOM(affecting(xnet17, xnet16), xnet17, xnet16))
+		if a := analysisOf(t, res); a != nil {
+			t.Errorf("analysis = %v, want none: v0.16.0 has no verdict", a)
+		}
+		_, res = post(t, rancherSBOM(affecting(xnet16), xnet17, xnet16))
+		if a := analysisOf(t, res); a != nil {
+			t.Errorf("analysis = %v, want none for v0.16.0 alone", a)
+		}
+	})
+	t.Run("annotate: the version's own verdict, and two that agree", func(t *testing.T) {
+		_, res := post(t, rancherSBOM(affecting(xnet17), xnet17, xnet16))
+		if a := analysisOf(t, res); a["state"] != "not_affected" || a["detail"] != "rancher: not_affected (vulnerable_code_not_in_execute_path)" {
+			t.Errorf("analysis = %v", a)
+		}
+		_, res = post(t, rancherSBOM(affecting(xnet17, xnet18), xnet17, xnet18))
+		if a := analysisOf(t, res); a["state"] != "not_affected" || a["justification"] != "code_not_reachable" {
+			t.Errorf("analysis = %v", a)
+		}
+	})
+	t.Run("synthesise: an exact verdict is attributed to its own version only", func(t *testing.T) {
+		_, res := post(t, rancherSBOM(nil, xnet17, xnet16))
+		vulns, _ := res["vulnerabilities"].([]any)
+		if len(vulns) != 1 {
+			t.Fatalf("vulnerabilities = %v", res["vulnerabilities"])
+		}
+		v := vulns[0].(map[string]any)
+		affects, _ := v["affects"].([]any)
+		if len(affects) != 1 || affects[0].(map[string]any)["ref"] != "urn:cdx:1/1#c0" {
+			t.Errorf("affects = %v, want only v0.17.0 (c0)", affects)
+		}
+		if a, _ := v["analysis"].(map[string]any); a["state"] != "not_affected" {
 			t.Errorf("analysis = %v", a)
 		}
 	})
