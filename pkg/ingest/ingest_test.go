@@ -652,3 +652,141 @@ func TestExactLists_ChurnAcrossCompleteSyncs(t *testing.T) {
 	}
 	oneLine(t, logs, "sweep", "scope=all", "seen=3", "owned=4", "deleted=1")
 }
+
+// TestRun_OneAtATime: a Run beside one inside its sync returns
+// db.ErrIngestRunning having touched nothing — no ResetSweeps, which would end
+// the first run's session mid-sync, and no adapter — and the first run's sweep
+// then works from its own seen keys.
+func TestRun_OneAtATime(t *testing.T) {
+	logs := captureLogs(t)
+	s := dbtest.New()
+	seed(t, s, "first", "CVE-1", 1, 2, 3, 4, 5)
+	entered, release := make(chan struct{}), make(chan struct{})
+	first := fake("first", source.SyncResult{Complete: true}, func(emit func(source.Statement) error) error {
+		close(entered)
+		<-release
+		return emitting(st("CVE-1", 1), st("CVE-1", 2), st("CVE-1", 3), st("CVE-1", 4))(emit)
+	})
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(context.Background(), []source.Adapter{first}, nil, s, Options{SweepMaxFraction: 0.5})
+	}()
+	<-entered
+	secondCalled := false
+	second := fake("second", source.SyncResult{Complete: true}, func(emit func(source.Statement) error) error {
+		secondCalled = true
+		return nil
+	})
+	err := Run(context.Background(), []source.Adapter{second}, nil, s, Options{SweepMaxFraction: 0.5})
+	close(release)
+	if !errors.Is(err, db.ErrIngestRunning) {
+		t.Errorf("a Run beside a running one = %v, want ErrIngestRunning", err)
+	}
+	if secondCalled {
+		t.Error("the refused Run synced its adapter")
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	wantRows(t, s, "CVE-1", 1, 2, 3, 4)
+	oneLine(t, logs, "sweep", "adapter=first", "seen=4", "owned=5", "deleted=1")
+	if err := Run(context.Background(), []source.Adapter{second}, nil, s, Options{SweepMaxFraction: 0.5}); err != nil {
+		t.Fatalf("a Run after the first finished: %v", err)
+	}
+}
+
+// TestSweep_SharedKeyStaysWithTheAdapterStillEmittingIt: Alpine main and
+// community both emit a package's key while it moves between them. When main
+// stops emitting it, main's sweep must leave it, because community still
+// publishes it — the row belongs to whoever wrote it last.
+func TestSweep_SharedKeyStaysWithTheAdapterStillEmittingIt(t *testing.T) {
+	s := dbtest.New()
+	sync := func(id string, stmts ...source.Statement) {
+		t.Helper()
+		if err := runAdapter(context.Background(), fake(id, source.SyncResult{Complete: true}, emitting(stmts...)), s,
+			Options{SweepMaxFraction: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sync("main", st("CVE-1", 1), st("CVE-1", 2))
+	sync("community", st("CVE-1", 2), st("CVE-1", 3))
+	sync("main", st("CVE-1", 1))
+	wantRows(t, s, "CVE-1", 1, 2, 3)
+	// Once community drops it too, community's sweep removes it.
+	sync("community", st("CVE-1", 3))
+	wantRows(t, s, "CVE-1", 1, 3)
+}
+
+// TestSweep_ForceLiftsTheGuardForNamedAdaptersOnly: a refused whole-feed sweep
+// stays refused run after run, since its stale rows stay in the denominator;
+// SweepForce lets one adapter's through, says so on its line, and leaves the
+// guard on every other adapter and the nothing-seen refusal in place.
+func TestSweep_ForceLiftsTheGuardForNamedAdaptersOnly(t *testing.T) {
+	logs := captureLogs(t)
+	s := newFaultStore()
+	seed(t, s, "forced", "CVE-1", 1, 2, 3, 4, 5)
+	seed(t, s, "guarded", "CVE-2", 1, 2, 3, 4, 5)
+	seed(t, s, "forced", "CVE-GONE", 1)
+	seed(t, s, "forced", "CVE-3", 1)
+	seed(t, s, "silent", "CVE-4", 1)
+	opts := Options{SweepMaxFraction: 0.2, SweepForce: []string{"forced", "silent"}}
+	forced := fake("forced", source.SyncResult{Complete: true, LiveCVEs: []string{"CVE-1"}}, emitting(st("CVE-1", 1)))
+	guarded := fake("guarded", source.SyncResult{Complete: true}, emitting(st("CVE-2", 1)))
+	silent := fake("silent", source.SyncResult{Complete: true}, emitting())
+	if err := Run(context.Background(), []source.Adapter{forced, guarded, silent}, nil, s, opts); err != nil {
+		t.Fatal(err)
+	}
+	wantRows(t, s, "CVE-1", 1)
+	wantRows(t, s, "CVE-2", 1, 2, 3, 4, 5)
+	wantRows(t, s, "CVE-GONE")
+	wantRows(t, s, "CVE-3")
+	wantRows(t, s, "CVE-4", 1)
+	var forcedLine, guardedLine, silentLine string
+	for _, l := range logLines(logs, "sweep") {
+		switch {
+		case strings.Contains(l, "adapter=forced "):
+			forcedLine = l
+		case strings.Contains(l, "adapter=guarded "):
+			guardedLine = l
+		case strings.Contains(l, "adapter=silent "):
+			silentLine = l
+		}
+	}
+	if !strings.Contains(forcedLine, "forced=true") || !strings.Contains(forcedLine, "deleted=6") {
+		t.Errorf("forced sweep line = %q; want forced=true deleted=6", forcedLine)
+	}
+	if strings.Contains(guardedLine, "forced") || !strings.Contains(guardedLine, "refused=") {
+		t.Errorf("guarded sweep line = %q; want a refusal, not forced", guardedLine)
+	}
+	if !strings.Contains(silentLine, `refused="nothing seen"`) {
+		t.Errorf("silent sweep line = %q; want the nothing-seen refusal", silentLine)
+	}
+	oneLine(t, logs, "withdraw", "adapter=forced", "forced=true")
+}
+
+// TestWithdraw_RefreshedDocumentsAreLive: a document this run fetched and
+// stored is live even when the vendor's index.txt, which lags changes.csv,
+// does not list it yet; withdrawing it would delete what the run just wrote.
+func TestWithdraw_RefreshedDocumentsAreLive(t *testing.T) {
+	logs := captureLogs(t)
+	s := dbtest.New()
+	seed(t, s, "fake", "CVE-1", 1)
+	seed(t, s, "fake", "CVE-GONE", 1)
+	fa := fake("fake", source.SyncResult{RefreshedCVEs: []string{"CVE-NEW"}, LiveCVEs: []string{"CVE-1"}}, emitting(st("CVE-NEW", 1)))
+	if err := runAdapter(context.Background(), fa, s, Options{SweepMaxFraction: 1}); err != nil {
+		t.Fatal(err)
+	}
+	wantRows(t, s, "CVE-NEW", 1)
+	wantRows(t, s, "CVE-1", 1)
+	wantRows(t, s, "CVE-GONE")
+	oneLine(t, logs, "withdraw", "live=2", "held_cves=3", "withdrawn_cves=1", "deleted=1")
+
+	// An empty manifest is still refused, whatever the run refreshed.
+	logs.Reset()
+	fa = fake("fake", source.SyncResult{RefreshedCVEs: []string{"CVE-NEW"}, LiveCVEs: []string{}}, emitting(st("CVE-NEW", 1)))
+	if err := runAdapter(context.Background(), fa, s, Options{SweepMaxFraction: 1}); err != nil {
+		t.Fatal(err)
+	}
+	wantRows(t, s, "CVE-1", 1)
+	oneLine(t, logs, "withdraw", `refused="empty manifest"`)
+}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"time"
 
@@ -28,16 +29,38 @@ type Options struct {
 	// no seen keys; >= 1 lifts the fraction guards (a whole-feed sweep that saw
 	// nothing is still refused).
 	SweepMaxFraction float64
+	// SweepForce names adapters whose fraction guards are lifted, as
+	// SweepMaxFraction 1 would lift them, on every run with these options. A
+	// refused whole-feed sweep stays refused, because the rows it would delete
+	// still count in the next run's denominator; this is the way out for one
+	// adapter without lifting the guard for all of them. The nothing-seen and
+	// empty-manifest refusals stay, and SweepMaxFraction 0 still disables
+	// removal.
+	SweepForce []string
 }
 
 // Run drives every adapter then every alias fetcher sequentially. A failure
 // in any one is logged and skipped so the others still run.
 //
-// Run first ends every sweep session a previous run left open, including one
-// a crashed process orphaned. That assumes one ingest writer per database at
-// a time — the server's scheduler or the `ingest` subcommand, never both —
-// which already holds, since two writers would double-ingest.
+// Run holds the database's ingest lock throughout, and returns an error
+// wrapping db.ErrIngestRunning, having touched nothing, when another ingest
+// holds it: nothing else stops a second process (a CronJob running the ingest
+// subcommand beside a server's scheduler) from replacing this run's seen keys
+// mid-sync, after which its sweep would delete live rows. Only once the lock
+// is held does Run end every sweep session a previous run left open,
+// including one a crashed process orphaned.
 func Run(ctx context.Context, adapters []source.Adapter, fetchers []aliases.Fetcher, database db.Store, opts Options) error {
+	if err := database.TryLockIngest(); err != nil {
+		if errors.Is(err, db.ErrIngestRunning) {
+			slog.Warn("ingest not started: another ingest is running on this database")
+		}
+		return fmt.Errorf("ingest: %w", err)
+	}
+	defer func() {
+		if err := database.UnlockIngest(); err != nil {
+			slog.Warn("ingest unlock failed", "error", err)
+		}
+	}()
 	if err := database.ResetSweeps(); err != nil {
 		slog.Warn("reset sweeps failed", "error", err)
 	}
@@ -120,6 +143,11 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 	// skip holds the first reason this run removes nothing.
 	var skip string
 	sessionOpen := false
+	maxFraction := opts.SweepMaxFraction
+	forced := maxFraction > 0 && maxFraction < 1 && slices.Contains(opts.SweepForce, a.ID())
+	if forced {
+		maxFraction = 1
+	}
 	if !(opts.SweepMaxFraction > 0) {
 		skip = "disabled"
 	} else if err := database.StartSweep(a.ID()); err != nil {
@@ -139,7 +167,7 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 	defer func() {
 		if sessionOpen {
 			endSession()
-			logSweep(a.ID(), "cves:0", db.SweepResult{Seen: seen}, "aborted", nil)
+			logSweep(a.ID(), "cves:0", db.SweepResult{Seen: seen}, "aborted", false, nil)
 		}
 	}()
 
@@ -219,7 +247,7 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 		if sessionOpen {
 			endSession()
 		}
-		logSweep(a.ID(), "cves:0", db.SweepResult{Seen: seen}, skip, nil)
+		logSweep(a.ID(), "cves:0", db.SweepResult{Seen: seen}, skip, false, nil)
 		return fmt.Errorf("sync: %w", err)
 	}
 	if limitHit || err != nil {
@@ -234,7 +262,7 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 		if sessionOpen {
 			endSession()
 		}
-		logSweep(a.ID(), sweepScopeLabel(res), db.SweepResult{Seen: seen}, skip, nil)
+		logSweep(a.ID(), sweepScopeLabel(res), db.SweepResult{Seen: seen}, skip, false, nil)
 		return fmt.Errorf("flush: %w", err)
 	}
 
@@ -255,7 +283,7 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 		if sessionOpen {
 			endSession()
 		}
-		logSweep(a.ID(), scopeLabel, db.SweepResult{Seen: seen}, skip, nil)
+		logSweep(a.ID(), scopeLabel, db.SweepResult{Seen: seen}, skip, false, nil)
 	default:
 		var scope db.SweepScope
 		switch {
@@ -265,16 +293,24 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 			scope.CVEs = res.RefreshedCVEs
 		}
 		if scope.All || len(scope.CVEs) > 0 {
-			sweepRes, err := database.FinishSweep(a.ID(), scope, opts.SweepMaxFraction)
+			sweepRes, err := database.FinishSweep(a.ID(), scope, maxFraction)
 			sessionOpen = false
-			logSweep(a.ID(), scopeLabel, sweepRes, "", err)
+			// Only a whole-feed sweep has a fraction guard to lift.
+			logSweep(a.ID(), scopeLabel, sweepRes, "", forced && scope.All, err)
 		} else {
 			endSession()
-			logSweep(a.ID(), scopeLabel, db.SweepResult{Seen: seen}, "incomplete", nil)
+			logSweep(a.ID(), scopeLabel, db.SweepResult{Seen: seen}, "incomplete", false, nil)
 		}
 		if res.LiveCVEs != nil {
-			wres, err := database.Withdraw(a.ID(), res.LiveCVEs, opts.SweepMaxFraction)
-			logWithdraw(a.ID(), wres, err)
+			// A document this run fetched is live even when the manifest, read
+			// at another moment, does not list it yet. An empty manifest stays
+			// empty, so Withdraw still refuses it.
+			live := res.LiveCVEs
+			if len(live) > 0 {
+				live = append(slices.Clone(live), res.RefreshedCVEs...)
+			}
+			wres, err := database.Withdraw(a.ID(), live, maxFraction)
+			logWithdraw(a.ID(), wres, forced, err)
 		}
 	}
 
@@ -309,9 +345,13 @@ func sweepScopeLabel(res source.SyncResult) string {
 
 // logSweep writes the one `sweep` line an adapter run logs: INFO, WARN on a
 // refusal (deleted=0; the would-have-deleted count is in the reason), ERROR
-// when FinishSweep failed.
-func logSweep(adapterID, scope string, res db.SweepResult, skipped string, err error) {
+// when FinishSweep failed. forced=true says Options.SweepForce lifted the
+// fraction guard.
+func logSweep(adapterID, scope string, res db.SweepResult, skipped string, forced bool, err error) {
 	attrs := []any{"adapter", adapterID, "scope", scope, "seen", res.Seen, "owned", res.Owned}
+	if forced {
+		attrs = append(attrs, "forced", true)
+	}
 	switch {
 	case skipped != "":
 		slog.Info("sweep", append(attrs, "deleted", res.Deleted, "skipped", skipped)...)
@@ -324,9 +364,13 @@ func logSweep(adapterID, scope string, res db.SweepResult, skipped string, err e
 	}
 }
 
-// logWithdraw writes the `withdraw` line, with the same levels as logSweep.
-func logWithdraw(adapterID string, res db.WithdrawResult, err error) {
+// logWithdraw writes the `withdraw` line, with the same levels and forced
+// field as logSweep.
+func logWithdraw(adapterID string, res db.WithdrawResult, forced bool, err error) {
 	attrs := []any{"adapter", adapterID, "live", res.Live, "held_cves", res.HeldCVEs, "withdrawn_cves", res.WithdrawnCVEs}
+	if forced {
+		attrs = append(attrs, "forced", true)
+	}
 	switch {
 	case err != nil:
 		slog.Error("withdraw", append(attrs, "deleted", res.Deleted, "error", err)...)

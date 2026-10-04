@@ -5,9 +5,11 @@ import (
 	"fmt"
 )
 
-// migration is one forward-only schema step. The schema is greenfield: v1
-// declares the current shape directly, so there's no historical table-rebuild
-// dance. schema_version tracks applied steps so future migrations append cleanly.
+// migration is one forward-only schema step; schema_version records the last
+// one applied. v1 declares the original shape and each later step alters the
+// table in place, so every step is written to be correct on the table its
+// predecessor left, populated or not, although deploys start from an empty
+// database.
 type migration struct {
 	version    int
 	statements []string
@@ -65,12 +67,12 @@ var migrations = []migration{
 		// the slow maintain-during-bulk-load path.
 	}},
 	{version: 2, statements: []string{
-		// adapter_id: the adapter that last inserted or changed the row (an
-		// unchanged re-insert keeps the owner); never part of the primary key.
-		// It is what lets a sweep delete only one adapter's rows. Rows that
-		// exist before this migration keep a NULL owner until their verdict
-		// changes, so they are never removed — acceptable only because every
-		// deploy starts from a fresh database.
+		// adapter_id: the adapter that last wrote the row; never part of the
+		// primary key. It is what lets a sweep delete only one adapter's rows.
+		// Rows that exist before this migration keep a NULL owner until an
+		// adapter writes them again, so a row no adapter emits any more is
+		// never removed — acceptable only because every deploy starts from a
+		// fresh database.
 		`ALTER TABLE statements ADD COLUMN IF NOT EXISTS adapter_id TEXT`,
 		// (adapter_id, cve) rather than (adapter_id): Withdraw's held-CVE set
 		// and the CVE-scoped sweep read the index instead of scanning every row
@@ -96,7 +98,8 @@ var migrations = []migration{
 		// stream. It is '' until a feed records it, and is keyed now so that
 		// doing so never changes the primary key of a populated table. Deploys
 		// start from a fresh database; the UPDATEs exist so this is also
-		// correct on a populated one.
+		// correct on a populated one, where it rewrites every row (migrate runs
+		// without a deadline for that reason).
 		//
 		// The covering index INCLUDEs version, which is dropped below;
 		// EnsureCoveringIndex rebuilds it with the new columns.
@@ -115,7 +118,9 @@ var migrations = []migration{
 }
 
 // migrate ensures schema_version exists, then applies each pending migration in
-// its own transaction, bumping schema_version as the last statement.
+// its own transaction, bumping schema_version as the last statement. Open
+// passes a context with no deadline: a step that rewrites a populated table
+// takes as long as the table does.
 func (p *DB) migrate(ctx context.Context) error {
 	if _, err := p.pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
 		return fmt.Errorf("create schema_version: %w", err)

@@ -1,6 +1,7 @@
 package dbtest
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -246,24 +247,72 @@ func TestWithdraw(t *testing.T) {
 	}
 }
 
-// An unchanged re-insert keeps the owner and a changed one moves it, as in
-// Postgres. And QueryStatements never returns the owner, as Postgres never
-// selects it.
+// The row belongs to whoever wrote it last, as in Postgres: an identical
+// re-insert by another adapter moves the owner and nothing else, so the first
+// writer's sweep no longer deletes a row the second still publishes, and the
+// second's does. A NULL-owned row is adopted by the adapter that writes it.
+// And QueryStatements never returns the owner, as Postgres never selects it.
 func TestOwner(t *testing.T) {
-	s := seed(t, row("a", "CVE-1", "p1", ""))
-	if err := s.BulkInsert([]db.Statement{row("b", "CVE-1", "p1", "")}); err != nil {
+	s := seed(t, row("a", "CVE-1", "p1", ""), row("a", "CVE-2", "p1", ""))
+	same := row("b", "CVE-1", "p1", "")
+	same.Updated = "2026-12-31T00:00:00Z"
+	if err := s.BulkInsert([]db.Statement{same}); err != nil {
+		t.Fatalf("BulkInsert: %v", err)
+	}
+	wantRows(t, s, "b|CVE-1|p1|", "a|CVE-2|p1|")
+	got, err := s.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-1"}})
+	if err != nil || len(got) != 1 || got[0].AdapterID != "" || got[0].Updated != "2026-06-01T00:00:00Z" {
+		t.Fatalf("QueryStatements = %+v, %v; want one row with no owner and its first updated", got, err)
+	}
+
+	// a no longer emits CVE-1 p1: its sweep leaves b's row alone.
+	open(t, s, "a", key("CVE-2", "p1", ""))
+	if res, err := s.FinishSweep("a", db.SweepScope{All: true}, 1); err != nil || res != (db.SweepResult{Seen: 1, Owned: 1}) {
+		t.Fatalf("a's sweep = %+v, %v; want nothing deleted", res, err)
+	}
+	wantRows(t, s, "b|CVE-1|p1|", "a|CVE-2|p1|")
+	// b no longer emits it either: b's sweep deletes it.
+	open(t, s, "b", key("CVE-9", "p1", ""))
+	if res, err := s.FinishSweep("b", db.SweepScope{All: true}, 1); err != nil || res != (db.SweepResult{Seen: 1, Owned: 1, Deleted: 1}) {
+		t.Fatalf("b's sweep = %+v, %v; want its row deleted", res, err)
+	}
+	wantRows(t, s, "a|CVE-2|p1|")
+
+	s = seed(t, row("", "CVE-1", "p1", ""))
+	if err := s.BulkInsert([]db.Statement{row("a", "CVE-1", "p1", "")}); err != nil {
 		t.Fatalf("BulkInsert: %v", err)
 	}
 	wantRows(t, s, "a|CVE-1|p1|")
-	changed := row("b", "CVE-1", "p1", "")
-	changed.Versions = []string{"1.0"}
-	if err := s.BulkInsert([]db.Statement{changed}); err != nil {
-		t.Fatalf("BulkInsert: %v", err)
+}
+
+// QueryStatements returns the caller's own version lists: changing one never
+// changes the store.
+func TestQueryReturnsCopies(t *testing.T) {
+	r := row("a", "CVE-1", "p1", "")
+	r.Versions = []string{"1.0", "2.0"}
+	s := seed(t, r)
+	got, _ := s.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-1"}})
+	got[0].Versions[0] = "9.9"
+	got, _ = s.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-1"}})
+	if !slices.Equal(got[0].Versions, []string{"1.0", "2.0"}) {
+		t.Fatalf("stored versions = %q after the caller changed its copy", got[0].Versions)
 	}
-	wantRows(t, s, "b|CVE-1|p1|")
-	got, err := s.QueryStatements(db.QueryFilters{CVEs: []string{"CVE-1"}})
-	if err != nil || len(got) != 1 || got[0].AdapterID != "" {
-		t.Fatalf("QueryStatements = %+v, %v; want one row with no owner", got, err)
+}
+
+// The ingest lock is held by one caller at a time.
+func TestIngestLock(t *testing.T) {
+	s := New()
+	if err := s.TryLockIngest(); err != nil {
+		t.Fatalf("TryLockIngest: %v", err)
+	}
+	if err := s.TryLockIngest(); !errors.Is(err, db.ErrIngestRunning) {
+		t.Fatalf("second TryLockIngest = %v, want ErrIngestRunning", err)
+	}
+	if err := s.UnlockIngest(); err != nil {
+		t.Fatalf("UnlockIngest: %v", err)
+	}
+	if err := s.TryLockIngest(); err != nil {
+		t.Fatalf("TryLockIngest after unlock: %v", err)
 	}
 }
 
@@ -300,7 +349,8 @@ func TestVersionsGuard(t *testing.T) {
 	if len(got) != 1 || !slices.Equal(got[0].Versions, []string{"1.0", "2.0"}) {
 		t.Fatalf("stored = %+v; want versions [1.0 2.0]", got)
 	}
-	// The same list in another order, with a newer timestamp: not a change.
+	// The same list in another order, with a newer timestamp and another
+	// writer: not a change, so only the owner moves.
 	same := row("b", "CVE-1", "p1", "")
 	same.Versions = []string{"2.0", "1.0"}
 	same.Updated = "2026-12-31T00:00:00Z"
@@ -311,7 +361,7 @@ func TestVersionsGuard(t *testing.T) {
 	if got[0].Updated != "2026-06-01T00:00:00Z" {
 		t.Fatalf("unchanged list rewrote the row: %+v", got[0])
 	}
-	wantRows(t, s, "a|CVE-1|p1|")
+	wantRows(t, s, "b|CVE-1|p1|")
 	// A changed list is written, in place.
 	grown := same
 	grown.Versions = []string{"3.0", "1.0", "2.0"}

@@ -2,18 +2,24 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/getreeldev/reel-vex/pkg/db"
+	"github.com/getreeldev/reel-vex/pkg/ingest"
+	"github.com/getreeldev/reel-vex/pkg/source"
 )
 
 // TestPG exercises the Postgres backend against a real server. It is skipped
@@ -440,6 +446,18 @@ func testSweeps(t *testing.T, d *DB, dsn string) {
 		return db.StatementKey{CVE: cve, ProductID: product, Scope: scope, Status: "not_affected"}
 	}
 
+	// versionsOf reads one row's stored version list and updated.
+	versionsOf := func(t *testing.T, cve, product, status string) ([]string, string) {
+		t.Helper()
+		var vs []string
+		var updated string
+		if err := d.pool.QueryRow(ctx, `SELECT versions, updated FROM statements WHERE cve = $1 AND product_id = $2 AND status = $3`,
+			cve, product, status).Scan(&vs, &updated); err != nil {
+			t.Fatalf("versions: %v", err)
+		}
+		return vs, updated
+	}
+
 	t.Run("sweep all deletes only the owner's unseen rows", func(t *testing.T) {
 		reset(t)
 		insert(t,
@@ -500,6 +518,67 @@ func testSweeps(t *testing.T, d *DB, dsn string) {
 		if n := len(remaining(t)); n != 5 {
 			t.Fatalf("%d rows after the sweep, want 5", n)
 		}
+	})
+
+	t.Run("a refused sweep writes nothing to statements", func(t *testing.T) {
+		reset(t)
+		var rows []db.Statement
+		var keys []db.StatementKey
+		for i := 0; i < 10; i++ {
+			p := fmt.Sprintf("p%d", i)
+			rows = append(rows, sweepRow("a", "CVE-1", p, ""))
+			if i < 5 {
+				keys = append(keys, key("CVE-1", p, ""))
+			}
+		}
+		insert(t, rows...)
+		// A deleted tuple keeps its deleter's xid in xmax even after the
+		// delete rolls back, so a nonzero xmax is a delete that was performed.
+		touched := func(t *testing.T) int {
+			t.Helper()
+			var n int
+			if err := d.pool.QueryRow(ctx, `SELECT count(*) FROM statements WHERE xmax::text <> '0'`).Scan(&n); err != nil {
+				t.Fatalf("xmax: %v", err)
+			}
+			return n
+		}
+		if n := touched(t); n != 0 {
+			t.Fatalf("%d rows carry an xmax before the sweep; the check proves nothing", n)
+		}
+		start(t, "a", keys...)
+		res, err := d.FinishSweep("a", db.SweepScope{All: true}, 0.3)
+		if err != nil || !res.Refused || res.Deleted != 5 {
+			t.Fatalf("FinishSweep = %+v, %v; want a refusal of 5", res, err)
+		}
+		if n := touched(t); n != 0 {
+			t.Fatalf("a refused sweep deleted %d rows before rolling back", n)
+		}
+	})
+
+	t.Run("a sweep deletes in batches, completely", func(t *testing.T) {
+		reset(t)
+		defer func(n int) { sweepBatchRows = n }(sweepBatchRows)
+		// One page of the gone set per batch; 1,500 ctids span several pages.
+		sweepBatchRows = 1
+		var rows []db.Statement
+		var keys []db.StatementKey
+		want := []string{"b|CVE-0|q|", "-|CVE-0|r|"}
+		for i := 0; i < 3000; i++ {
+			cve, p := fmt.Sprintf("CVE-%d", i/10), fmt.Sprintf("p%d", i%10)
+			rows = append(rows, sweepRow("a", cve, p, ""))
+			if i%2 == 0 {
+				keys = append(keys, key(cve, p, ""))
+				want = append(want, "a|"+cve+"|"+p+"|")
+			}
+		}
+		rows = append(rows, sweepRow("b", "CVE-0", "q", ""), sweepRow("", "CVE-0", "r", ""))
+		insert(t, rows...)
+		start(t, "a", keys...)
+		res, err := d.FinishSweep("a", db.SweepScope{All: true}, 1)
+		if err != nil || res != (db.SweepResult{Seen: 1500, Owned: 3000, Deleted: 1500}) {
+			t.Fatalf("FinishSweep = %+v, %v", res, err)
+		}
+		wantRows(t, want...)
 	})
 
 	t.Run("nothing seen and disabled refuse", func(t *testing.T) {
@@ -571,22 +650,51 @@ func testSweeps(t *testing.T, d *DB, dsn string) {
 		wantRows(t, "a|CVE-1|p1|")
 	})
 
-	t.Run("an unchanged re-insert keeps the owner, a changed one moves it", func(t *testing.T) {
+	t.Run("the row belongs to whoever wrote it last", func(t *testing.T) {
 		reset(t)
-		insert(t, sweepRow("a", "CVE-1", "p1", ""))
-		insert(t, sweepRow("b", "CVE-1", "p1", ""))
-		if o := owner(t, "CVE-1", "p1"); o == nil || *o != "a" {
-			t.Fatalf("owner after unchanged re-insert = %v, want a", o)
+		insert(t, sweepRow("a", "CVE-1", "p1", ""), sweepRow("a", "CVE-2", "p1", ""))
+		// b emits the same key (an Alpine package in both main and community):
+		// the owner moves and nothing else, not even updated.
+		same := sweepRow("b", "CVE-1", "p1", "")
+		same.Updated = "2026-12-31T00:00:00Z"
+		insert(t, same)
+		if o := owner(t, "CVE-1", "p1"); o == nil || *o != "b" {
+			t.Fatalf("owner after b's identical write = %v, want b", o)
 		}
-		changed := sweepRow("b", "CVE-1", "p1", "")
+		if _, updated := versionsOf(t, "CVE-1", "p1", "not_affected"); updated != "2026-06-01T00:00:00Z" {
+			t.Fatalf("an owner-only move rewrote updated: %s", updated)
+		}
+		// a no longer emits it: a's sweep leaves b's row alone.
+		start(t, "a", key("CVE-2", "p1", ""))
+		res, err := d.FinishSweep("a", db.SweepScope{All: true}, 1)
+		if err != nil || res != (db.SweepResult{Seen: 1, Owned: 1}) {
+			t.Fatalf("a's sweep = %+v, %v; want nothing deleted", res, err)
+		}
+		wantRows(t, "b|CVE-1|p1|", "a|CVE-2|p1|")
+		// b no longer emits it either: b's sweep deletes it.
+		start(t, "b", key("CVE-9", "p1", ""))
+		res, err = d.FinishSweep("b", db.SweepScope{All: true}, 1)
+		if err != nil || res != (db.SweepResult{Seen: 1, Owned: 1, Deleted: 1}) {
+			t.Fatalf("b's sweep = %+v, %v; want its row deleted", res, err)
+		}
+		wantRows(t, "a|CVE-2|p1|")
+
+		// A changed row moves too, with its content.
+		changed := sweepRow("b", "CVE-2", "p1", "")
 		changed.Versions = []string{"1.0"}
 		insert(t, changed)
-		if o := owner(t, "CVE-1", "p1"); o == nil || *o != "b" {
+		if o := owner(t, "CVE-2", "p1"); o == nil || *o != "b" {
 			t.Fatalf("owner after changed re-insert = %v, want b", o)
 		}
-		insert(t, sweepRow("", "CVE-2", "p1", ""))
-		if o := owner(t, "CVE-2", "p1"); o != nil {
+		// No owner is stored as NULL, and a NULL-owned row is adopted by the
+		// adapter that writes it.
+		insert(t, sweepRow("", "CVE-3", "p1", ""))
+		if o := owner(t, "CVE-3", "p1"); o != nil {
 			t.Fatalf("empty AdapterID stored as %q, want NULL", *o)
+		}
+		insert(t, sweepRow("a", "CVE-3", "p1", ""))
+		if o := owner(t, "CVE-3", "p1"); o == nil || *o != "a" {
+			t.Fatalf("owner of a NULL-owned row after a's write = %v, want a", o)
 		}
 	})
 
@@ -747,14 +855,36 @@ func testSweeps(t *testing.T, d *DB, dsn string) {
 		if _, err := d.pool.Exec(ctx, `ANALYZE `+pgx.Identifier{seenTable("a")}.Sanitize()); err != nil {
 			t.Fatalf("analyze seen: %v", err)
 		}
-		all := explain(t, d, sweepSQL(seenTable("a"), false), "a")
+		tx, err := d.pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, `CREATE TEMP TABLE _sweep_gone (row_ctid tid NOT NULL) ON COMMIT DROP`); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		all := explainTx(t, tx, sweepGoneSQL(seenTable("a"), false), "a")
 		t.Logf("whole-adapter sweep plan:\n%s", all)
 		assertSweepPlan(t, all)
-		scoped := explain(t, d, sweepSQL(seenTable("a"), true), "a", []string{"CVE-1", "CVE-2"})
+		scoped := explainTx(t, tx, sweepGoneSQL(seenTable("a"), true), "a", []string{"CVE-1", "CVE-2"})
 		t.Logf("scoped sweep plan:\n%s", scoped)
 		// Which index serves `cve = ANY` (this one or idx_statements_cve) is a
 		// cost coin-flip at test scale, so only the shape is asserted.
 		assertSweepPlan(t, scoped)
+		// One batch reads its pages of the gone set, not the whole of it, and
+		// deletes by ctid.
+		if _, err := tx.Exec(ctx, `INSERT INTO _sweep_gone SELECT ctid FROM statements WHERE adapter_id = 'a' LIMIT 300`); err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		del := explainTx(t, tx, sweepDeleteSQL, "a", pgtype.TID{Valid: true}, pgtype.TID{BlockNumber: 1, Valid: true})
+		t.Logf("sweep batch plan:\n%s", del)
+		if !strings.Contains(del, "Tid Scan on statements d") || !strings.Contains(del, "Tid Range Scan on _sweep_gone g") ||
+			strings.Contains(del, "SubPlan") || strings.Contains(del, "Seq Scan") {
+			t.Errorf("sweep batch plan: want a Tid Range Scan of the gone set and a Tid Scan delete:\n%s", del)
+		}
+		if err := tx.Rollback(ctx); err != nil {
+			t.Fatalf("rollback: %v", err)
+		}
 
 		res, err := d.FinishSweep("a", db.SweepScope{All: true}, 0.2)
 		if err != nil || res != (db.SweepResult{Seen: 2700, Owned: 3000, Deleted: 300}) {
@@ -792,18 +922,6 @@ func testSweeps(t *testing.T, d *DB, dsn string) {
 		}
 	})
 
-	// versionsOf reads one row's stored version list and updated.
-	versionsOf := func(t *testing.T, cve, product, status string) ([]string, string) {
-		t.Helper()
-		var vs []string
-		var updated string
-		if err := d.pool.QueryRow(ctx, `SELECT versions, updated FROM statements WHERE cve = $1 AND product_id = $2 AND status = $3`,
-			cve, product, status).Scan(&vs, &updated); err != nil {
-			t.Fatalf("versions: %v", err)
-		}
-		return vs, updated
-	}
-
 	t.Run("one row per verdict: two statuses of one key coexist", func(t *testing.T) {
 		reset(t)
 		affected := sweepRow("a", "CVE-1", "p1", "")
@@ -840,7 +958,7 @@ func testSweeps(t *testing.T, d *DB, dsn string) {
 			t.Fatalf("stored versions = %q, want [1.0 2.0]", vs)
 		}
 		// The same list in another order with a newer timestamp and another
-		// writer: not a change, so nothing is rewritten.
+		// writer: not a change, so only the owner moves.
 		same := sweepRow("b", "CVE-1", "p1", "")
 		same.Versions = []string{"2.0", "1.0"}
 		same.Updated = "2026-12-31T00:00:00Z"
@@ -848,8 +966,8 @@ func testSweeps(t *testing.T, d *DB, dsn string) {
 		if _, updated := versionsOf(t, "CVE-1", "p1", "not_affected"); updated != "2026-06-01T00:00:00Z" {
 			t.Fatalf("an unchanged list rewrote the row: updated = %s", updated)
 		}
-		if o := owner(t, "CVE-1", "p1"); o == nil || *o != "a" {
-			t.Fatalf("owner after an unchanged list = %v, want a", o)
+		if o := owner(t, "CVE-1", "p1"); o == nil || *o != "b" {
+			t.Fatalf("owner after an unchanged list = %v, want b", o)
 		}
 		// A changed list is written in place: still one row.
 		grown := same
@@ -1032,6 +1150,133 @@ func testSweeps(t *testing.T, d *DB, dsn string) {
 			t.Fatalf("QueryStatements on v3 = %+v, %v; want the fixed and the affected row", got2, err)
 		}
 	})
+
+	t.Run("one ingest at a time per database", func(t *testing.T) {
+		testIngestLock(t, d, dsn)
+	})
+}
+
+// openInSchema opens a store whose tables live in schema, migrated, as a
+// second process on the same database would.
+func openInSchema(t *testing.T, dsn, schema string) *DB {
+	t.Helper()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	s := &DB{pool: pool, queryTimeout: defaultQueryTimeout}
+	t.Cleanup(func() { s.Close() })
+	if err := s.migrate(t.Context()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return s
+}
+
+// blockingAdapter emits one statement; when entered is set it first signals
+// it and waits for release, holding its Run inside Sync.
+type blockingAdapter struct {
+	id               string
+	entered          chan struct{}
+	release          chan struct{}
+	discovers, syncs atomic.Int32
+}
+
+func (b *blockingAdapter) ID() string           { return b.id }
+func (b *blockingAdapter) Vendor() string       { return "acme" }
+func (b *blockingAdapter) Name() string         { return "Acme" }
+func (b *blockingAdapter) SourceFormat() string { return "oval" }
+func (b *blockingAdapter) Discover(context.Context) (*source.FeedInfo, error) {
+	b.discovers.Add(1)
+	return &source.FeedInfo{FeedURL: "https://example/feed"}, nil
+}
+func (b *blockingAdapter) Sync(_ context.Context, _ time.Time, emit func(source.Statement) error) (source.SyncResult, error) {
+	b.syncs.Add(1)
+	if b.entered != nil {
+		close(b.entered)
+		<-b.release
+	}
+	err := emit(source.Statement{CVE: "CVE-1", ProductID: "p-" + b.id, BaseID: "p-" + b.id, Status: "fixed",
+		Updated: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)})
+	return source.SyncResult{Complete: true}, err
+}
+
+// testIngestLock: two stores on one database stand for two processes. The
+// ingest lock is the database's, so the second cannot take it while the first
+// holds it — in the store, and so in ingest.Run, which must not start (no
+// ResetSweeps, no adapter) while another Run is inside a sync.
+func testIngestLock(t *testing.T, d *DB, dsn string) {
+	const schema = "reel_vex_lock_test"
+	ctx := t.Context()
+	if _, err := d.pool.Exec(ctx, `DROP SCHEMA IF EXISTS `+schema+` CASCADE; CREATE SCHEMA `+schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	defer d.pool.Exec(context.Background(), `DROP SCHEMA IF EXISTS `+schema+` CASCADE`)
+	one, two := openInSchema(t, dsn, schema), openInSchema(t, dsn, schema)
+
+	if err := one.TryLockIngest(); err != nil {
+		t.Fatalf("TryLockIngest: %v", err)
+	}
+	if err := two.TryLockIngest(); !errors.Is(err, db.ErrIngestRunning) {
+		t.Fatalf("another process's TryLockIngest = %v, want ErrIngestRunning", err)
+	}
+	if err := one.TryLockIngest(); !errors.Is(err, db.ErrIngestRunning) {
+		t.Fatalf("the holder's second TryLockIngest = %v, want ErrIngestRunning", err)
+	}
+	if err := one.UnlockIngest(); err != nil {
+		t.Fatalf("UnlockIngest: %v", err)
+	}
+	if err := two.TryLockIngest(); err != nil {
+		t.Fatalf("TryLockIngest after the holder released it: %v", err)
+	}
+	// A holder that goes away releases it with its session.
+	if err := two.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := one.TryLockIngest(); err != nil {
+		t.Fatalf("TryLockIngest after the holder closed: %v", err)
+	}
+	if err := one.UnlockIngest(); err != nil {
+		t.Fatalf("UnlockIngest: %v", err)
+	}
+
+	three := openInSchema(t, dsn, schema)
+	first := &blockingAdapter{id: "first", entered: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		done <- ingest.Run(context.Background(), []source.Adapter{first}, nil, one, ingest.Options{SweepMaxFraction: 0.5})
+	}()
+	select {
+	case <-first.entered:
+	case err := <-done:
+		t.Fatalf("the first Run ended before its sync: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the first Run never reached its sync")
+	}
+	second := &blockingAdapter{id: "second"}
+	err := ingest.Run(context.Background(), []source.Adapter{second}, nil, three, ingest.Options{SweepMaxFraction: 0.5})
+	close(first.release)
+	if !errors.Is(err, db.ErrIngestRunning) {
+		t.Errorf("a Run beside a running one = %v, want ErrIngestRunning", err)
+	}
+	if n := second.discovers.Load() + second.syncs.Load(); n != 0 {
+		t.Errorf("the refused Run called its adapter %d times", n)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("the first Run: %v", err)
+	}
+	var n int
+	if err := one.pool.QueryRow(ctx, `SELECT count(*) FROM statements WHERE adapter_id = 'first'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("the first Run stored %d rows, %v; want 1", n, err)
+	}
+	// Once the first Run has finished the lock is free again.
+	if err := ingest.Run(context.Background(), []source.Adapter{second}, nil, three, ingest.Options{SweepMaxFraction: 0.5}); err != nil {
+		t.Fatalf("a Run after the first finished: %v", err)
+	}
 }
 
 // scanNodes is a plan's access path: its scan nodes, in order, without costs.
@@ -1081,9 +1326,9 @@ func collectPlan(t *testing.T, rows pgx.Rows) string {
 // ownedScan matches a scan of the sweep's owned CTE source, `statements s`.
 var ownedScan = regexp.MustCompile(`(Seq Scan|Index Scan using \S+|Index Only Scan using \S+|Bitmap Heap Scan) on statements s\b`)
 
-// assertSweepPlan checks the shape sweepSQL was written for: the unseen rows
-// found by an anti join (not a SubPlan, which cannot spill), the owned rows
-// read once, and the delete done by ctid.
+// assertSweepPlan checks the shape sweepGoneSQL was written for: the unseen
+// rows found by an anti join (not a SubPlan, which cannot spill), the owned
+// rows read once, and their ctids written to the gone set.
 func assertSweepPlan(t *testing.T, plan string) {
 	t.Helper()
 	if !strings.Contains(plan, "Anti Join") {
@@ -1095,8 +1340,8 @@ func assertSweepPlan(t *testing.T, plan string) {
 	if n := len(ownedScan.FindAllString(plan, -1)); n != 1 {
 		t.Errorf("sweep plan scans statements s %d times, want 1:\n%s", n, plan)
 	}
-	if !strings.Contains(plan, "Tid Scan on statements d") {
-		t.Errorf("sweep plan does not delete by Tid Scan:\n%s", plan)
+	if !strings.Contains(plan, "Insert on _sweep_gone") || strings.Contains(plan, "Delete on") {
+		t.Errorf("sweep plan does not only record the gone set:\n%s", plan)
 	}
 }
 

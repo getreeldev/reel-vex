@@ -4,7 +4,8 @@
 //   - IN-lists bind as `= ANY($n::text[])` — pgx binds a Go slice directly, so
 //     there's no expanded `?,?,…` placeholder list to build.
 //   - The upsert skip-test uses `IS DISTINCT FROM` (Postgres' null-safe
-//     comparison) so a NULL↔value change on a nullable column still counts.
+//     comparison): adapter_id is nullable, so a NULL↔value change of owner
+//     still counts.
 //   - `updated` is a TEXT column holding RFC3339 strings; the query layer
 //     compares it lexicographically, which equals chronological order because
 //     ingest always stores UTC (see pkg/ingest).
@@ -16,6 +17,8 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,13 +53,20 @@ type DB struct {
 	// Open sweep sessions: adapter id -> keys recorded so far (see sweep.go).
 	sweepMu   sync.Mutex
 	sweepSeen map[string]int64
+
+	// ingestConn is the pooled connection holding the ingest lock, nil when
+	// this process does not hold it (see TryLockIngest).
+	ingestMu   sync.Mutex
+	ingestConn *pgxpool.Conn
 }
 
 // Compile-time assertion that *DB satisfies the persistence contract.
 var _ db.Store = (*DB)(nil)
 
 // Open connects to Postgres (dsn is a libpq/pgx URL or keyword string),
-// applies migrations, and returns a ready Store.
+// applies migrations, and returns a ready Store. Connecting is bounded by 30 s;
+// the migrations are not, because one that rewrites a populated table runs
+// for as long as the table takes.
 func Open(dsn string) (*DB, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -64,16 +74,22 @@ func Open(dsn string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("connect postgres: %w", err)
+	}
 	d := &DB{pool: pool, queryTimeout: defaultQueryTimeout}
-	if err := d.migrate(ctx); err != nil {
+	if err := d.migrate(context.Background()); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return d, nil
 }
 
-// Close releases the connection pool.
+// Close releases the connection pool. A held ingest lock is released first:
+// the pool's Close waits for every acquired connection to come back.
 func (p *DB) Close() error {
+	p.UnlockIngest()
 	p.pool.Close()
 	return nil
 }
@@ -81,6 +97,71 @@ func (p *DB) Close() error {
 // Ping checks the pool can reach the database.
 func (p *DB) Ping(ctx context.Context) error {
 	return p.pool.Ping(ctx)
+}
+
+// ingestLockKey is the advisory-lock key of the ingest lock: the first 8 bytes
+// of sha256 of a fixed string, so it cannot collide with a small key some
+// other tool sharing the database might pick.
+var ingestLockKey = func() int64 {
+	sum := sha256.Sum256([]byte("reel-vex ingest"))
+	return int64(binary.BigEndian.Uint64(sum[:8]))
+}()
+
+// TryLockIngest takes a session-level advisory lock on one pooled connection
+// and keeps that connection out of the pool until UnlockIngest. A session lock
+// outlives transactions, so the run's own transactions on other connections
+// never release it, and it ends with the session, so a crashed process cannot
+// leave it behind. Session locks are re-entrant, which is why a second call in
+// this process is refused here rather than by Postgres.
+func (p *DB) TryLockIngest() error {
+	p.ingestMu.Lock()
+	defer p.ingestMu.Unlock()
+	if p.ingestConn != nil {
+		return db.ErrIngestRunning
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("ingest lock: %w", err)
+	}
+	var ok bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, ingestLockKey).Scan(&ok); err != nil {
+		// Whether the lock was taken is unknown: closing the session drops it.
+		conn.Hijack().Close(context.Background())
+		return fmt.Errorf("ingest lock: %w", err)
+	}
+	if !ok {
+		conn.Release()
+		return db.ErrIngestRunning
+	}
+	p.ingestConn = conn
+	return nil
+}
+
+// UnlockIngest releases the ingest lock and returns its connection to the
+// pool. When the unlock cannot be confirmed the connection is closed instead,
+// which ends the session and the lock with it.
+func (p *DB) UnlockIngest() error {
+	p.ingestMu.Lock()
+	defer p.ingestMu.Unlock()
+	conn := p.ingestConn
+	if conn == nil {
+		return nil
+	}
+	p.ingestConn = nil
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var ok bool
+	if err := conn.QueryRow(ctx, `SELECT pg_advisory_unlock($1)`, ingestLockKey).Scan(&ok); err != nil || !ok {
+		conn.Hijack().Close(context.Background())
+		if err == nil {
+			err = errors.New("lock was not held")
+		}
+		return fmt.Errorf("ingest unlock: %w", err)
+	}
+	conn.Release()
+	return nil
 }
 
 // SetQueryTimeout overrides the per-query ceiling. d <= 0 is ignored.
@@ -151,16 +232,29 @@ func (p *DB) LastIngestAt() (time.Time, error) {
 	return t, nil
 }
 
+// contentChanged is the upsert's change-test on content, which alone moves
+// `updated`.
+const contentChanged = `(statements.versions     IS DISTINCT FROM excluded.versions
+		   OR statements.base_id      IS DISTINCT FROM excluded.base_id
+		   OR statements.id_type      IS DISTINCT FROM excluded.id_type
+		   OR statements.version_kind IS DISTINCT FROM excluded.version_kind)`
+
 // BulkInsert applies the conditional upsert in one transaction. A row is keyed
 // by its stream and verdict (stream, status and justification are in the
-// primary key), so a changed verdict is a new row; an existing row is rewritten only when its
-// version list, base_id, id_type or version_kind changed (IS DISTINCT FROM is
-// null-safe). Versions are normalised first (db.NormalizeVersions), so a list
-// that differs only in order or repeats is not a change. `updated` is
-// intentionally not part of the change-test so a timestamp-only republish is a
-// true no-op. adapter_id is deliberately not in the change-test either: it
-// moves to the writer only when the row changed, so an unchanged re-insert
-// keeps its owner instead of rewriting every row whose owner differs.
+// primary key), so a changed verdict is a new row; an existing row's content
+// is rewritten only when its version list, base_id, id_type or version_kind
+// changed (IS DISTINCT FROM is null-safe). Versions are normalised first
+// (db.NormalizeVersions), so a list that differs only in order or repeats is
+// not a change. `updated` is intentionally not part of the change-test so a timestamp-only republish is a
+// true no-op for the same writer. A row whose owner differs from the writer's
+// is rewritten too, moving adapter_id and nothing else (`updated` keeps its
+// value unless the content changed): two adapters can emit the same key — an
+// Alpine package that moved between the main and community repositories —
+// and when the first writer stops emitting it, its sweep must not delete a
+// row the other still publishes. The row belongs to whoever wrote it last.
+// That includes a NULL owner: a row nobody owned is adopted by the adapter
+// that emits it, which may then sweep it like any row it writes; and a write
+// with no owner leaves the row ownerless, which only ever keeps it.
 //
 // At ingest scale per-row INSERTs are far too slow (one network round-trip
 // each). Instead the batch is bulk-loaded into a temp table via COPY (binary,
@@ -221,12 +315,10 @@ func (p *DB) BulkInsert(stmts []db.Statement) error {
 			base_id = excluded.base_id,
 			id_type = excluded.id_type,
 			version_kind = excluded.version_kind,
-			updated = excluded.updated,
+			updated = CASE WHEN `+contentChanged+` THEN excluded.updated ELSE statements.updated END,
 			adapter_id = excluded.adapter_id
-		WHERE statements.versions     IS DISTINCT FROM excluded.versions
-		   OR statements.base_id      IS DISTINCT FROM excluded.base_id
-		   OR statements.id_type      IS DISTINCT FROM excluded.id_type
-		   OR statements.version_kind IS DISTINCT FROM excluded.version_kind`); err != nil {
+		WHERE `+contentChanged+`
+		   OR statements.adapter_id   IS DISTINCT FROM excluded.adapter_id`); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

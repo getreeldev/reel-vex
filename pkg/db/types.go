@@ -16,6 +16,10 @@ import (
 // until the proxy gave up. Callers should surface "try again shortly" instead.
 var ErrStatsWarming = errors.New("stats cache warming")
 
+// ErrIngestRunning is returned by TryLockIngest when another ingest holds the
+// database's ingest lock.
+var ErrIngestRunning = errors.New("another ingest is running")
+
 // Statement is a VEX assertion stored in the database.
 type Statement struct {
 	Vendor        string
@@ -43,16 +47,18 @@ type Statement struct {
 	// Scope restricts a statement to one product context (an OpenVEX product
 	// @id — e.g. a container image). Empty for every package-level feed; set
 	// only for subcomponent-scoped sources (Rancher VEX). Part of the primary
-	// key from schema v4 so the same package+CVE can carry different verdicts
-	// under different products without colliding. Gated at query time —
+	// key, so the same package+CVE can carry different verdicts under
+	// different products without colliding. Gated at query time —
 	// QueryStatements only returns scoped rows when QueryFilters.Scopes names
 	// a match.
 	Scope string
-	// AdapterID is the adapter that last inserted or changed the row (an
-	// unchanged re-insert keeps the owner). Never part of the primary key, and
-	// never returned by QueryStatements: it exists so a sweep or a withdrawal
-	// can delete only the rows one adapter is responsible for. Empty is stored
-	// as NULL, and a NULL-owned row is never swept.
+	// AdapterID is the adapter that last wrote the row: a re-insert by another
+	// adapter moves the owner even when nothing else changed, because two
+	// adapters can emit the same key and the row must stay with one that
+	// still emits it. Never part of the primary key, and never returned by
+	// QueryStatements: it exists so a sweep or a withdrawal can delete only
+	// the rows one adapter is responsible for. Empty is stored as NULL, and a
+	// NULL-owned row is never swept.
 	AdapterID string
 	// Notes is transient conversion provenance (e.g. "converted_from=cyclonedx-vex;
 	// original_justification=...; fidelity=lossy") for user-uploaded VEX that was

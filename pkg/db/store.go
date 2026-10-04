@@ -17,6 +17,16 @@ type Store interface {
 	BulkInsert(stmts []Statement) error
 	BulkUpsertAliases(aliases []Alias) error
 
+	// TryLockIngest takes the database's ingest lock, which ingest.Run holds
+	// for a whole run so that two ingests on one database — two processes, or
+	// the server's scheduler and the ingest subcommand — never interleave: one
+	// run's ResetSweeps or StartSweep would replace the other's seen keys
+	// mid-sync, and its sweep would then delete live rows. It returns
+	// ErrIngestRunning, holding nothing, when the lock is held, including by
+	// this process. UnlockIngest releases it; not holding it is not an error.
+	TryLockIngest() error
+	UnlockIngest() error
+
 	// Removal: what a sync no longer emits. Every method taking adapterID
 	// errors on an empty one, and none touches a row with no owner or another
 	// adapter's row.

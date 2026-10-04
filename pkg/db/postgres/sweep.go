@@ -10,28 +10,36 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/getreeldev/reel-vex/pkg/db"
 )
 
 // Removal. A sync records every key it emits into a per-adapter seen table;
 // FinishSweep then deletes the adapter's rows that are not in it, and Withdraw
-// deletes the adapter's rows of CVEs absent from the vendor's manifest. Sizes
-// from the production-scale measurement: ~192M owned rows, ~2% stale, a sweep
-// takes ~20-40 min, spills ~40 GB of temp files and fills a ~23 GB seen table.
-// That table had three columns (cve, product_id, scope); it now also carries
-// stream, status and justification, so the ~23 GB is a lower bound until
-// re-measured.
+// deletes the adapter's rows of CVEs absent from the vendor's manifest. On the
+// full Ubuntu OpenVEX feed (~196M owned rows) a sweep needed ~84-116 GB of
+// transient disk above the database's steady size and took 85 minutes.
 
-// sweepTimeout bounds one FinishSweep or Withdraw. The store methods take no
-// context, so a shutdown cannot cancel a running sweep; this bound and its
-// server-side twin are what end it.
-const sweepTimeout = 2 * time.Hour
+// sweepTimeout bounds one FinishSweep or Withdraw, all of its statements. The
+// store methods take no context, so a shutdown cannot cancel a running sweep;
+// this bound and the per-statement server-side one below are what end it.
+// Above the statement bound because a sweep that deletes many rows runs its
+// anti join and then one DELETE per batch.
+const sweepTimeout = 6 * time.Hour
 
-// sweepTimeoutSQL is sweepTimeout as a Postgres literal, applied with SET LOCAL
-// so a sweep orphaned by a crashed process dies instead of running on holding
-// locks. Kept next to sweepTimeout so the two can't drift.
-const sweepTimeoutSQL = `'2h'`
+// sweepStatementTimeoutSQL bounds each statement of a sweep or withdrawal,
+// applied with SET LOCAL so one orphaned by a crashed process dies instead of
+// running on holding locks. The longest statement is a whole-feed sweep's anti
+// join, 85 minutes on the full Ubuntu feed.
+const sweepStatementTimeoutSQL = `'2h'`
+
+// sweepBatchRows bounds the ctids one DELETE takes. ARRAY() fails above 2^26
+// elements ("invalid memory alloc request size 1073741824"), which a sweep of
+// Ubuntu OpenVEX's ~196M owned rows reaches when about a third of them go;
+// batches keep every array far below it. A variable so a test can force many
+// batches.
+var sweepBatchRows = 5_000_000
 
 // sweepDDLTimeout bounds creating and dropping seen tables. Each DROP also
 // sets lock_timeout '30s': an orphaned sweep still running server-side holds a
@@ -98,9 +106,9 @@ func (p *DB) endSweep(adapterID string) error {
 // StartSweep opens a sweep session: any leftover seen table for the adapter is
 // dropped and an empty one created. The seen table is UNLOGGED rather than
 // TEMP because RecordSeen batches arrive on different pool connections. It has
-// no index and no key, and autovacuum is off for it: it is insert-only and up
-// to ~23 GB, and since PG13 inserts alone trigger autovacuum and auto-analyze,
-// which would vacuum it repeatedly during a sweep.
+// no index and no key, and autovacuum is off for it: it is insert-only and
+// tens of GB at Ubuntu scale, and since PG13 inserts alone trigger autovacuum
+// and auto-analyze, which would vacuum it repeatedly during a sweep.
 func (p *DB) StartSweep(adapterID string) error {
 	if adapterID == "" {
 		return errors.New("start sweep: empty adapter id")
@@ -159,17 +167,18 @@ func (p *DB) RecordSeen(adapterID string, keys []db.StatementKey) error {
 	return nil
 }
 
-// sweepSQL counts the adapter's rows within scope and deletes the unseen ones
-// in one pass over them. Verified with EXPLAIN (TestPG asserts it): NOT EXISTS
-// must stay in a WHERE clause, where it plans as an anti join that can spill —
-// in a SELECT list it plans as a SubPlan that cannot, or scans seen once per
-// owned row, which never finishes at scale. Deleting via `DELETE … USING owned`
-// plans a second full scan; `ctid = ANY(ARRAY(…))` plans a Tid Scan. The key
-// is (cve, product_id, scope, stream, status, justification) — the verdict
-// is part of a row's identity, so a row whose verdict changed is swept and its
-// successor kept — and every one of them is NOT NULL in both tables, so plain
-// equality is correct. $1 is the adapter id; scoped adds $2, the CVE list.
-func sweepSQL(seen string, scoped bool) string {
+// sweepGoneSQL counts the adapter's rows within scope and records the ctids of
+// the unseen ones in _sweep_gone, in one pass over them; nothing is deleted
+// yet, so the guard can refuse without having written to statements. Verified
+// with EXPLAIN (TestPG asserts it): NOT EXISTS must stay in a WHERE clause,
+// where it plans as an anti join that can spill — in a SELECT list it plans as
+// a SubPlan that cannot, or scans seen once per owned row, which never
+// finishes at scale. The key is (cve, product_id, scope, stream, status,
+// justification) — the verdict is part of a row's identity, so a row whose
+// verdict changed is swept and its successor kept — and every one of them is
+// NOT NULL in both tables, so plain equality is correct. $1 is the adapter id;
+// scoped adds $2, the CVE list.
+func sweepGoneSQL(seen string, scoped bool) string {
 	cveFilter := ""
 	if scoped {
 		cveFilter = ` AND s.cve = ANY($2::text[])`
@@ -179,27 +188,37 @@ func sweepSQL(seen string, scoped bool) string {
 			SELECT s.ctid AS row_ctid, s.cve, s.product_id, s.scope, s.stream, s.status, s.justification
 			FROM statements s WHERE s.adapter_id = $1` + cveFilter + `
 		), gone AS (
-			DELETE FROM statements d
-			WHERE d.adapter_id = $1
-			  AND d.ctid = ANY (ARRAY(
-				SELECT o.row_ctid FROM owned o
-				WHERE NOT EXISTS (SELECT 1 FROM ` + pgx.Identifier{seen}.Sanitize() + ` k
-					WHERE k.cve = o.cve AND k.product_id = o.product_id AND k.scope = o.scope
-					  AND k.stream = o.stream AND k.status = o.status AND k.justification = o.justification)))
+			INSERT INTO _sweep_gone
+			SELECT o.row_ctid FROM owned o
+			WHERE NOT EXISTS (SELECT 1 FROM ` + pgx.Identifier{seen}.Sanitize() + ` k
+				WHERE k.cve = o.cve AND k.product_id = o.product_id AND k.scope = o.scope
+				  AND k.stream = o.stream AND k.status = o.status AND k.justification = o.justification)
 			RETURNING 1
 		)
 		SELECT (SELECT count(*) FROM owned), (SELECT count(*) FROM gone)`
 }
 
+// sweepDeleteSQL deletes one batch: the rows whose ctids _sweep_gone holds on
+// its pages [$2, $3). The page range reads only those pages (a Tid Range
+// Scan), so the batches together read the gone set once, and the delete is a
+// Tid Scan, as `DELETE … USING` would plan a full scan. adapter_id is checked
+// again so a ctid can only ever delete the adapter's own row.
+const sweepDeleteSQL = `
+	DELETE FROM statements d
+	WHERE d.adapter_id = $1
+	  AND d.ctid = ANY (ARRAY(
+		SELECT g.row_ctid FROM _sweep_gone g
+		WHERE g.ctid >= $2::tid AND g.ctid < $3::tid))`
+
 // setSweepLocals applies the session settings a sweep or withdrawal runs
-// under, scoped to tx: enough work_mem for the anti join, the server-side
-// twin of sweepTimeout, a check that notices a vanished client within seconds
+// under, scoped to tx: enough work_mem for the anti join, the per-statement
+// server-side bound, a check that notices a vanished client within seconds
 // (PG 14+), and — only where the role may set it — a temp-file cap so an
 // oversized sweep fails cleanly (a managed database's role cannot).
 func setSweepLocals(ctx context.Context, tx pgx.Tx) error {
 	for _, q := range []string{
 		`SET LOCAL work_mem = '512MB'`,
-		`SET LOCAL statement_timeout = ` + sweepTimeoutSQL,
+		`SET LOCAL statement_timeout = ` + sweepStatementTimeoutSQL,
 		`SET LOCAL client_connection_check_interval = '10s'`,
 	} {
 		if _, err := tx.Exec(ctx, q); err != nil {
@@ -219,9 +238,9 @@ func setSweepLocals(ctx context.Context, tx pgx.Tx) error {
 }
 
 // FinishSweep deletes the adapter's unseen rows within scope in one
-// transaction and one statement, then drops the seen table — only after the
-// transaction has ended, because the ANALYZE inside it locks the seen table
-// and a DROP there would wait on itself.
+// transaction, then drops the seen table — only after the transaction has
+// ended, because the ANALYZE inside it locks the seen table and a DROP there
+// would wait on itself.
 func (p *DB) FinishSweep(adapterID string, scope db.SweepScope, maxFraction float64) (db.SweepResult, error) {
 	if adapterID == "" {
 		return db.SweepResult{}, errors.New("finish sweep: empty adapter id")
@@ -254,7 +273,11 @@ func (p *DB) finishSweep(adapterID string, seen int64, scope db.SweepScope, maxF
 
 	ctx, cancel := context.WithTimeout(context.Background(), sweepTimeout)
 	defer cancel()
-	tx, err := p.pool.Begin(ctx)
+	// Repeatable read gives every statement the snapshot the gone set was
+	// found in, as one statement had: no ctid it recorded can be reused by
+	// another row before the last batch, and a row changed concurrently fails
+	// the sweep instead of being deleted on stale evidence.
+	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return res, fmt.Errorf("finish sweep: %w", err)
 	}
@@ -268,31 +291,68 @@ func (p *DB) finishSweep(adapterID string, seen int64, scope db.SweepScope, maxF
 	if _, err := tx.Exec(ctx, `ANALYZE `+pgx.Identifier{seenName}.Sanitize()); err != nil {
 		return res, fmt.Errorf("finish sweep: analyze: %w", err)
 	}
+	// TEMP is fine here: one transaction, one connection. A temp table is
+	// written without WAL and outside shared buffers, so a refused sweep costs
+	// its pass over the owned rows and nothing written to statements.
+	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE _sweep_gone (row_ctid tid NOT NULL) ON COMMIT DROP`); err != nil {
+		return res, fmt.Errorf("finish sweep: %w", err)
+	}
 	args := []any{adapterID}
 	if !scope.All {
 		args = append(args, scope.CVEs)
 	}
-	var owned, deleted int64
-	if err := tx.QueryRow(ctx, sweepSQL(seenName, !scope.All), args...).Scan(&owned, &deleted); err != nil {
+	var owned, gone int64
+	if err := tx.QueryRow(ctx, sweepGoneSQL(seenName, !scope.All), args...).Scan(&owned, &gone); err != nil {
 		return res, fmt.Errorf("finish sweep: %w", err)
 	}
-	res.Owned, res.Deleted = owned, deleted
+	res.Owned, res.Deleted = owned, gone
 	// The guard's denominator is Owned, not Seen: adapters emit duplicate keys
 	// (Red Hat CSAF emitted 29M statements for 10.8M rows). A scoped sweep has
 	// no guard — a parsed document is authoritative and can drop to nothing.
-	if scope.All && maxFraction < 1 && float64(deleted) > maxFraction*float64(owned) {
+	if scope.All && maxFraction < 1 && float64(gone) > maxFraction*float64(owned) {
 		res.Refused = true
 		res.Reason = fmt.Sprintf("would delete %d of %d owned rows (%.2f%%), over the %.2f%% limit",
-			deleted, owned, 100*float64(deleted)/float64(owned), 100*maxFraction)
+			gone, owned, 100*float64(gone)/float64(owned), 100*maxFraction)
 		if err := tx.Rollback(ctx); err != nil {
 			return res, fmt.Errorf("finish sweep: rollback: %w", err)
 		}
 		return res, nil
 	}
+	if gone > 0 {
+		deleted, err := deleteGone(ctx, tx, adapterID)
+		if err != nil {
+			return res, fmt.Errorf("finish sweep: %w", err)
+		}
+		res.Deleted = deleted
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return res, fmt.Errorf("finish sweep: commit: %w", err)
 	}
 	return res, nil
+}
+
+// deleteGone deletes the rows _sweep_gone names, in batches of at most
+// sweepBatchRows. A batch is a range of the gone table's pages: no heap page
+// holds more than (block size - 24) / 28 tuples (Postgres'
+// MaxHeapTuplesPerPage), so that many pages per batch never exceed the bound.
+func deleteGone(ctx context.Context, tx pgx.Tx, adapterID string) (int64, error) {
+	var pages, blockSize int64
+	if err := tx.QueryRow(ctx, `SELECT pg_relation_size('_sweep_gone') / current_setting('block_size')::bigint,
+		current_setting('block_size')::bigint`).Scan(&pages, &blockSize); err != nil {
+		return 0, err
+	}
+	step := max(int64(sweepBatchRows)/((blockSize-24)/28), 1)
+	var deleted int64
+	for first := int64(0); first < pages; first += step {
+		from := pgtype.TID{BlockNumber: uint32(first), Valid: true}
+		to := pgtype.TID{BlockNumber: uint32(min(first+step, pages)), Valid: true}
+		tag, err := tx.Exec(ctx, sweepDeleteSQL, adapterID, from, to)
+		if err != nil {
+			return deleted, err
+		}
+		deleted += tag.RowsAffected()
+	}
+	return deleted, nil
 }
 
 // AbortSweep drops the adapter's seen table without deleting anything.
@@ -400,10 +460,10 @@ func dedupe(in []string) []string {
 }
 
 // ResetSweeps ends every open session and drops every seen table in the
-// current schema — including ones a crashed process left behind, each up to
-// ~23 GB. Each DROP runs behind a 30 s lock timeout (see sweepDDLTimeout); a
-// table that cannot be dropped is reported in the error, and the rest are
-// still dropped.
+// current schema — including ones a crashed process left behind, each tens of
+// GB at Ubuntu scale. Each DROP runs behind a 30 s lock timeout (see
+// sweepDDLTimeout); a table that cannot be dropped is reported in the error,
+// and the rest are still dropped.
 func (p *DB) ResetSweeps() error {
 	p.sweepMu.Lock()
 	p.sweepSeen = nil

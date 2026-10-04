@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"time"
 
@@ -77,6 +78,7 @@ func run() error {
 	maxStatementsItems := flag.Int("max-statements-items", 10000, "max items in the cves/products arrays on /v1/statements before a 400")
 	maxUserVEXStatements := flag.Int("max-user-vex-statements", 25000, "max flattened user-VEX statements per /v1/analyze request before a 400")
 	sweepMaxFraction := flag.Float64("sweep-max-fraction", 0.2, "after each adapter's sync, delete the rows it no longer emits, refusing when more than this fraction of its rows (or of its CVEs, for a withdrawal) would go; within [0,1]: 0 disables removal, 1 lifts the fraction guards")
+	sweepForce := flag.String("sweep-force", "", "comma-separated adapter ids whose removal fraction guards are lifted for every ingest this process runs — the way out of a refused whole-feed sweep, whose stale rows keep it refused, without lifting the guard for every adapter; the nothing-seen and empty-manifest refusals stay. Remove it once the sweep has run")
 	noScheduler := flag.Bool("no-scheduler", false, "serve without the in-process ingest scheduler — for read-only API replicas behind a load balancer; run ingest separately (e.g. a CronJob invoking the `ingest` subcommand)")
 	flag.Parse()
 	// !(x >= 0 && x <= 1) also refuses NaN.
@@ -105,9 +107,10 @@ func run() error {
 			maxUserVEXStatements: *maxUserVEXStatements,
 			noScheduler:          *noScheduler,
 			sweepMaxFraction:     *sweepMaxFraction,
+			sweepForce:           *sweepForce,
 		})
 	case "ingest":
-		return runIngest(*configPath, *dbPath, *limit, *sweepMaxFraction)
+		return runIngest(*configPath, *dbPath, *limit, *sweepMaxFraction, *sweepForce)
 	case "stats":
 		return runStats(*dbPath)
 	case "query":
@@ -139,8 +142,12 @@ func openStore(dbPath string) (db.Store, error) {
 	return postgres.Open(dbPath)
 }
 
-func runIngest(configPath, dbPath string, limit int, sweepMaxFraction float64) error {
+func runIngest(configPath, dbPath string, limit int, sweepMaxFraction float64, sweepForce string) error {
 	adapters, fetchers, err := loadPipeline(configPath)
+	if err != nil {
+		return err
+	}
+	force, err := parseSweepForce(sweepForce, adapters)
 	if err != nil {
 		return err
 	}
@@ -154,7 +161,24 @@ func runIngest(configPath, dbPath string, limit int, sweepMaxFraction float64) e
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	return ingest.Run(ctx, adapters, fetchers, database, ingest.Options{Limit: limit, SweepMaxFraction: sweepMaxFraction})
+	return ingest.Run(ctx, adapters, fetchers, database, ingest.Options{Limit: limit, SweepMaxFraction: sweepMaxFraction, SweepForce: force})
+}
+
+// parseSweepForce splits the -sweep-force list and refuses an id no configured
+// adapter has: a typo would otherwise leave the guard in place and the sweep
+// refused, with nothing said.
+func parseSweepForce(list string, adapters []source.Adapter) ([]string, error) {
+	var ids []string
+	for _, id := range strings.Split(list, ",") {
+		if id = strings.TrimSpace(id); id == "" {
+			continue
+		}
+		if !slices.ContainsFunc(adapters, func(a source.Adapter) bool { return a.ID() == id }) {
+			return nil, fmt.Errorf("-sweep-force: no configured adapter has id %q", id)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 // loadPipeline reads the YAML config at configPath and instantiates every
@@ -221,10 +245,15 @@ type serveOptions struct {
 	maxUserVEXStatements     int
 	noScheduler              bool
 	sweepMaxFraction         float64
+	sweepForce               string
 }
 
 func runServe(opts serveOptions) error {
 	adapters, fetchers, err := loadPipeline(opts.configPath)
+	if err != nil {
+		return err
+	}
+	force, err := parseSweepForce(opts.sweepForce, adapters)
 	if err != nil {
 		return err
 	}
@@ -240,7 +269,7 @@ func runServe(opts serveOptions) error {
 	defer stop()
 
 	ingestFn := func() error {
-		return ingest.Run(ctx, adapters, fetchers, database, ingest.Options{SweepMaxFraction: opts.sweepMaxFraction})
+		return ingest.Run(ctx, adapters, fetchers, database, ingest.Options{SweepMaxFraction: opts.sweepMaxFraction, SweepForce: force})
 	}
 	runner := api.NewIngestRunner(ingestFn, opts.ingestInterval, opts.adminToken)
 

@@ -5,11 +5,15 @@
 // TestPG; this fake exists only to keep the consumer tests fast and hermetic.
 //
 // "Faithful" means: same filter semantics (IN within a dimension, AND across
-// dimensions), the same scope gate and exact-list matching, the same
-// deterministic ORDER BY (base_id, cve, product_id, source_format, vendor,
-// scope, status, justification), and the same BulkInsert base/
-// source_format defaulting, version-list normalisation, primary key and
-// change guard as the real backends.
+// dimensions), the same scope gate and exact-list matching, the same ORDER BY
+// columns (base_id, cve, product_id, source_format, vendor, scope, status,
+// justification), and the same BulkInsert base/source_format defaulting,
+// version-list normalisation, primary key, change guard and owner rule as the
+// Postgres backend. One difference is deliberate: the fake orders strings
+// bytewise, while Postgres orders text by the database's collation, so the
+// two agree only under the C collation; under a linguistic one (en_US.UTF-8,
+// say) keys that differ in case or punctuation can come back in another
+// order. A test that depends on that order is testing the collation.
 package dbtest
 
 import (
@@ -41,6 +45,8 @@ type Store struct {
 	pingErr error
 	// sweeps holds the open sweep sessions, by adapter id.
 	sweeps map[string]*sweep
+	// ingestLocked is the ingest lock (see TryLockIngest).
+	ingestLocked bool
 }
 
 // sweep is one open sweep session: the distinct keys recorded, and the count
@@ -127,8 +133,8 @@ func samePK(a, b db.Statement) bool {
 		a.Status == b.Status && a.Justification == b.Justification
 }
 
-// changed is the upsert guard: an existing row is rewritten only when one of
-// these differs, so an unchanged re-insert keeps its `updated` and its owner.
+// changed is the upsert guard on content: an existing row is rewritten only
+// when one of these differs, so an unchanged re-insert keeps its `updated`.
 func changed(old, in db.Statement) bool {
 	return !slices.Equal(old.Versions, in.Versions) || old.BaseID != in.BaseID ||
 		old.IDType != in.IDType || old.VersionKind != in.VersionKind
@@ -136,7 +142,8 @@ func changed(old, in db.Statement) bool {
 
 // BulkInsert mirrors the Postgres upsert: rows sharing a primary key within
 // the batch resolve last-wins, then each is appended, or replaces the stored
-// row with its key only when the guard says it changed.
+// row with its key when the guard says it changed; otherwise only the owner
+// moves to the writer, as the row belongs to whoever wrote it last.
 func (s *Store) BulkInsert(stmts []db.Statement) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -153,6 +160,8 @@ func (s *Store) BulkInsert(stmts []db.Statement) error {
 		if i := slices.IndexFunc(s.stmts, func(st db.Statement) bool { return samePK(st, in) }); i >= 0 {
 			if changed(s.stmts[i], in) {
 				s.stmts[i] = in
+			} else {
+				s.stmts[i].AdapterID = in.AdapterID
 			}
 			continue
 		}
@@ -228,7 +237,8 @@ func (s *Store) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 		if !ok {
 			continue
 		}
-		st.AdapterID, st.Stream = "", "" // never selected by the Postgres query
+		st.AdapterID, st.Stream = "", ""        // never selected by the Postgres query
+		st.Versions = slices.Clone(st.Versions) // the caller's copy, not the store's
 		out = append(out, st)
 	}
 
@@ -535,6 +545,26 @@ func (s *Store) Withdraw(adapterID string, liveCVEs []string, maxFraction float6
 	}
 	s.stmts = keep
 	return res, nil
+}
+
+// TryLockIngest takes the ingest lock, an in-memory flag: the fake is one
+// process's store, so a second holder is a second Run on it.
+func (s *Store) TryLockIngest() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ingestLocked {
+		return db.ErrIngestRunning
+	}
+	s.ingestLocked = true
+	return nil
+}
+
+// UnlockIngest releases the ingest lock.
+func (s *Store) UnlockIngest() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ingestLocked = false
+	return nil
 }
 
 // ResetSweeps ends every open session.
