@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -97,6 +98,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	var sbom map[string]any
 	var sbomComponentIDs []string
 	var sbomCVEs []string
+	var sources map[string]string
 	if hasSBOM {
 		if err := json.Unmarshal(req.SBOM, &sbom); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid sbom JSON")
@@ -124,6 +126,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		for _, id := range vulns {
 			sbomCVEs = append(sbomCVEs, id)
 		}
+		sources = extractSourcePackages(sbom)
 	}
 
 	// Scope context for product-scoped statements (Rancher VEX): the SBOM's
@@ -135,7 +138,8 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Build the query inputs for the vendor lookup — union of SBOM-derived
 	//    and user-derived (cves, base_ids). SBOM components run through
-	//    the resolver so via_alias / via_cpe_prefix candidates surface.
+	//    the resolver so via_alias / via_cpe_prefix candidates surface, and
+	//    a Debian component's source package adds via_source_package ones.
 	//    User base_ids are used directly: user asserts on a specific
 	//    identifier and we don't want resolver expansion to widen the claim.
 	//    Architecture narrowing (opt-in) is derived from the SBOM's own
@@ -147,8 +151,9 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	archAllow := archAllowList(arches)
 	// Exact-list vendor rows are matched against each component's own
 	// version. User base_ids carry no pair, so a vendor row reached only
-	// through a user statement keeps its whole list.
-	respBaseToReason, respBaseToInputs, exactVersions := s.expandProducts(sbomComponentIDs)
+	// through a user statement keeps its whole list — and so is not withheld
+	// as a source package's (sourceBases) either.
+	respBaseToReason, respBaseToInputs, exactVersions, sourceBases := s.expandProducts(sbomComponentIDs, sources)
 	queryBases := make(map[string]bool, len(respBaseToReason))
 	for b := range respBaseToReason {
 		queryBases[b] = true
@@ -157,10 +162,13 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	for _, c := range sbomCVEs {
 		queryCVEs[c] = true
 	}
+	userBases := make(map[string]bool, len(userStmts))
 	for _, c := range userStmts {
 		queryCVEs[c.CVE] = true
 		queryBases[c.BaseID] = true
+		userBases[c.BaseID] = true
 	}
+	sourceBases = slices.DeleteFunc(sourceBases, func(b string) bool { return userBases[b] })
 
 	// Bound the CVE-mode query breadth (see analyzeMaxCVEs) — a cheap up-front
 	// reject before tying up a connection. The covering index (base_id, cve)
@@ -184,7 +192,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	var truncated bool
 	switch {
 	case synthesize && len(queryBases) > 0:
-		filters := db.QueryFilters{ProductBaseIDs: mapKeysSorted(queryBases), Scopes: scopes, ArchAllow: archAllow, ExactVersions: exactVersions}
+		filters := db.QueryFilters{ProductBaseIDs: mapKeysSorted(queryBases), Scopes: scopes, ArchAllow: archAllow, ExactVersions: exactVersions, SourceBases: sourceBases}
 		if s.statementsMax > 0 {
 			filters.Limit = s.statementsMax + 1 // +1 to detect truncation
 		}
@@ -211,6 +219,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			Scopes:         scopes,
 			ArchAllow:      archAllow,
 			ExactVersions:  exactVersions,
+			SourceBases:    sourceBases,
 		})
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
@@ -269,6 +278,11 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		for _, cid := range sbomComponentIDs {
 			for _, cand := range s.resolver.Expand(cid) {
 				addComp(cand.ID, cid)
+			}
+			if src := sources[cid]; src != "" {
+				for _, cand := range s.resolver.Expand(src) {
+					addComp(cand.ID, cid)
+				}
 			}
 		}
 		for _, c := range userStmts {
@@ -351,6 +365,129 @@ func extractComponents(sbom map[string]any) map[int][]string {
 		}
 	}
 	return result
+}
+
+// The CycloneDX properties in which Trivy records the source package a binary
+// package was built from. Trivy splits the source version as dpkg does:
+// SrcVersion is the upstream version, SrcRelease the Debian revision (absent
+// for a native package), and SrcEpoch is written only when non-zero.
+const (
+	propSrcName    = "aquasecurity:trivy:SrcName"
+	propSrcVersion = "aquasecurity:trivy:SrcVersion"
+	propSrcRelease = "aquasecurity:trivy:SrcRelease"
+	propSrcEpoch   = "aquasecurity:trivy:SrcEpoch"
+)
+
+// debianPURLPrefix is the ecosystem whose vendor rows name source packages.
+// Debian OVAL states every verdict per source package (zlib), while a scanner
+// lists the binaries built from it (zlib1g). Ubuntu's feeds name binaries —
+// the USN OVAL lists each binary package, and Canonical's OpenVEX lists
+// binaries and sources as exact builds — so pkg:deb/ubuntu gets no source
+// candidate.
+const debianPURLPrefix = "pkg:deb/debian/"
+
+// extractSourcePackages maps the purl of every Debian component built from a
+// source package of another name to that source package's purl (sourcePURL).
+func extractSourcePackages(sbom map[string]any) map[string]string {
+	out := make(map[string]string)
+	comps, _ := sbom["components"].([]any)
+	for _, raw := range comps {
+		comp, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		purl, _ := comp["purl"].(string)
+		if _, seen := out[purl]; seen {
+			continue
+		}
+		if src := sourcePURL(purl, componentProperties(comp)); src != "" {
+			out[purl] = src
+		}
+	}
+	return out
+}
+
+// componentProperties returns a CycloneDX component's properties by name.
+func componentProperties(comp map[string]any) map[string]string {
+	props, _ := comp["properties"].([]any)
+	out := make(map[string]string, len(props))
+	for _, raw := range props {
+		p, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := p["name"].(string)
+		value, _ := p["value"].(string)
+		if name != "" {
+			out[name] = value
+		}
+	}
+	return out
+}
+
+// sourcePURL returns the purl of the source package a Debian binary package
+// was built from, as the vendor rows name it — pkg:deb/debian/<SrcName> with
+// the binary's distro qualifier as written, and the source version
+// [SrcVersion-SrcRelease] with a non-zero SrcEpoch as the epoch qualifier, so
+// csaf.MatchVersion folds it in the way it folds a binary's:
+//
+//	pkg:deb/debian/zlib1g@1.2.13.dfsg-1?arch=amd64&distro=debian-12.15&epoch=1
+//	  SrcName zlib, SrcVersion 1.2.13.dfsg, SrcRelease 1, SrcEpoch 1
+//	→ pkg:deb/debian/zlib@1.2.13.dfsg-1?distro=debian-12.15&epoch=1
+//
+// "" when the component is not a Debian package, names no source package, or
+// names its own: a binary called like its source is already looked up as
+// itself.
+func sourcePURL(purl string, props map[string]string) string {
+	src := props[propSrcName]
+	if src == "" || !strings.HasPrefix(purl, debianPURLPrefix) {
+		return ""
+	}
+	versionless, _ := csaf.StripPURLVersion(purl)
+	name := versionless[len(debianPURLPrefix):]
+	if i := strings.IndexAny(name, "?#"); i >= 0 {
+		name = name[:i]
+	}
+	if csaf.UnescapeVersion(name) == src {
+		return ""
+	}
+	out := debianPURLPrefix + src
+	if v := props[propSrcVersion]; v != "" {
+		if r := props[propSrcRelease]; r != "" {
+			v += "-" + r
+		}
+		out += "@" + v
+	}
+	var quals []string
+	if d := purlQualifier(purl, "distro"); d != "" {
+		quals = append(quals, "distro="+d)
+	}
+	if e := props[propSrcEpoch]; strings.Trim(e, "0") != "" {
+		quals = append(quals, "epoch="+e)
+	}
+	if len(quals) > 0 {
+		out += "?" + strings.Join(quals, "&")
+	}
+	return out
+}
+
+// purlQualifier returns a PURL qualifier's value as written (not decoded), or
+// "" when the identifier does not carry it.
+func purlQualifier(purl, key string) string {
+	q := strings.IndexByte(purl, '?')
+	if q < 0 {
+		return ""
+	}
+	qualifiers := purl[q+1:]
+	if i := strings.IndexByte(qualifiers, '#'); i >= 0 {
+		qualifiers = qualifiers[:i]
+	}
+	for _, kv := range strings.Split(qualifiers, "&") {
+		if v, ok := strings.CutPrefix(kv, key+"="); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 // extractVulnerabilities returns a map of vulnerability index to CVE ID.

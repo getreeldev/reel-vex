@@ -319,6 +319,17 @@ func testExactLists(t *testing.T, d *DB) {
 			ExactVersions: []db.BaseVersion{pv(ubuntuBase("glibc"), "2.35-2")}, Limit: 1},
 			"ubuntu "+cve+" "+amd("glibc")+" fixed [2.35-2]")
 	})
+	t.Run("a source base admits no exact row", func(t *testing.T) {
+		query(t, db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{ubuntuBase("openssl")},
+			SourceBases: []string{ubuntuBase("openssl")}},
+			"debian "+cve+" pkg:deb/ubuntu/openssl?distro=ubuntu-22.04 fixed [0.9]")
+	})
+	t.Run("limit counts the rows a source base keeps", func(t *testing.T) {
+		// Without the filter in SQL, glibc's exact rows would fill the page.
+		query(t, db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{ubuntuBase("glibc"), ubuntuBase("openssl")},
+			SourceBases: []string{ubuntuBase("glibc")}, Limit: 1},
+			"ubuntu "+cve+" "+amd("openssl")+" fixed [1.10 1.11]")
+	})
 
 	t.Run("plan stays on the indexes the query used without it", func(t *testing.T) {
 		bases := []string{ubuntuBase("openssl"), ubuntuBase("glibc"), ubuntuBase("pkg3")}

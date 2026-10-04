@@ -28,7 +28,7 @@ The two SBOM-accepting endpoints serve distinct missions:
 
 Every VEX-statement-emitting endpoint (`/v1/statements`, `/v1/analyze` when `user_vex`-only) returns an [OpenVEX 0.2.0](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md) document. There is no opt-in flag and no alternative response format; OpenVEX is the single canonical interchange format reel-vex serves.
 
-Per-feed provenance (`source_format`) and per-statement match reasoning (`match_reason`) are carried in the spec-blessed `status_notes` free-text field. Format: `source_format=<csaf|oval|openvex>; match_reason=<direct|via_alias|via_cpe_prefix|from_user_vex>`, plus `scope=<product @id>` on product-scoped rows (Rancher VEX — see [Product-scoped statements](#product-scoped-statements)). User-sourced rows omit the `source_format=` prefix entirely (no upstream feed).
+Per-feed provenance (`source_format`) and per-statement match reasoning (`match_reason`) are carried in the spec-blessed `status_notes` free-text field. Format: `source_format=<csaf|oval|openvex>; match_reason=<direct|via_alias|via_cpe_prefix|via_source_package|from_user_vex>`, plus `scope=<product @id>` on product-scoped rows (Rancher VEX — see [Product-scoped statements](#product-scoped-statements)). User-sourced rows omit the `source_format=` prefix entirely (no upstream feed).
 
 Empty results return `204 No Content`. OpenVEX 0.2.0's schema requires `statements: minItems 1`, so a valid document with zero statements cannot be emitted; 204 signals "query valid, no statements" without violating the schema.
 
@@ -61,7 +61,7 @@ Consumers that iterate `products[]` need no change. Trivy 0.74.0 suppresses the 
 | Field | Type | Description |
 |---|---|---|
 | `vulnerability.name` | string | The CVE ID (e.g. `CVE-2021-44228`). |
-| `products[]` | array | Every product this statement applies to — deduped and ordered by identifier. Each carries an `@id` and/or an `identifiers` object with `purl`/`cpe22`/`cpe23`. When the request includes `products` (`/v1/statements`, `/v1/analyze`), the caller's identifier is echoed in base form — no version, and no qualifier but `distro`, which keeps the caller's encoding — so consumers like Trivy that match on PURL see the package they sent. Exact-list rows (Ubuntu OpenVEX, Rancher) are the exception: they are rendered as the vendor's own identifiers, one per matched version (see [Version selection](#version-selection)). Without `products`, each row's stored `product_id` is emitted. Iterate the whole array; do not assume `products[0]`. |
+| `products[]` | array | Every product this statement applies to — deduped and ordered by identifier. Each carries an `@id` and/or an `identifiers` object with `purl`/`cpe22`/`cpe23`. When the request includes `products` (`/v1/statements`, `/v1/analyze`), the caller's identifier is echoed in base form — no version, and no qualifier but `distro`, which keeps the caller's encoding — so consumers like Trivy that match on PURL see the package they sent; a Debian row keyed by the source package an SBOM component was built from is echoed under each such binary (see [Debian source packages](#debian-source-packages)). Exact-list rows (Ubuntu OpenVEX, Rancher) are the exception: they are rendered as the vendor's own identifiers, one per matched version (see [Version selection](#version-selection)). Without `products`, each row's stored `product_id` is emitted. Iterate the whole array; do not assume `products[0]`. |
 | `status` | string | One of the four VEX statuses (see [Status values](#status-values)). |
 | `status_notes` | string | Diagnostic free text: `source_format=<csaf|oval|openvex|secdb|updateinfo>; match_reason=<...>`, plus `scope=<product @id>` on product-scoped rows. Empty `source_format=` is omitted on user-sourced rows. |
 | `justification` | string | Required when `status==not_affected`. OpenVEX 0.2.0 enum (see [Justification values](#justification-values)). |
@@ -101,6 +101,7 @@ Carried in `status_notes` as `match_reason=<value>`. Identifies which rule cause
 | `direct` | The query's normalised base identifier equals the statement's stored base. | 2 |
 | `via_alias` | The query carried a `?repository_id=X` PURL qualifier, and reel-vex's alias table maps that repository ID to a CPE that matches the statement. | 3 |
 | `via_cpe_prefix` | The query is a CPE 2.2 URI, and its 5-part prefix (`part:vendor:product:version:update`) matches the statement — implements Red Hat's [SECDATA-1220](https://redhat.atlassian.net/browse/SECDATA-1220) contract. | 4 |
+| `via_source_package` | SBOM input only: a Debian component names the source package it was built from (Trivy's `aquasecurity:trivy:SrcName`), and the statement is keyed by that source package. See [Debian source packages](#debian-source-packages). | 5 |
 
 When the same candidate is produced by multiple rules, the strongest reason wins.
 
@@ -115,6 +116,20 @@ For PURL-keyed statements, qualifiers behave in two distinct modes:
 | `repository_id` | filter | Stripped from `base_id`; used by the alias resolver to expand to a CPE (`via_alias`). Required on Red Hat queries that need EUS / AUS / E4S coverage. |
 | `arch` | stripped by default | Not part of `base_id`, so matching ignores architecture by default. This is deliberate: the feeds disagree about whether to qualify at all (Canonical's OpenVEX qualifies ~100% of rows, Red Hat CSAF ~69%, every other source 0%), so matching exactly would turn most of the corpus into false negatives. Set [`strict_arch`](#architecture-matching-strict_arch) to narrow. |
 | `epoch` | stripped; folded into the version | Not part of identity. When a versioned query is matched against an exact-list row (Ubuntu OpenVEX, Rancher), a non-zero `epoch=N` is folded into the version as `N:<version>` unless the version already carries an epoch — Canonical writes epochs inline (`bind9@1:9.11.3+dfsg-1ubuntu1.17`), scanners write them as a qualifier. Ignored for every other row. |
+
+### Debian source packages
+
+Debian states every verdict per **source** package: its OVAL rows are keyed `pkg:deb/debian/zlib?distro=debian-12`. A scanner lists the **binary** packages built from it — `zlib1g`, or `libc6` and `libc-bin` from `glibc` — and Trivy applies a VEX statement only when its product is the binary's PURL, one per binary. So on the two SBOM paths (`/v1/analyze`'s `sbom` and `/v1/statements`' `sbom`), each `pkg:deb/debian` component whose `aquasecurity:trivy:SrcName` property differs from its own name is also looked up as its source package:
+
+- the candidate is `pkg:deb/debian/<SrcName>` with the component's `distro` qualifier, and goes through the resolver like any other (so Trivy's `debian-12.15` matches rows stored under `debian-12`);
+- its version is the source version Trivy splits over three properties — `SrcVersion`, `SrcRelease` (the Debian revision) and `SrcEpoch` (written only when non-zero) — read as `[<epoch>:]<version>[-<release>]`. No row is matched by it today: the only versions compared are exact lists', and a source candidate never matches an exact-list row (below);
+- a row reached this way is answered under the **binary**, exactly as a direct match is: echoed in base form in `products[]` on `/v1/statements` (two binaries of one source package both appear), and as the component's own analysis on `/v1/analyze`. Its `status_notes` say `match_reason=via_source_package`. A base the request also reaches directly keeps `match_reason=direct`;
+- a component named like its source package (`gzip` from `gzip`) adds nothing: it is already looked up as itself;
+- **exact-list rows (Ubuntu OpenVEX, Rancher) are never matched through a source package.** They name the builds the vendor listed for a package, and a source package's name and version say nothing about them — Canonical's OpenVEX lists `zlib1g` and the `zlib` source at their own versions, and an image's source name may equal another binary's name (`openssl` builds `libssl3` and `openssl`).
+
+Ubuntu gets no source candidate: the USN OVAL feed lists binary packages, and Canonical's OpenVEX lists binaries and sources as exact builds.
+
+**A plain `products` query has no source name to read**: name the source package's PURL (`pkg:deb/debian/zlib@…?distro=debian-12`) to get Debian's verdicts. A binary's PURL (`pkg:deb/debian/zlib1g@…`) matches no Debian row there.
 
 ### Product-scoped statements
 
@@ -160,6 +175,8 @@ Each `user_vex` document must carry `@context = "https://openvex.dev/ns/v0.2.0"`
 | Neither | `400` with `at least one of sbom or user_vex required`. |
 
 **BOM-Link refs.** On the annotated-CycloneDX path, every `vulnerability.affects[].ref` is rewritten from raw PURL to the CycloneDX 1.5 BOM-Link form `urn:cdx:<serialNumber>/<version>#<bom-ref>`, using the input SBOM's `serialNumber`, `version`, and per-component `bom-ref`. This is what `trivy sbom --vex` binds against; without it, Trivy logs `WARN [vex] Unable to parse BOM-Link` and silently drops statements. Best-effort: if the input SBOM is missing `serialNumber`, the component has no `bom-ref`, or the affected ref doesn't map to any component in the SBOM, the original `.ref` is left in place.
+
+**Debian source packages.** A Debian component is also looked up as the source package Trivy names in its `aquasecurity:trivy:SrcName` property, and a row keyed by the source package annotates the component (and, on the broad-mode path, lists it in `affects[]`). See [Debian source packages](#debian-source-packages).
 
 **Version selection.** Exact-list vendor rows (Ubuntu OpenVEX, Rancher) are matched against each component's own version, on both the annotate and the broad-mode paths, so a component gets only the verdict the vendor stated for its version. See [Version selection](#version-selection).
 
@@ -289,7 +306,7 @@ POST /v1/statements
 When `sbom` is present, reel-vex extracts:
 
 - **CVEs** from `.vulnerabilities[].id`,
-- **Products** from `.components[].purl` and `.components[].cpe`,
+- **Products** from `.components[].purl` and `.components[].cpe`, plus, for a Debian component, the source package named in its `aquasecurity:trivy:SrcName` property (see [Debian source packages](#debian-source-packages)),
 - **Scope** from `.metadata.component` (the SBOM's root subject) — opts in any product-scoped statements for that image/module (see [Product-scoped statements](#product-scoped-statements)).
 
 Both sets are unioned with any explicit `cves` / `products` the request also carries — so a caller can broaden the query with extras without losing what the SBOM declared. The SBOM body counts against the same body-size cap as `/v1/analyze` (default 10 MB, configurable on the operator side via `-sbom-max-mb`).
@@ -299,6 +316,8 @@ So the `trivy image --vex` flow needs no `jq` extraction step — the Trivy JSON
 ### Resolver behaviour with `products`
 
 When `products` is provided, each identifier runs through the resolver (`direct` / `via_alias` / `via_cpe_prefix` expansion) before matching, and the OpenVEX encoder echoes the user's input PURL, in base form, into each statement's `products[]` so Trivy can match it. Exact-list rows (Ubuntu OpenVEX, Rancher) are rendered under the vendor's per-version identifiers instead, and the version in each input selects which of their verdicts apply — see [Version selection](#version-selection).
+
+A `products` entry carries no source package name, so a Debian binary's PURL matches no Debian row: name the source package's PURL instead, or send the SBOM (see [Debian source packages](#debian-source-packages)).
 
 When `products` is absent, no expansion happens and the encoder emits each statement's stored `product_id` (which may be a CPE for OVAL-derived rows). Trivy will ignore CPE-only entries; `vexctl` and other consumers accept them.
 
@@ -348,6 +367,7 @@ The rules:
 - **A product without a version**, and a CVE-only query, get every listed version, each under its own verdict. A base named both with and without a version in one request keeps the whole list.
 - **An empty list** — the vendor stated the verdict with no version, as Rancher does for every deb, rpm and apk subcomponent — matches any version, and is rendered as the vendor's versionless identifier.
 - **Each row is judged against its own list**: a version listed under one CVE, architecture or scope never admits another row.
+- **A source package never admits an exact-list row** (see [Debian source packages](#debian-source-packages)).
 - **Versions compare after percent-decoding** with path rules (`%2B` is `+`, and a literal `+` is never read as a space), and a non-zero `epoch=N` qualifier is folded in as `N:<version>` (see [PURL identity rules](#purl-identity-rules)).
 - **An exact-list row is rendered as the vendor published it**: its versionless `product_id` with each matched version put back before the qualifiers, never the caller's base-form identifier, where two verdicts of one package would read as a contradiction. Grouping by assertion applies to the rendered products as usual.
 - **It runs in the query**, so `X-Reel-Statements`, `limit`, `X-Reel-Truncated` and `offset` count only the rows the caller keeps. `strict_arch` applies independently, as before.

@@ -390,6 +390,12 @@ func TestExactVersions(t *testing.T) {
 		{"limit", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{base("glibc")},
 			ExactVersions: []db.BaseVersion{pv(base("glibc"), "2.35-2")}, Limit: 1},
 			[]string{"ubuntu amd64 fixed [2.35-2]"}},
+		{"source base", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{base("openssl")},
+			SourceBases: []string{base("openssl")}},
+			[]string{"debian - fixed [0.9]"}},
+		{"source base limit", db.QueryFilters{CVEs: []string{cve}, ProductBaseIDs: []string{base("glibc"), base("openssl")},
+			SourceBases: []string{base("glibc")}, Limit: 1},
+			[]string{"ubuntu amd64 fixed [1.10 1.11]"}},
 	} {
 		got, err := s.QueryStatements(c.f)
 		if err != nil {

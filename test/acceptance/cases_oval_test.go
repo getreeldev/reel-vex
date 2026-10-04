@@ -132,6 +132,21 @@ func debianCases() []Case {
 			Status: 204, Rows: 0,
 		},
 		{
+			// A products list carries no source name: a binary package's own
+			// PURL finds nothing (the SBOM paths read Trivy's SrcName instead).
+			Name: "debian/negative/a binary package named on a products list", Endpoint: epStatements,
+			Body:   body{"cves": ss("CVE-2022-37434"), "products": ss(zlib1gDeb12)},
+			Status: 204, Rows: 0,
+		},
+		{
+			Name: "debian/purl/the source package named on a products list", Endpoint: epStatements,
+			Body:   body{"cves": ss("CVE-1999-0199"), "products": ss("pkg:deb/debian/glibc@2.36-9%2Bdeb12u14?arch=source&distro=debian-12.15")},
+			Status: 200, Rows: 1,
+			Want: []Stmt{{CVE: "CVE-1999-0199", Supplier: "debian", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "direct"),
+				Products: ss("pkg:deb/debian/glibc?distro=debian-12.15"),
+				Evidence: "DO definition oval:org.debian:def:302398480618719661759273474285073383836 (CVE-1999-0199 glibc): glibc DPKG is earlier than 2.2-1"}},
+		},
+		{
 			Name: "debian/negative/another vendor's namespace", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2016-5416"), "products": ss("pkg:deb/ubuntu/389-ds-base@2.3.1?arch=amd64&distro=debian-12")},
 			Status: 204, Rows: 0,

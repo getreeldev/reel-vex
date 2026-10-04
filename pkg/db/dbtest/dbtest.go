@@ -221,6 +221,9 @@ func (s *Store) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 		} else if st.Scope != "" && !contains(f.Scopes, st.Scope) {
 			continue
 		}
+		if st.VersionKind == db.VersionKindExact && contains(f.SourceBases, st.BaseID) {
+			continue
+		}
 		st, ok := exact.Apply(st)
 		if !ok {
 			continue

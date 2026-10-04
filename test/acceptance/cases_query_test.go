@@ -143,6 +143,36 @@ func withProperties(sbom map[string]any, p string, props map[string]string) map[
 	return sbom
 }
 
+// trivySource is the properties Trivy 0.74.0 writes on a deb component built
+// from a source package (debian:12: SrcVersion is the upstream version,
+// SrcRelease the Debian revision, SrcEpoch only when non-zero).
+func trivySource(name, version, release, epoch string) map[string]string {
+	p := map[string]string{"aquasecurity:trivy:PkgType": "debian", "aquasecurity:trivy:SrcName": name, "aquasecurity:trivy:SrcVersion": version}
+	if release != "" {
+		p["aquasecurity:trivy:SrcRelease"] = release
+	}
+	if epoch != "" {
+		p["aquasecurity:trivy:SrcEpoch"] = epoch
+	}
+	return p
+}
+
+// Components of Trivy 0.74.0's debian:12 SBOM (2026-10-04), verbatim.
+const (
+	debianImage = "pkg:oci/debian@sha256:f37a335e82bca302e955fa39f9dfe28f1be618f016f8a2b56318e5a5111afc26?arch=amd64&repository_url=index.docker.io%2Flibrary%2Fdebian"
+	zlib1gDeb12 = "pkg:deb/debian/zlib1g@1.2.13.dfsg-1?arch=amd64&distro=debian-12.15&epoch=1"
+	libc6       = "pkg:deb/debian/libc6@2.36-9%2Bdeb12u14?arch=amd64&distro=debian-12.15"
+	libcBin     = "pkg:deb/debian/libc-bin@2.36-9%2Bdeb12u14?arch=amd64&distro=debian-12.15"
+)
+
+// libcPair is a components-only SBOM of libc6 and libc-bin, both built from
+// glibc.
+func libcPair() map[string]any {
+	sbom := trivySBOM(debianImage, ss(libc6, libcBin))
+	sbom = withProperties(sbom, libc6, trivySource("glibc", "2.36", "9+deb12u14", ""))
+	return withProperties(sbom, libcBin, trivySource("glibc", "2.36", "9+deb12u14", ""))
+}
+
 // userVEX is one OpenVEX 0.2.0 document with one statement, as a user uploads it.
 func userVEX(cve, product, status, justification, supplier, ts string) map[string]any {
 	st := map[string]any{
@@ -381,13 +411,49 @@ func analyzeCases() []Case {
 		// packages with the source in aquasecurity:trivy:SrcName.
 		{
 			Name: "analyze/deb/a Debian binary package answers for its source package", Endpoint: epAnalyze,
-			KnownBug: "backlog: Debian OVAL is keyed by source package",
 			Body: body{"sbom": withProperties(trivySBOM(image, ss(zlib1gDebian), sbomVuln{"CVE-2022-37434", ss(zlib1gDebian)}), zlib1gDebian, map[string]string{
 				"aquasecurity:trivy:PkgType": "debian", "aquasecurity:trivy:SrcName": "zlib", "aquasecurity:trivy:SrcVersion": "1.2.13.dfsg",
 				"aquasecurity:trivy:SrcRelease": "1", "aquasecurity:trivy:SrcEpoch": "1"})},
 			Status: 200, Rows: 1,
 			Vulns: []Vuln{{ID: "CVE-2022-37434", State: "resolved", Affects: ss(link(zlib1gDebian)),
 				Evidence: "DO definition oval:org.debian:def:118596735315433746990801407057633161948 (CVE-2022-37434 zlib, the source package zlib1g is built from): evr less than 1:1.2.11.dfsg-4.1"}},
+		},
+		{
+			Name: "statements/sbom/a Debian binary package answers for its source package", Endpoint: epStatements,
+			Body: body{"sbom": withProperties(trivySBOM(debianImage, ss(zlib1gDeb12), sbomVuln{"CVE-2022-37434", ss(zlib1gDeb12)}),
+				zlib1gDeb12, trivySource("zlib", "1.2.13.dfsg", "1", "1"))},
+			Status: 200, Rows: 1,
+			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "debian", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "via_source_package"),
+				Products: ss("pkg:deb/debian/zlib1g?distro=debian-12.15"),
+				Evidence: "DO definition oval:org.debian:def:118596735315433746990801407057633161948 (CVE-2022-37434 zlib): zlib1g is built from zlib (Trivy 0.74.0 debian:12 SrcName); answered under the binary, the identifier Trivy applies VEX to"}},
+		},
+		{
+			Name: "statements/sbom/two binaries of one source package are each echoed", Endpoint: epStatements,
+			Body:   body{"sbom": libcPair()},
+			Status: 200, Rows: 1, Headers: map[string]string{"X-Reel-Mode": "broad"},
+			Want: []Stmt{{CVE: "CVE-1999-0199", Supplier: "debian", Status: "fixed", Timestamp: tsDay1File, Notes: notes("oval", "via_source_package"),
+				Products: ss("pkg:deb/debian/libc-bin?distro=debian-12.15", "pkg:deb/debian/libc6?distro=debian-12.15"),
+				Evidence: "DO definition oval:org.debian:def:302398480618719661759273474285073383836 (CVE-1999-0199 glibc): glibc DPKG is earlier than 2.2-1; libc6 and libc-bin are both built from glibc (Trivy 0.74.0 debian:12)"}},
+		},
+		{
+			Name: "analyze/deb/two binaries of one source package are each affected", Endpoint: epAnalyze,
+			Body:   body{"sbom": libcPair()},
+			Status: 200, Rows: 1,
+			Vulns: []Vuln{{ID: "CVE-1999-0199", State: "resolved", Affects: ss(link(libc6), link(libcBin)),
+				Evidence: "DO definition oval:org.debian:def:302398480618719661759273474285073383836 (CVE-1999-0199 glibc): glibc < 2.2-1, synthesised for each binary built from glibc"}},
+		},
+		{
+			// Ubuntu's feeds name binaries (the USN OVAL lists binary packages;
+			// Canonical's OpenVEX lists binaries and sources as exact builds), so
+			// a source name in an Ubuntu SBOM adds nothing: not the exact
+			// zlib@1:1.2.11.dfsg-2ubuntu9.2?arch=source row.
+			Name: "statements/sbom/exact: an Ubuntu source package admits nothing", Endpoint: epStatements,
+			Body: body{"sbom": withProperties(trivySBOM(image, ss(zlib1g), sbomVuln{"CVE-2022-37434", ss(zlib1g)}),
+				zlib1g, trivySource("zlib", "1.2.11.dfsg", "2ubuntu9.2", "1"))},
+			Status: 200, Rows: 7,
+			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "ubuntu", Status: "fixed", Timestamp: tsUV37434, Notes: notes("openvex", "direct"),
+				Products: archesAt("pkg:deb/ubuntu/zlib1g@1:1.2.11.dfsg-2ubuntu9.2", "ubuntu-22.04", "amd64", "arm64", "armhf", "i386", "ppc64el", "riscv64", "s390x"),
+				Evidence: "UV vex/cve/2022/CVE-2022-37434.json statements[0] fixed: zlib1g@1:1.2.11.dfsg-2ubuntu9.2 distro=jammy (7 arches); the same statement's zlib@1:1.2.11.dfsg-2ubuntu9.2?arch=source&distro=jammy is not returned"}},
 		},
 
 		// User VEX (docs/api.md, "User-VEX merge semantics").

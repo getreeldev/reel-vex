@@ -327,6 +327,11 @@ func statementsQuery(f db.QueryFilters) (string, []any, db.ExactFilter) {
 		clauses = append(clauses, fmt.Sprintf(
 			"(version_kind <> 'exact' OR cardinality(versions) = 0 OR NOT ($%[1]d::jsonb ? base_id) OR ($%[1]d::jsonb -> base_id) ?| versions)", len(args)))
 	}
+	// A base reached only through a source package admits no exact row.
+	if len(f.SourceBases) > 0 {
+		args = append(args, f.SourceBases)
+		clauses = append(clauses, fmt.Sprintf("NOT (version_kind = 'exact' AND base_id = ANY($%d::text[]))", len(args)))
+	}
 
 	// Scope gate: with no scope context only unscoped rows are returned, so a
 	// product-scoped not_affected can't suppress an unrelated product's finding.

@@ -205,8 +205,15 @@ type QueryFilters struct {
 	// another row. Applied in the query, like ArchAllow, so Limit counts rows
 	// the caller keeps.
 	ExactVersions []BaseVersion
-	Limit         int
-	Offset        int
+	// SourceBases are base identifiers the caller reached only through a
+	// binary package's source package (pkg/api's via_source_package). An
+	// exact row under one never matches: an exact list names the builds the
+	// vendor listed for that package, and a source package's name and version
+	// say nothing about them. Every other row passes through. Applied in the
+	// query, like ExactVersions.
+	SourceBases []string
+	Limit       int
+	Offset      int
 }
 
 // BaseVersion is one queried product: a base identifier it resolved to and

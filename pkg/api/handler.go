@@ -210,8 +210,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 //
 // SBOM, when present, is a CycloneDX 1.4+ document inlined as JSON. The
 // CVE list is derived from .vulnerabilities[].id, the product list from
-// .components[].purl / .components[].cpe. SBOM-derived sets are merged
-// (union) with any explicit CVEs/Products the caller also passed.
+// .components[].purl / .components[].cpe, plus the source package a Debian
+// component names in Trivy's SrcName property (see expandProducts).
+// SBOM-derived sets are merged (union) with any explicit CVEs/Products the
+// caller also passed.
 type statementsRequest struct {
 	CVEs           []string        `json:"cves,omitempty"`
 	Products       []string        `json:"products,omitempty"`
@@ -255,8 +257,10 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// rootScopes holds the scope identifiers derived from an SBOM's root
-	// subject (metadata.component); populated in the SBOM block below.
+	// subject (metadata.component), and sources its components' source
+	// packages; both populated in the SBOM block below.
 	var rootScopes []string
+	var sources map[string]string
 
 	// SBOM input — derive CVEs and products from CycloneDX, union with any
 	// explicit fields the caller also passed.
@@ -304,6 +308,7 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		// Scope context from the SBOM's root subject (the scanned image/module)
 		// — authorises product-scoped statements for this product.
 		rootScopes = extractRootScopes(sbom)
+		sources = extractSourcePackages(sbom)
 	}
 
 	// Broad mode: no CVEs but products/components present → return every vendor
@@ -330,8 +335,9 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 	var baseToInputs map[string][]string
 	var bases []string
 	var versions []db.BaseVersion
+	var sourceBases []string
 	if len(req.Products) > 0 {
-		baseToReason, baseToInputs, versions = s.expandProducts(req.Products)
+		baseToReason, baseToInputs, versions, sourceBases = s.expandProducts(req.Products, sources)
 		bases = make([]string, 0, len(baseToReason))
 		for b := range baseToReason {
 			bases = append(bases, b)
@@ -363,6 +369,7 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		ProductBaseIDs: bases,
 		ArchAllow:      archAllowList(arches),
 		ExactVersions:  versions,
+		SourceBases:    sourceBases,
 		Vendors:        req.Vendors,
 		SourceFormats:  req.SourceFormats,
 		Statuses:       req.Statuses,
@@ -564,11 +571,29 @@ func (s *Server) handleIngestTrigger(w http.ResponseWriter, r *http.Request) {
 //
 // Delegates expansion to resolver.Resolver so alias lookups and CPE prefix
 // expansion run alongside the direct base.
-func (s *Server) expandProducts(products []string) (map[string]string, map[string][]string, []db.BaseVersion) {
-	baseToReason := make(map[string]string, len(products))
-	baseToInputs := make(map[string][]string, len(products))
+//
+// sources maps a product (an SBOM component's purl) to the purl of the source
+// package it was built from (extractSourcePackages). The source purl is
+// expanded too, after every product, so a base the products reach themselves
+// keeps their reason: a base reached only this way gets match_reason
+// via_source_package and is returned in sourceBases, for
+// db.QueryFilters.SourceBases, so it admits no exact-list row. Either way the
+// product's own identifier is echoed for it, so a row keyed by the source
+// package is answered under the binary the caller sent. A source candidate
+// adds no version pair: the only versions matched today are exact lists'.
+func (s *Server) expandProducts(products []string, sources map[string]string) (baseToReason map[string]string, baseToInputs map[string][]string, versions []db.BaseVersion, sourceBases []string) {
+	baseToReason = make(map[string]string, len(products))
+	baseToInputs = make(map[string][]string, len(products))
 	seenInput := make(map[string]map[string]bool)
-	var versions []db.BaseVersion
+	echo := func(base, input string) {
+		if seenInput[base] == nil {
+			seenInput[base] = make(map[string]bool)
+		}
+		if !seenInput[base][input] {
+			seenInput[base][input] = true
+			baseToInputs[base] = append(baseToInputs[base], input)
+		}
+	}
 
 	for _, p := range products {
 		inputBase := echoBase(p)
@@ -578,17 +603,29 @@ func (s *Server) expandProducts(products []string) (map[string]string, map[strin
 			if _, exists := baseToReason[cand.ID]; !exists {
 				baseToReason[cand.ID] = cand.MatchReason
 			}
-			if seenInput[cand.ID] == nil {
-				seenInput[cand.ID] = make(map[string]bool)
-			}
-			if !seenInput[cand.ID][inputBase] {
-				seenInput[cand.ID][inputBase] = true
-				baseToInputs[cand.ID] = append(baseToInputs[cand.ID], inputBase)
-			}
+			echo(cand.ID, inputBase)
 		}
 	}
-	return baseToReason, baseToInputs, versions
+	for _, p := range products {
+		src := sources[p]
+		if src == "" {
+			continue
+		}
+		inputBase := echoBase(p)
+		for _, cand := range s.resolver.Expand(src) {
+			if _, exists := baseToReason[cand.ID]; !exists {
+				baseToReason[cand.ID] = matchViaSourcePackage
+				sourceBases = append(sourceBases, cand.ID)
+			}
+			echo(cand.ID, inputBase)
+		}
+	}
+	return baseToReason, baseToInputs, versions, sourceBases
 }
+
+// matchViaSourcePackage is the match_reason of a row reached through the
+// source package an SBOM component was built from.
+const matchViaSourcePackage = "via_source_package"
 
 // echoBase is the caller's identifier in the base form csaf.SplitPURL gives,
 // with the distro qualifier as the caller wrote it: SplitPURL decodes it for
