@@ -86,7 +86,9 @@ cp /path/to/config.yaml .     # the adapter list (never baked into the image)
 docker compose up -d
 ```
 
-The DB lives in the `pgdata` volume, so it survives restarts. First boot ingests everything (Red Hat seeds from a bulk archive; Ubuntu and SUSE take longer); scheduled runs after that fetch only what changed, except Amazon Linux and Rancher, which re-read their whole feed every run. For a **managed/cloud Postgres**, drop the `postgres` service from `docker-compose.yml` and point `-db` at the external DSN. For **Kubernetes** (N read-only API replicas + a single ingest worker), use the Helm chart.
+The DB lives in the `pgdata` volume, so it survives restarts. First boot ingests everything (Red Hat seeds from a bulk archive; Ubuntu and SUSE take longer); scheduled runs after that fetch only what changed, except Amazon Linux and Rancher, which re-read their whole feed every run. For a **managed/cloud Postgres**, drop the `postgres` service from `docker-compose.yml` and point `-db` at the external DSN. For **several API replicas** behind a load balancer, start them with `-no-scheduler` so they only serve, and run ingest from one place — one `serve` with its scheduler, or the `ingest` subcommand on a schedule (a CronJob, say).
+
+**One ingest at a time.** An ingest holds a Postgres advisory lock for its whole run. A second one against the same database — a CronJob's `ingest` while a `serve` scheduler is mid-run, or a manual `ingest` beside `serve` — touches nothing and refuses with `another ingest is running` (the `ingest` subcommand exits non-zero). The lock ends with the holder's database session, so a crashed process never leaves it behind.
 
 ### From source
 
@@ -112,22 +114,28 @@ The public hub at `vex.getreel.dev` is breadth- and size-limited because it's a 
 | `-max-statements-items` | 10000 | items in the `cves`/`products` arrays on `/v1/statements` |
 | `-max-user-vex-statements` | 25000 | flattened user-VEX statements per `/v1/analyze` |
 | `-ingest-interval` | 24h | how often feeds are re-pulled |
+| `-sweep-max-fraction` | 0.2 | share of an adapter's rows (or CVEs, for a withdrawal) one removal may delete; `0` disables removal, `1` lifts the guard (see below) |
+| `-sweep-force` | none | comma-separated adapter ids whose removal fraction guard is lifted, for every ingest the process runs; an id no adapter has refuses to start |
 
 The HTTP write timeout tracks `-query-timeout`, so raising the query ceiling does not truncate a long response.
 
 ### Removing what vendors stop publishing
 
-After each adapter's sync, reel-vex deletes the rows that adapter wrote and the vendor no longer publishes: a whole-feed sweep after a sync that read the entire feed, per-document replacement for re-published CSAF documents, and withdrawal of CSAF CVEs missing from the vendor's `index.txt`. Each is refused, deleting nothing, when it would remove more than `-sweep-max-fraction` (default `0.2`) of the adapter's rows or CVEs; `0` disables removal, `1` lifts that guard. A refused or failed removal never fails the ingest.
+After each adapter's sync, reel-vex deletes the rows that adapter wrote and the vendor no longer publishes: a whole-feed sweep after a sync that read the entire feed, per-document replacement for re-published CSAF documents, and withdrawal of CSAF CVEs missing from the vendor's `index.txt`. A whole-feed sweep is refused, deleting nothing, when it would remove more than `-sweep-max-fraction` (default `0.2`) of the adapter's rows, and a withdrawal when it would remove more than that fraction of the adapter's CVEs; a per-document replacement has no such guard, since a re-published document is the vendor's whole current word on its CVE. `0` disables removal, `1` lifts the guards. A refused or failed removal never fails the ingest.
 
-Each adapter run logs one `sweep` line, and each CSAF run that read `index.txt` one `withdraw` line:
+A refused sweep stays refused: the rows it would have deleted are still there on the next run, and still count against the guard. Once you have checked that the vendor really did drop that much, run one ingest with `-sweep-force <adapter-id>` (several ids comma-separated) to lift the guard for those adapters only; their whole-feed `sweep` and `withdraw` lines then carry `forced=true`. Remove the flag afterwards, or every later run is forced too.
+
+A verdict is part of a row's identity, so a changed verdict is a new row, and the old one goes only when removal deletes it. With removal disabled, or while an adapter's sweep is refused, both verdicts are served.
+
+Each adapter run that gets as far as syncing logs one `sweep` line (a run that fails before, at discovery or reading its watermark, logs none). A CSAF run also logs one `withdraw` line when it trusted its `index.txt` and its removal was not skipped:
 
 ```
 INFO sweep adapter=ubuntu-vex scope=all seen=195636880 owned=195702113 deleted=65233
 INFO sweep adapter=debian-oval-bookworm scope=cves:0 seen=0 owned=0 deleted=0 skipped=incomplete
-INFO withdraw adapter=redhat live=317412 held_cves=317425 withdrawn_cves=13 deleted=1844
+INFO withdraw adapter=redhat live=69854 held_cves=69864 withdrawn_cves=10 deleted=963
 ```
 
-`skipped=incomplete` is the normal line for a feed that had not changed. A refusal is logged at WARN with its reason. Leave disk headroom: at Ubuntu scale a whole-feed sweep needs about 80 GB of transient disk, released when it ends. Mechanisms, guards and sizing: [`docs/architecture.md`](./docs/architecture.md#removal).
+`skipped=incomplete` is the normal line for a feed that had not changed. A refusal is logged at WARN with its reason. Leave disk headroom: on the full Ubuntu OpenVEX feed a whole-feed sweep took 85 minutes and ~84-116 GB of transient disk above the database's steady size, released when it ends. Mechanisms, guards and sizing: [`docs/architecture.md`](./docs/architecture.md#removal).
 
 ## Adding a source
 
@@ -136,16 +144,21 @@ INFO withdraw adapter=redhat live=317412 held_cves=317425 withdrawn_cves=13 dele
 ## Tests
 
 ```bash
-go test ./...                                    # unit + package (no network)
+go test -count=1 ./...                               # unit + package (no network)
 export REEL_VEX_TEST_PG_DSN='postgres://user:pass@host:5432/postgres?sslmode=disable'
-go test -tags integration ./test/...             # integration + acceptance suites
+go test -count=1 ./pkg/db/postgres/                  # TestPG, the Postgres backend
+go test -tags integration -count=1 ./test/...        # integration + acceptance suites
 ```
 
-Adapters are tested against committed fixtures over `httptest`, so no network is needed. The database suites (`TestPG` in `pkg/db/postgres`, `test/integration`, `test/acceptance`) need `REEL_VEX_TEST_PG_DSN`; without it they skip and still print `ok`.
+Run `TestPG` and `test/integration` one after the other, not at once: both truncate the tables of the DSN's database. `-count=1` matters: the two suites under `test/` build the server binary with `go build`, which the test cache does not track, so a cached pass can describe an older binary.
+
+Adapters are tested against committed fixtures over `httptest`, so no network is needed. The database suites (`TestPG` in `pkg/db/postgres`, `test/integration`, `test/acceptance`) need `REEL_VEX_TEST_PG_DSN`; without it they skip and still print `ok`, except under `CI=true`, where a missing DSN fails them. CI runs every one of them.
 
 **`test/integration`** builds the binary, seeds hand-written rows into the database and checks the HTTP API.
 
-**`test/acceptance`** checks answers against what the vendors actually published. Its fixtures are trimmed copies of every live feed in `config.yaml` (`test/acceptance/testdata`; the README there gives each file's source URL, fetch date and what was kept). The suite creates a database of its own on the `REEL_VEX_TEST_PG_DSN` server (so it can run beside `test/integration`), serves the fixtures over HTTP at URLs shaped like the real ones, runs the server binary's `ingest` against them, then starts `serve` and runs each case over HTTP. A case compares the exact answer — every statement's CVE, status, justification, timestamp, `status_notes` and products, and nothing else — with what the vendor document says, and every expected statement cites where in the fixture the vendor says it. A second fixture generation and a second `ingest` then check removal. Compressed fixtures are rebuilt from the uncompressed content under `testdata/src` with `cd test/acceptance/testdata && go run gen.go` (needs `bzip2`). Cases can carry three markers: `Pending: "<phase>"` skips a case whose behaviour is not built yet; `KnownBug: "<text>"` runs a case the product is known to get wrong and skips it while it still fails (and fails once it passes, so the marker gets removed); `Superseded: "<phase>"` marks a case that a later change replaces, for deletion then.
+**`test/acceptance`** checks answers against what the vendors actually published. Its fixtures are trimmed copies of one live feed per adapter type in `config.yaml` — Red Hat and SUSE CSAF, Canonical OpenVEX, Ubuntu OVAL noble, Debian OVAL bookworm, Rancher, Alpine v3.22 main and community, Amazon Linux 2 and 2023, AlmaLinux 9, Oracle ol8 and ol9 (`test/acceptance/testdata`; the README there gives each file's source URL, fetch date and what was kept). The suite creates a database of its own on the `REEL_VEX_TEST_PG_DSN` server (so it can run beside `test/integration`), serves the fixtures over HTTP at URLs shaped like the real ones, runs the server binary's `ingest` against them, then starts `serve` and runs each case over HTTP. The binary runs with its HTTP proxy pointed at a closed port, so nothing it fetches can reach a live feed. A case compares the exact answer — every statement's CVE, supplier, status, justification, `impact_statement`, timestamp, `status_notes` and products, each product in the shape the encoder writes it, and nothing else — with what the vendor document says, and every expected statement cites where in the fixture the vendor says it. A second fixture generation and a second `ingest` then check removal.
+
+Each `ingest` also fails the suite when it logs a WARN or ERROR it should not, misses one it must (the day-2 refusals, each exactly once), leaves an adapter's first run incomplete, owns a different number of rows per adapter than expected, asks the fixture server for a file it does not have, or never asks for one it has; the `serve` log must stay free of WARN and ERROR lines. Compressed fixtures are rebuilt from the uncompressed content under `testdata/src` with `cd test/acceptance/testdata && go run gen.go` (needs `bzip2`); `TestFixturesMatchSource`, which needs no database or build tag, fails when the two differ.
 
 ## Contributing
 

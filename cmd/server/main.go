@@ -77,7 +77,7 @@ func run() error {
 	maxSBOMVulns := flag.Int("max-sbom-vulns", 10000, "max vulnerabilities in an inbound SBOM before a 400")
 	maxStatementsItems := flag.Int("max-statements-items", 10000, "max items in the cves/products arrays on /v1/statements before a 400")
 	maxUserVEXStatements := flag.Int("max-user-vex-statements", 25000, "max flattened user-VEX statements per /v1/analyze request before a 400")
-	sweepMaxFraction := flag.Float64("sweep-max-fraction", 0.2, "after each adapter's sync, delete the rows it no longer emits, refusing when more than this fraction of its rows (or of its CVEs, for a withdrawal) would go; within [0,1]: 0 disables removal, 1 lifts the fraction guards")
+	sweepMaxFraction := flag.Float64("sweep-max-fraction", 0.2, "after each adapter's sync, delete the rows it no longer emits, refusing when more than this fraction of its rows (or of its CVEs, for a withdrawal) would go; within [0,1]: 0 disables removal (a verdict a vendor changed is then served beside the new one), 1 lifts the fraction guards")
 	sweepForce := flag.String("sweep-force", "", "comma-separated adapter ids whose removal fraction guards are lifted for every ingest this process runs — the way out of a refused whole-feed sweep, whose stale rows keep it refused, without lifting the guard for every adapter; the nothing-seen and empty-manifest refusals stay. Remove it once the sweep has run")
 	noScheduler := flag.Bool("no-scheduler", false, "serve without the in-process ingest scheduler — for read-only API replicas behind a load balancer; run ingest separately (e.g. a CronJob invoking the `ingest` subcommand)")
 	flag.Parse()
