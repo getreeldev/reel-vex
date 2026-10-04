@@ -1,6 +1,9 @@
 package db
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Store is the persistence contract the rest of reel-vex depends on. The
 // production implementation is the Postgres backend (pkg/db/postgres); tests
@@ -62,6 +65,9 @@ type Store interface {
 	// cycles it no-ops because the index already exists. Backends that don't need
 	// it return nil.
 	EnsureCoveringIndex() error
+	// Ping checks the database answers. /healthz calls it, so an unreachable
+	// database fails the health check instead of hiding behind cached stats.
+	Ping(ctx context.Context) error
 	Optimize() error
 	SetQueryTimeout(d time.Duration)
 	Close() error

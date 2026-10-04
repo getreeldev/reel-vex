@@ -56,6 +56,19 @@ func TestPG(t *testing.T) {
 		t.Fatalf("LastIngestAt: %v", err)
 	}
 
+	// Ping answers on a live pool and fails on a closed one (/healthz's 503).
+	if err := d.Ping(t.Context()); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	closed, err := Open(dsn)
+	if err != nil {
+		t.Fatalf("Open (second pool): %v", err)
+	}
+	closed.Close()
+	if err := closed.Ping(t.Context()); err == nil {
+		t.Fatal("Ping on a closed pool: want an error, got nil")
+	}
+
 	// Statements: one plain, one with no versions or justification (empty
 	// list and empty string), one product-scoped (Rancher-style) to exercise the scope gate.
 	stmts := []db.Statement{

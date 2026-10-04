@@ -595,6 +595,32 @@ func TestHandleHealth(t *testing.T) {
 	if hdr := w.Header().Get("Cache-Control"); hdr != cacheNone {
 		t.Errorf("Cache-Control: got %q, want %q", hdr, cacheNone)
 	}
+	if body := w.Body.String(); body != "ok" {
+		t.Errorf("body: got %q, want %q", body, "ok")
+	}
+}
+
+// TestHandleHealth_DatabaseUnreachable: the other endpoints can answer from
+// cache while the database is down, so /healthz must ping it and fail.
+func TestHandleHealth_DatabaseUnreachable(t *testing.T) {
+	database := dbtest.New()
+	t.Cleanup(func() { database.Close() })
+	database.SetPingErr(errors.New("connection refused"))
+	srv := NewServer(database, nil)
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 with the database unreachable, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "database unreachable" {
+		t.Errorf("body: got %q, want %q", body, "database unreachable")
+	}
+	if hdr := w.Header().Get("Cache-Control"); hdr != cacheNone {
+		t.Errorf("Cache-Control: got %q, want %q", hdr, cacheNone)
+	}
 }
 
 // TestPOSTEndpointsHaveNoCacheControl is a regression guard. POST endpoints

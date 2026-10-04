@@ -168,17 +168,22 @@ func seedDB(dsn string) error {
 		// CVE-2024-7777: Rancher VEX (product-scoped, openvex). The verdict for
 		// this Go module is scoped to the longhorn-engine image; the scope gate
 		// must withhold it unless that image is named (statements) or is the
-		// SBOM root (analyze). See the scope-gate tests below.
-		{Vendor: "rancher", CVE: "CVE-2024-7777", ProductID: "pkg:golang/golang.org/x/net@v0.17.0", BaseID: "pkg:golang/golang.org/x/net", Versions: []string{"v0.17.0"}, IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-09-10T00:00:00Z", SourceFormat: "openvex", Scope: "pkg:oci/longhorn-engine?repository_url=registry.suse.com/rancher/longhorn-engine"},
+		// SBOM root (analyze). See the scope-gate tests below. Stored as an
+		// exact-list row, as the Rancher adapter writes it.
+		{Vendor: "rancher", CVE: "CVE-2024-7777", ProductID: "pkg:golang/golang.org/x/net", BaseID: "pkg:golang/golang.org/x/net", Versions: []string{"v0.17.0"}, VersionKind: "exact", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-09-10T00:00:00Z", SourceFormat: "openvex", Scope: "pkg:oci/longhorn-engine?repository_url=registry.suse.com/rancher/longhorn-engine"},
 
 		// CVE-2024-8888: one Ubuntu assertion fanned out across architectures,
-		// the shape strict_arch exists for. Same base_id, so without narrowing
-		// all five rows echo the caller's identifier identically.
-		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar@1.34-1?arch=amd64&distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Versions: []string{"1.34-1"}, IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-05-01T00:00:00Z", SourceFormat: "openvex"},
-		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar@1.34-1?arch=arm64&distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Versions: []string{"1.34-1"}, IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-05-01T00:00:00Z", SourceFormat: "openvex"},
-		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar@1.34-1?arch=s390x&distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Versions: []string{"1.34-1"}, IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-05-01T00:00:00Z", SourceFormat: "openvex"},
-		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar@1.34-1?arch=source&distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Versions: []string{"1.34-1"}, IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-05-01T00:00:00Z", SourceFormat: "openvex"},
-		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar@1.34-1?distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Versions: []string{"1.34-1"}, IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-05-01T00:00:00Z", SourceFormat: "openvex"},
+		// the shape strict_arch exists for, stored as Canonical's exact-list rows
+		// (versionless product_id, the versions stated for the verdict). Same
+		// base_id, so a query for tar matches all five. A second verdict at
+		// another build (amd64 only) is what strict matching keeps apart: a
+		// query at 1.34-1 never gets it, a query at 1.34-2 gets only it.
+		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar?arch=amd64&distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Versions: []string{"1.34-1"}, VersionKind: "exact", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-05-01T00:00:00Z", SourceFormat: "openvex"},
+		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar?arch=arm64&distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Versions: []string{"1.34-1"}, VersionKind: "exact", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-05-01T00:00:00Z", SourceFormat: "openvex"},
+		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar?arch=s390x&distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Versions: []string{"1.34-1"}, VersionKind: "exact", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-05-01T00:00:00Z", SourceFormat: "openvex"},
+		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar?arch=source&distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Versions: []string{"1.34-1"}, VersionKind: "exact", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-05-01T00:00:00Z", SourceFormat: "openvex"},
+		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Versions: []string{"1.34-1"}, VersionKind: "exact", IDType: "purl", Status: "not_affected", Justification: "vulnerable_code_not_present", Updated: "2024-05-01T00:00:00Z", SourceFormat: "openvex"},
+		{Vendor: "ubuntu", CVE: "CVE-2024-8888", ProductID: "pkg:deb/ubuntu/tar?arch=amd64&distro=ubuntu-22.04", BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04", Versions: []string{"1.34-2"}, VersionKind: "exact", IDType: "purl", Status: "fixed", Updated: "2024-05-02T00:00:00Z", SourceFormat: "openvex"},
 	}
 
 	return database.BulkInsert(stmts)
@@ -579,8 +584,8 @@ func TestStats(t *testing.T) {
 	if stats.CVEs != 8 {
 		t.Fatalf("expected 8 CVEs, got %d", stats.CVEs)
 	}
-	if stats.Statements != 14 {
-		t.Fatalf("expected 14 statements, got %d", stats.Statements)
+	if stats.Statements != 15 {
+		t.Fatalf("expected 15 statements, got %d", stats.Statements)
 	}
 	if stats.Version == "" {
 		t.Fatalf("expected /v1/stats to carry a version field; body: %s", body)
@@ -1458,6 +1463,7 @@ func TestStatements_StrictArch(t *testing.T) {
 			"products": []string{amd64},
 		})
 		expectStatus(t, resp, 200)
+		// The five rows listing 1.34-1; the amd64 fixed row lists only 1.34-2.
 		if got := resp.Header.Get("X-Reel-Statements"); got != "5" {
 			t.Errorf("X-Reel-Statements: got %q, want 5", got)
 		}
@@ -1483,6 +1489,42 @@ func TestStatements_StrictArch(t *testing.T) {
 		stmts := decodeOpenVEXStatements(t, resp)
 		if len(stmts) != 1 {
 			t.Fatalf("the surviving rows are one assertion; expected 1 statement, got %d", len(stmts))
+		}
+	})
+}
+
+// TestStatements_ExactVersion: Ubuntu rows are exact lists, so a versioned
+// query gets only the verdict Canonical stated for that version, under that
+// version's identifier, and nothing for a version Canonical did not list.
+// Runs against real Postgres because the match is SQL in QueryStatements.
+func TestStatements_ExactVersion(t *testing.T) {
+	t.Run("a listed version gets only its own verdict", func(t *testing.T) {
+		resp := post(t, "/v1/statements", map[string]any{
+			"cves":     []string{"CVE-2024-8888"},
+			"products": []string{"pkg:deb/ubuntu/tar@1.34-2?arch=amd64&distro=ubuntu-22.04"},
+		})
+		expectStatus(t, resp, 200)
+		if got := resp.Header.Get("X-Reel-Statements"); got != "1" {
+			t.Errorf("X-Reel-Statements: got %q, want 1", got)
+		}
+		stmts := decodeOpenVEXStatements(t, resp)
+		if len(stmts) != 1 || stmts[0].Status != "fixed" {
+			t.Fatalf("expected one fixed statement, got %+v", stmts)
+		}
+		const want = "pkg:deb/ubuntu/tar@1.34-2?arch=amd64&distro=ubuntu-22.04"
+		if len(stmts[0].Products) != 1 || stmts[0].Products[0].ID != want {
+			t.Errorf("products: got %+v, want only %s", stmts[0].Products, want)
+		}
+	})
+
+	t.Run("an unlisted version gets nothing", func(t *testing.T) {
+		resp := post(t, "/v1/statements", map[string]any{
+			"cves":     []string{"CVE-2024-8888"},
+			"products": []string{"pkg:deb/ubuntu/tar@1.34-3?arch=amd64&distro=ubuntu-22.04"},
+		})
+		defer resp.Body.Close()
+		if resp.StatusCode != 204 {
+			t.Fatalf("expected 204 for a version Canonical did not list, got %d", resp.StatusCode)
 		}
 	})
 }

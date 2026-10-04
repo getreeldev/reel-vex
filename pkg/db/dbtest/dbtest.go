@@ -13,6 +13,7 @@
 package dbtest
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -36,6 +37,8 @@ type Store struct {
 	// statsErr, when set, is returned by Stats instead of a computed result.
 	// See SetStatsErr.
 	statsErr error
+	// pingErr, when set, is returned by Ping. See SetPingErr.
+	pingErr error
 	// sweeps holds the open sweep sessions, by adapter id.
 	sweeps map[string]*sweep
 }
@@ -344,6 +347,20 @@ func (s *Store) SetStatsErr(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.statsErr = err
+}
+
+// SetPingErr makes Ping return err, standing in for an unreachable database.
+func (s *Store) SetPingErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pingErr = err
+}
+
+// Ping returns the error set by SetPingErr, nil by default.
+func (s *Store) Ping(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pingErr
 }
 
 // Stats computes live (the fake has no slow scan to cache).

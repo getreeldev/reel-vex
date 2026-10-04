@@ -78,6 +78,11 @@ func (p *DB) Close() error {
 	return nil
 }
 
+// Ping checks the pool can reach the database.
+func (p *DB) Ping(ctx context.Context) error {
+	return p.pool.Ping(ctx)
+}
+
 // SetQueryTimeout overrides the per-query ceiling. d <= 0 is ignored.
 func (p *DB) SetQueryTimeout(d time.Duration) {
 	if d > 0 {

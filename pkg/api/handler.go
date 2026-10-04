@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/getreeldev/reel-vex/pkg/csaf"
 	"github.com/getreeldev/reel-vex/pkg/db"
@@ -488,8 +490,23 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(statsResponse{Stats: stats, Version: s.version})
 }
 
+// healthPingTimeout bounds the database ping behind /healthz, so a hung
+// connection fails the probe instead of holding it open.
+const healthPingTimeout = 2 * time.Second
+
+// handleHealth answers 200 only when the database answers a ping: the other
+// endpoints can keep answering from cache while the database is down, so a
+// health check that never touched it reported healthy through an outage.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	setCacheControl(w, cacheNone)
+	ctx, cancel := context.WithTimeout(r.Context(), healthPingTimeout)
+	defer cancel()
+	if err := s.db.Ping(ctx); err != nil {
+		slog.Error("health check: database ping failed", "error", err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("database unreachable"))
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
 }

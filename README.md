@@ -86,7 +86,7 @@ cp /path/to/config.yaml .     # the adapter list (never baked into the image)
 docker compose up -d
 ```
 
-The DB lives in the `pgdata` volume, so it survives restarts. First boot ingests everything (Red Hat seeds from a bulk archive; Ubuntu and SUSE take longer); scheduled runs after that fetch only what changed. For a **managed/cloud Postgres**, drop the `postgres` service from `docker-compose.yml` and point `-db` at the external DSN. For **Kubernetes** (N read-only API replicas + a single ingest worker), use the Helm chart.
+The DB lives in the `pgdata` volume, so it survives restarts. First boot ingests everything (Red Hat seeds from a bulk archive; Ubuntu and SUSE take longer); scheduled runs after that fetch only what changed, except Amazon Linux and Rancher, which re-read their whole feed every run. For a **managed/cloud Postgres**, drop the `postgres` service from `docker-compose.yml` and point `-db` at the external DSN. For **Kubernetes** (N read-only API replicas + a single ingest worker), use the Helm chart.
 
 ### From source
 
@@ -115,6 +115,20 @@ The public hub at `vex.getreel.dev` is breadth- and size-limited because it's a 
 
 The HTTP write timeout tracks `-query-timeout`, so raising the query ceiling does not truncate a long response.
 
+### Removing what vendors stop publishing
+
+After each adapter's sync, reel-vex deletes the rows that adapter wrote and the vendor no longer publishes: a whole-feed sweep after a sync that read the entire feed, per-document replacement for re-published CSAF documents, and withdrawal of CSAF CVEs missing from the vendor's `index.txt`. Each is refused, deleting nothing, when it would remove more than `-sweep-max-fraction` (default `0.2`) of the adapter's rows or CVEs; `0` disables removal, `1` lifts that guard. A refused or failed removal never fails the ingest.
+
+Each adapter run logs one `sweep` line, and each CSAF run that read `index.txt` one `withdraw` line:
+
+```
+INFO sweep adapter=ubuntu-vex scope=all seen=195636880 owned=195702113 deleted=65233
+INFO sweep adapter=debian-oval-bookworm scope=cves:0 seen=0 owned=0 deleted=0 skipped=incomplete
+INFO withdraw adapter=redhat live=317412 held_cves=317425 withdrawn_cves=13 deleted=1844
+```
+
+`skipped=incomplete` is the normal line for a feed that had not changed. A refusal is logged at WARN with its reason. Leave disk headroom: at Ubuntu scale a whole-feed sweep needs about 80 GB of transient disk, released when it ends. Mechanisms, guards and sizing: [`docs/architecture.md`](./docs/architecture.md#removal).
+
 ## Adding a source
 
 `config.yaml` lists `adapters:` (data sources) and `aliases:` (identifier-translation files). Registered adapter types: `csaf`, `ubuntu-oval`, `debian-oval`, `ubuntu-vex`, `rancher-vex`, `alpine-secdb`, `amazon-alas`, `almalinux-oval`, `oracle-oval`. The adapter-author guide and per-source quirks are in [`docs/architecture.md`](./docs/architecture.md).
@@ -123,10 +137,15 @@ The HTTP write timeout tracks `-query-timeout`, so raising the query ceiling doe
 
 ```bash
 go test ./...                                    # unit + package (no network)
-go test -tags integration ./test/integration/   # builds binary, seeds DB, hits HTTP
+export REEL_VEX_TEST_PG_DSN='postgres://user:pass@host:5432/postgres?sslmode=disable'
+go test -tags integration ./test/...             # integration + acceptance suites
 ```
 
-Adapters are tested against committed fixtures over `httptest`, so no network is needed.
+Adapters are tested against committed fixtures over `httptest`, so no network is needed. The database suites (`TestPG` in `pkg/db/postgres`, `test/integration`, `test/acceptance`) need `REEL_VEX_TEST_PG_DSN`; without it they skip and still print `ok`.
+
+**`test/integration`** builds the binary, seeds hand-written rows into the database and checks the HTTP API.
+
+**`test/acceptance`** checks answers against what the vendors actually published. Its fixtures are trimmed copies of every live feed in `config.yaml` (`test/acceptance/testdata`; the README there gives each file's source URL, fetch date and what was kept). The suite creates a database of its own on the `REEL_VEX_TEST_PG_DSN` server (so it can run beside `test/integration`), serves the fixtures over HTTP at URLs shaped like the real ones, runs the server binary's `ingest` against them, then starts `serve` and runs each case over HTTP. A case compares the exact answer — every statement's CVE, status, justification, timestamp, `status_notes` and products, and nothing else — with what the vendor document says, and every expected statement cites where in the fixture the vendor says it. A second fixture generation and a second `ingest` then check removal. Compressed fixtures are rebuilt from the uncompressed content under `testdata/src` with `cd test/acceptance/testdata && go run gen.go` (needs `bzip2`). Cases can carry three markers: `Pending: "<phase>"` skips a case whose behaviour is not built yet; `KnownBug: "<text>"` runs a case the product is known to get wrong and skips it while it still fails (and fails once it passes, so the marker gets removed); `Superseded: "<phase>"` marks a case that a later change replaces, for deletion then.
 
 ## Contributing
 

@@ -17,7 +17,7 @@ Canonical reference for every HTTP endpoint and response field. The live service
 | `GET`  | `/v1/stats` | Coverage statistics. Cache-backed; refreshed at the end of each ingest cycle. |
 | `GET`  | `/v1/ingest` | Current ingest status. |
 | `POST` | `/v1/ingest` | Trigger a manual ingest (admin token). |
-| `GET`  | `/healthz` | Liveness probe. |
+| `GET`  | `/healthz` | Health check: pings the database (2 s timeout). `200 ok`, or `503 database unreachable` — so a liveness probe on it restarts the app during a database outage. |
 
 The two SBOM-accepting endpoints serve distinct missions:
 
@@ -61,7 +61,7 @@ Consumers that iterate `products[]` need no change. Trivy 0.74.0 suppresses the 
 | Field | Type | Description |
 |---|---|---|
 | `vulnerability.name` | string | The CVE ID (e.g. `CVE-2021-44228`). |
-| `products[]` | array | Every product this statement applies to — deduped and ordered by identifier. Each carries an `@id` and/or an `identifiers` object with `purl`/`cpe22`/`cpe23`. When the request includes `products` (`/v1/statements`, `/v1/analyze`), the user's input identifier is echoed verbatim into `products[]` so consumers like Trivy that match on PURL see what they sent. Iterate the whole array; do not assume `products[0]`. |
+| `products[]` | array | Every product this statement applies to — deduped and ordered by identifier. Each carries an `@id` and/or an `identifiers` object with `purl`/`cpe22`/`cpe23`. When the request includes `products` (`/v1/statements`, `/v1/analyze`), the caller's identifier is echoed in base form — no version, and no qualifier but `distro`, which keeps the caller's encoding — so consumers like Trivy that match on PURL see the package they sent. Exact-list rows (Ubuntu OpenVEX, Rancher) are the exception: they are rendered as the vendor's own identifiers, one per matched version (see [Version selection](#version-selection)). Without `products`, each row's stored `product_id` is emitted. Iterate the whole array; do not assume `products[0]`. |
 | `status` | string | One of the four VEX statuses (see [Status values](#status-values)). |
 | `status_notes` | string | Diagnostic free text: `source_format=<csaf|oval|openvex|secdb|updateinfo>; match_reason=<...>`, plus `scope=<product @id>` on product-scoped rows. Empty `source_format=` is omitted on user-sourced rows. |
 | `justification` | string | Required when `status==not_affected`. OpenVEX 0.2.0 enum (see [Justification values](#justification-values)). |
@@ -114,7 +114,7 @@ For PURL-keyed statements, qualifiers behave in two distinct modes:
 | `distro` (rpm) | strip-and-also | Trivy and syft emit RPM PURLs with `?distro=redhat-X.Y`, but Red Hat CSAF publishes bare PURLs without distro. The resolver therefore expands a distro-bearing RPM input into both the input-as-given **and** a distro-stripped candidate — purely additive, so a Trivy-shape RPM input matches bare-stored Red Hat statements without losing identity-aware matching against feeds that publish *with* distro. |
 | `repository_id` | filter | Stripped from `base_id`; used by the alias resolver to expand to a CPE (`via_alias`). Required on Red Hat queries that need EUS / AUS / E4S coverage. |
 | `arch` | stripped by default | Not part of `base_id`, so matching ignores architecture by default. This is deliberate: the feeds disagree about whether to qualify at all (Canonical's OpenVEX qualifies ~100% of rows, Red Hat CSAF ~69%, every other source 0%), so matching exactly would turn most of the corpus into false negatives. Set [`strict_arch`](#architecture-matching-strict_arch) to narrow. |
-| `epoch` | stripped | Not part of identity; ignored when matching. |
+| `epoch` | stripped; folded into the version | Not part of identity. When a versioned query is matched against an exact-list row (Ubuntu OpenVEX, Rancher), a non-zero `epoch=N` is folded into the version as `N:<version>` unless the version already carries an epoch — Canonical writes epochs inline (`bind9@1:9.11.3+dfsg-1ubuntu1.17`), scanners write them as a qualifier. Ignored for every other row. |
 
 ### Product-scoped statements
 
@@ -161,6 +161,8 @@ Each `user_vex` document must carry `@context = "https://openvex.dev/ns/v0.2.0"`
 
 **BOM-Link refs.** On the annotated-CycloneDX path, every `vulnerability.affects[].ref` is rewritten from raw PURL to the CycloneDX 1.5 BOM-Link form `urn:cdx:<serialNumber>/<version>#<bom-ref>`, using the input SBOM's `serialNumber`, `version`, and per-component `bom-ref`. This is what `trivy sbom --vex` binds against; without it, Trivy logs `WARN [vex] Unable to parse BOM-Link` and silently drops statements. Best-effort: if the input SBOM is missing `serialNumber`, the component has no `bom-ref`, or the affected ref doesn't map to any component in the SBOM, the original `.ref` is left in place.
 
+**Version selection.** Exact-list vendor rows (Ubuntu OpenVEX, Rancher) are matched against each component's own version, on both the annotate and the broad-mode paths, so a component gets only the verdict the vendor stated for its version. See [Version selection](#version-selection).
+
 **Product-scoped statements.** Vendor statements scoped to a product (Rancher VEX) are applied only when the SBOM's `metadata.component` matches their scope — scanning an image automatically opts in the verdicts scoped to it, and never applies one scoped to a different image. See [Product-scoped statements](#product-scoped-statements).
 
 ### SBOM with no vulnerabilities — broad-mode synthesis
@@ -173,7 +175,7 @@ The synthesised set is capped by `-statements-max` (default 50 000). If the cap 
 
 ### User-VEX merge semantics
 
-- **Collision rule**: user statements override vendor statements when `(cve, base_id)` matches. `base_id` is computed by stripping PURL version + filter qualifiers (keeping `distro`); CPEs are passed through as-is.
+- **Collision rule**: user statements override vendor statements when `(cve, base_id)` matches. `base_id` is computed by stripping PURL version + filter qualifiers (keeping `distro`); CPEs are passed through as-is. Vendor rows are [version-selected](#version-selection) before the merge, against the SBOM components' versions; user statements are not narrowed, and a vendor row reached only through a user statement's identifier keeps its whole version list.
 - **Annotation override**: when a user asserts on a CVE, vendor rows for that CVE are excluded from the SBOM-annotation per-CVE rollup — even when the vendor row sits at a different `base_id`. This guards against a higher-priority vendor `not_affected` outranking a user `affected` on a different identifier.
 - **Self-collisions**: two user statements on the same `(cve, base_id)` dedupe by latest `timestamp`; ties break by list order.
 - **Match reason**: user-sourced rows in OpenVEX output carry `status_notes` with `match_reason=from_user_vex` (no `source_format=` prefix).
@@ -296,7 +298,7 @@ So the `trivy image --vex` flow needs no `jq` extraction step — the Trivy JSON
 
 ### Resolver behaviour with `products`
 
-When `products` is provided, each identifier runs through the resolver (`direct` / `via_alias` / `via_cpe_prefix` expansion) before matching, and the OpenVEX encoder echoes the user's input PURL into each statement's `products[]` so Trivy can match it.
+When `products` is provided, each identifier runs through the resolver (`direct` / `via_alias` / `via_cpe_prefix` expansion) before matching, and the OpenVEX encoder echoes the user's input PURL, in base form, into each statement's `products[]` so Trivy can match it. Exact-list rows (Ubuntu OpenVEX, Rancher) are rendered under the vendor's per-version identifiers instead, and the version in each input selects which of their verdicts apply — see [Version selection](#version-selection).
 
 When `products` is absent, no expansion happens and the encoder emits each statement's stored `product_id` (which may be a CPE for OVAL-derived rows). Trivy will ignore CPE-only entries; `vexctl` and other consumers accept them.
 
@@ -323,11 +325,41 @@ Notes on the semantics:
 {"cves": ["CVE-2019-9923"], "products": ["pkg:deb/ubuntu/tar@1.34-1?arch=amd64&distro=ubuntu-22.04"], "strict_arch": true}
 ```
 
+### Version selection
+
+**Added in 0.13.** Applies to *exact-list* rows only: Ubuntu OpenVEX and Rancher (`version_kind` `exact`, see [`data-model.md`](./data-model.md)). Both feeds state verdicts for specific builds — Canonical lists each binary at its current archive version, Rancher each module at the version inside an image — and one CVE can list the same package, architecture and release at several versions with different verdicts. reel-vex stores one row per verdict holding every version stated for it, and answers with the verdict stated for the version asked about.
+
+For CVE-2024-1234 on Ubuntu 22.04 amd64, where Canonical lists openssl 1.10 and 1.11 fixed, zlib 1.2 and 1.3 not_affected, curl 7.81 affected, glibc 2.35-1 affected and glibc 2.35-2 fixed:
+
+| Product queried | Answer |
+|---|---|
+| `openssl@1.11` | `fixed`, under `openssl@1.11` only |
+| `openssl@1.09` | nothing — Canonical did not list 1.09 |
+| `openssl` (no version) | `fixed`, under `openssl@1.10` and `openssl@1.11` |
+| `zlib` (no version) | `not_affected`, under `zlib@1.2` and `zlib@1.3` |
+| `glibc@2.35-1` | `affected` only |
+| `glibc` (no version) | `affected` under `glibc@2.35-1` and `fixed` under `glibc@2.35-2` — two statements, each naming its own build |
+
+(Identifiers abbreviated; each is `pkg:deb/ubuntu/<name>@<version>?arch=amd64&distro=ubuntu-22.04`.)
+
+The rules:
+
+- **A product with a version** keeps an exact-list row only when that version is in the row's list, and the row is rendered for that version alone. A version the vendor did not list matches nothing — strict, by design. That includes a newer Ubuntu build not yet in Canonical's feed: it gets no answer until Canonical lists it, which is the safe direction for `fixed` and may leave a finding open that a `not_affected` would have suppressed.
+- **A product without a version**, and a CVE-only query, get every listed version, each under its own verdict. A base named both with and without a version in one request keeps the whole list.
+- **An empty list** — the vendor stated the verdict with no version, as Rancher does for every deb, rpm and apk subcomponent — matches any version, and is rendered as the vendor's versionless identifier.
+- **Each row is judged against its own list**: a version listed under one CVE, architecture or scope never admits another row.
+- **Versions compare after percent-decoding** with path rules (`%2B` is `+`, and a literal `+` is never read as a space), and a non-zero `epoch=N` qualifier is folded in as `N:<version>` (see [PURL identity rules](#purl-identity-rules)).
+- **An exact-list row is rendered as the vendor published it**: its versionless `product_id` with each matched version put back before the qualifiers, never the caller's base-form identifier, where two verdicts of one package would read as a contradiction. Grouping by assertion applies to the rendered products as usual.
+- **It runs in the query**, so `X-Reel-Statements`, `limit`, `X-Reel-Truncated` and `offset` count only the rows the caller keeps. `strict_arch` applies independently, as before.
+- On `/v1/analyze` the versions come from the SBOM's components, and vendor rows are selected before user VEX is merged; user statements are never narrowed.
+
+Every other feed (`version_kind` empty) is unchanged: one version per row, matched version-blind and echoed under the caller's identifier. That includes the fixed-in boundary feeds (Debian, Ubuntu OVAL, Oracle and AlmaLinux OVAL, Alpine, Amazon) and Red Hat and SUSE CSAF, until they are converted to boundary lists compared in the distro's version ordering.
+
 ### Cap, truncation, and ordering
 
 - Results are capped at the server's `-statements-max` (default **50 000**; `0` = unlimited). A request `limit` lowers — never raises — that ceiling.
 - **If the cap is hit, the response stays `200 OK`** with header **`X-Reel-Truncated: true`** and **`X-Reel-Next-Offset: <n>`**; pass that value back as `offset` to fetch the next page. Truncation is signalled only via headers — the OpenVEX body stays schema-valid (no custom fields), and the status stays 200 (an unsolicited 206 without `Content-Range` would violate RFC 7233 and can trip strict consumers/proxies). A truncated doc is genuinely incomplete: any statement it drops is a CVE `trivy --vex` won't suppress, so always check for `X-Reel-Truncated` when relying on broad mode for suppression.
-- Statements are returned in a deterministic order (`base_id`, `cve`, `product_id`, `source_format`). The doc is byte-identical across refetches when the underlying data hasn't changed — so a cached/attached broad-mode doc is content-addressable and diff-friendly.
+- Statements are returned in a deterministic order (`base_id`, `cve`, `product_id`, `source_format`, then `vendor`, `scope`, `status`, `justification`, so two verdicts of one package, or one verdict under several Rancher scopes, keep their places between pages). The doc is byte-identical across refetches when the underlying data hasn't changed — so a cached/attached broad-mode doc is content-addressable and diff-friendly.
 
 ### Compression
 
@@ -338,7 +370,7 @@ Responses are gzip-compressed when the request sends `Accept-Encoding: gzip`. Op
 | Header | Meaning |
 |---|---|
 | `X-Reel-Mode` | `cve` or `broad` — which query shape ran. |
-| `X-Reel-Statements` | Database rows matched. Unchanged by grouping. |
+| `X-Reel-Statements` | Database rows matched, after [version selection](#version-selection). Unchanged by grouping. |
 | `X-Reel-Grouped` | Statements actually emitted, i.e. `statements[]` length. ≤ `X-Reel-Statements`. |
 | `X-Reel-CVE` | Echoes the queried CVE on single-CVE lookups. |
 | `X-Reel-Arch` | Comma-separated architectures `strict_arch` applied. Absent when nothing was narrowed. |
@@ -400,7 +432,7 @@ All are exposed via CORS (`Access-Control-Expose-Headers`), so browser clients c
 
 ### What Trivy will and won't match
 
-Trivy's `--vex` implementation matches on **PURL only** — it ignores `identifiers.cpe23` even when set. The encoder takes that into account by emitting the request's input PURLs (not the vendor's underlying CPEs) in `products[]` whenever `products` is provided. Trade-offs:
+Trivy's `--vex` implementation matches on **PURL only** — it ignores `identifiers.cpe23` even when set. The encoder takes that into account by emitting the request's input PURLs (not the vendor's underlying CPEs) in `products[]` whenever `products` is provided; exact-list rows (Ubuntu OpenVEX, Rancher) are already PURLs, carrying the version the scanner sent (or none, for a verdict the vendor stated without one). Trade-offs:
 
 - Query with a PURL → hierarchical PURL in the doc → Trivy suppresses matching scan findings. ✓
 - CVE-only query (no `products`) → `products[]` carries each statement's stored identifier, which may be CPE → Trivy ignores. Use `vexctl` or any other OpenVEX consumer instead, or add `products` to the request.
