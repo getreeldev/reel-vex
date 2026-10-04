@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,9 +23,9 @@ func fixturePath(t *testing.T, name string) string {
 }
 
 // newTestFeed boots an httptest server that serves a minimal provider-
-// metadata + changes.csv + single CSAF document (the real RH CVE-2024-0217
-// fixture committed at testdata/). Returns the metadata URL the adapter
-// should point at.
+// metadata + changes.csv + index.txt + single CSAF document (the real RH
+// CVE-2024-0217 fixture committed at testdata/). Returns the metadata URL the
+// adapter should point at.
 func newTestFeed(t *testing.T) (metadataURL string, close func()) {
 	t.Helper()
 	fixture, err := os.ReadFile(fixturePath(t, "secdata-1220-cve-2024-0217.json"))
@@ -46,6 +47,9 @@ func newTestFeed(t *testing.T) (metadataURL string, close func()) {
 	mux.HandleFunc("/vex/2024/cve-2024-0217.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(fixture)
+	})
+	mux.HandleFunc("/vex/index.txt", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "2024/cve-2024-0217.json\n")
 	})
 	return server.URL + "/provider-metadata.json", server.Close
 }
@@ -108,16 +112,15 @@ func TestCSAFAdapter_LifecycleAgainstHTTPTest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
-	// A cold start that read every document is complete.
+	// A cold start that read every document index.txt lists is complete.
 	if !res.Complete {
 		t.Error("cold-start crawl with no failures must report Complete")
 	}
 	if want := []string{"CVE-2024-0217"}; !slices.Equal(res.RefreshedCVEs, want) {
 		t.Errorf("RefreshedCVEs: got %v, want %v", res.RefreshedCVEs, want)
 	}
-	// The feed serves no index.txt (404): no manifest, and nil — not empty.
-	if res.LiveCVEs != nil {
-		t.Errorf("LiveCVEs must be nil when index.txt 404s, got %#v", res.LiveCVEs)
+	if want := []string{"CVE-2024-0217"}; !slices.Equal(res.LiveCVEs, want) {
+		t.Errorf("LiveCVEs: got %v, want %v", res.LiveCVEs, want)
 	}
 	if count == 0 {
 		t.Fatal("expected statements emitted, got 0")
@@ -129,7 +132,7 @@ func TestCSAFAdapter_LifecycleAgainstHTTPTest(t *testing.T) {
 
 // zeroStatementDoc is a CSAF document that parses but yields no statements —
 // SUSE re-publishes some CVEs with no product_status at all.
-const zeroStatementDoc = `{"document":{"category":"csaf_vex","title":"t"},"vulnerabilities":[{"cve":"CVE-2024-9999"}]}`
+const zeroStatementDoc = `{"document":{"category":"csaf_vex","csaf_version":"2.0","title":"t","tracking":{"id":"CVE-2024-9999"}},"vulnerabilities":[{"cve":"CVE-2024-9999"}]}`
 
 // TestSync_IncrementalReportsRefreshedAndLive: an incremental run is never
 // Complete; RefreshedCVEs lists exactly the documents fetched and parsed —
@@ -242,6 +245,180 @@ func TestSync_UnparseableChangesLineIsIncomplete(t *testing.T) {
 	}
 	if want := []string{"CVE-2024-0217"}; !slices.Equal(res.RefreshedCVEs, want) {
 		t.Errorf("RefreshedCVEs: got %v, want %v", res.RefreshedCVEs, want)
+	}
+}
+
+// TestSync_ColdStartWithoutManifestIsIncomplete: without its index.txt a cold start
+// cannot know it read every live document, so it is not Complete.
+func TestSync_ColdStartWithoutManifestIsIncomplete(t *testing.T) {
+	fixture, err := os.ReadFile(fixturePath(t, "secdata-1220-cve-2024-0217.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	metadataURL, _ := feedServer(t, map[string][]byte{
+		"changes.csv":             []byte(`"2024/cve-2024-0217.json","2024-01-05T00:00:00+00:00"` + "\n"),
+		"2024/cve-2024-0217.json": fixture,
+	})
+	a, err := New(source.AdapterConfig{Type: Type, ID: "test", URL: metadataURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Sync(context.Background(), time.Time{}, func(source.Statement) error { return nil })
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if res.Complete {
+		t.Error("a cold start with no index.txt must not report Complete")
+	}
+	// No manifest: nil, not empty.
+	if res.LiveCVEs != nil {
+		t.Errorf("LiveCVEs must be nil when index.txt 404s, got %#v", res.LiveCVEs)
+	}
+	if want := []string{"CVE-2024-0217"}; !slices.Equal(res.RefreshedCVEs, want) {
+		t.Errorf("RefreshedCVEs: got %v, want %v", res.RefreshedCVEs, want)
+	}
+}
+
+// csafDoc is a minimal CSAF VEX document for cve stating status for one
+// openssl RPM, released at released.
+func csafDoc(cve, status, released string) []byte {
+	return []byte(fmt.Sprintf(`{
+ "document": {"category":"csaf_vex","csaf_version":"2.0","title":"t","publisher":{"category":"vendor","name":"x","namespace":"https://x"},
+   "tracking":{"id":"%[1]s","current_release_date":"%[3]s","initial_release_date":"2020-01-01T00:00:00Z","revision_history":[{"date":"2020-01-01T00:00:00Z","number":"1","summary":"s"}],"status":"final","version":"1"}},
+ "product_tree": {"full_product_names":[{"name":"openssl","product_id":"P1","product_identification_helper":{"purl":"pkg:rpm/redhat/openssl@3.0.7-1.el9?arch=x86_64"}}]},
+ "vulnerabilities":[{"cve":"%[1]s","product_status":{"%[2]s":["P1"]}}]
+}`, cve, status, released))
+}
+
+// feedServer serves provider-metadata.json, and under /vex/ each file in
+// files (path relative to the feed). hits counts the requests per path.
+func feedServer(t *testing.T, files map[string][]byte) (metadataURL string, hits map[string]int) {
+	t.Helper()
+	hits = map[string]int{}
+	var mu sync.Mutex
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	mux.HandleFunc("/provider-metadata.json", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"publisher":{"name":"Test Vendor"},"distributions":[{"directory_url":"%s/vex/"}]}`, server.URL)
+	})
+	mux.HandleFunc("/vex/", func(w http.ResponseWriter, r *http.Request) {
+		p := strings.TrimPrefix(r.URL.Path, "/vex/")
+		mu.Lock()
+		hits[p]++
+		mu.Unlock()
+		body, ok := files[p]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(body)
+	})
+	return server.URL + "/provider-metadata.json", hits
+}
+
+// TestSync_NonCSAFAnswerIsAFailure: a 200 whose JSON body is not the CSAF
+// document its path names extracts to nothing without error; counted as
+// refreshed, the per-document replace would delete every row of that CVE. It
+// is a failed fetch: not refreshed, and the run is incomplete. A real SUSE
+// document with no vulnerabilities array (SUSE's cve-1999-0003.json, 2026-10)
+// is a valid document that states nothing, and refreshes.
+func TestSync_NonCSAFAnswerIsAFailure(t *testing.T) {
+	const suseNoVulns = `{"document":{"category":"csaf_vex","csaf_version":"2.0","title":"SUSE CVE CVE-1999-0003",
+		"tracking":{"current_release_date":"2023-02-15T06:22:07Z","id":"CVE-1999-0003","initial_release_date":"2023-02-15T06:22:07Z",
+		"revision_history":[{"date":"2023-02-15T06:22:07Z","number":"1","summary":"Current version"}],"status":"final","version":"1"}}}`
+	files := map[string][]byte{
+		"changes.csv": []byte(`"cve-2099-0001.json","2026-05-25T00:00:00Z"` + "\n" +
+			`"cve-2099-0002.json","2026-05-25T00:00:00Z"` + "\n" +
+			`"cve-2099-0003.json","2026-05-25T00:00:00Z"` + "\n" +
+			`"cve-2099-0004.json","2026-05-25T00:00:00Z"` + "\n" +
+			`"cve-1999-0003.json","2026-05-25T00:00:00Z"` + "\n"),
+		"index.txt":          []byte("cve-2099-0001.json\ncve-2099-0002.json\ncve-2099-0003.json\ncve-2099-0004.json\ncve-1999-0003.json\n"),
+		"cve-2099-0001.json": []byte(`{}`),
+		"cve-2099-0002.json": []byte(`{"message":"Service Unavailable"}`),
+		"cve-2099-0003.json": csafDoc("CVE-2099-0009", "fixed", "2026-05-25T00:00:00Z"), // another CVE's document
+		"cve-2099-0004.json": []byte(`[]`),
+		"cve-1999-0003.json": []byte(suseNoVulns),
+	}
+	for _, since := range []time.Time{{}, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)} {
+		metadataURL, _ := feedServer(t, files)
+		a, err := New(source.AdapterConfig{Type: Type, ID: "test", URL: metadataURL})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var count int
+		res, err := a.Sync(context.Background(), since, func(source.Statement) error { count++; return nil })
+		if err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		if want := []string{"CVE-1999-0003"}; !slices.Equal(res.RefreshedCVEs, want) {
+			t.Errorf("since %v: RefreshedCVEs: got %v, want %v", since, res.RefreshedCVEs, want)
+		}
+		if res.Complete {
+			t.Errorf("since %v: a run that read a non-CSAF answer must not report Complete", since)
+		}
+		if count != 0 {
+			t.Errorf("since %v: %d statements emitted from documents that are not the CVE's", since, count)
+		}
+	}
+}
+
+func TestCheckDocument(t *testing.T) {
+	for _, c := range []struct {
+		doc, cve string
+		ok       bool
+	}{
+		{`{"document":{"csaf_version":"2.0","tracking":{"id":"CVE-2024-1"}}}`, "CVE-2024-1", true},
+		{`{"document":{"csaf_version":"2.0","tracking":{"id":"cve-2024-1"}}}`, "CVE-2024-1", true},
+		{`{"document":{"csaf_version":"2.0","tracking":{"id":"RHSA-1"}},"vulnerabilities":[{"cve":"CVE-2024-1"}]}`, "CVE-2024-1", true},
+		{`{"document":{"csaf_version":"2.0","tracking":{"id":"CVE-2024-2"}},"vulnerabilities":[{"cve":"CVE-2024-2"}]}`, "CVE-2024-1", false},
+		{`{"document":{"csaf_version":"2.0","tracking":{"id":"X"}}}`, "", true},
+		{`{"document":{"tracking":{"id":"CVE-2024-1"}}}`, "CVE-2024-1", false},
+		{`{"document":{"csaf_version":"2.0"}}`, "CVE-2024-1", false},
+		{`{"vulnerabilities":[{"cve":"CVE-2024-1"}]}`, "CVE-2024-1", false},
+		{`{}`, "CVE-2024-1", false},
+		{`{"message":"Service Unavailable"}`, "CVE-2024-1", false},
+		{`[]`, "CVE-2024-1", false},
+		{`<html>`, "CVE-2024-1", false},
+	} {
+		if err := checkDocument([]byte(c.doc), c.cve); (err == nil) != c.ok {
+			t.Errorf("checkDocument(%s, %q) = %v, want ok=%v", c.doc, c.cve, err, c.ok)
+		}
+	}
+}
+
+// TestSync_ManifestMissingAFetchedDocumentIsNotTrusted: an index.txt that
+// does not list a document this run fetched from the same feed is truncated
+// or mid-rewrite, so it is no manifest: LiveCVEs nil (a withdrawal by it could
+// remove live CVEs), and a cold start is not Complete.
+func TestSync_ManifestMissingAFetchedDocumentIsNotTrusted(t *testing.T) {
+	files := map[string][]byte{
+		"changes.csv": []byte(`"2099/cve-2099-0001.json","2026-05-25T00:00:00+00:00"` + "\n" +
+			`"2099/cve-2099-0002.json","2026-05-24T00:00:00+00:00"` + "\n"),
+		// The vendor is rewriting it: the first line only.
+		"index.txt":               []byte("2099/cve-2099-0002.json\n"),
+		"2099/cve-2099-0001.json": csafDoc("CVE-2099-0001", "fixed", "2026-05-25T00:00:00Z"),
+		"2099/cve-2099-0002.json": csafDoc("CVE-2099-0002", "fixed", "2026-05-24T00:00:00Z"),
+	}
+	for _, since := range []time.Time{{}, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)} {
+		metadataURL, _ := feedServer(t, files)
+		a, err := New(source.AdapterConfig{Type: Type, ID: "test", URL: metadataURL})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := a.Sync(context.Background(), since, func(source.Statement) error { return nil })
+		if err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		if res.LiveCVEs != nil {
+			t.Errorf("since %v: LiveCVEs must be nil when index.txt lacks a fetched document, got %v", since, res.LiveCVEs)
+		}
+		if res.Complete {
+			t.Errorf("since %v: Complete with an untrusted manifest", since)
+		}
+		if want := []string{"CVE-2099-0001", "CVE-2099-0002"}; !slices.Equal(res.RefreshedCVEs, want) {
+			t.Errorf("since %v: RefreshedCVEs: got %v, want %v", since, res.RefreshedCVEs, want)
+		}
 	}
 }
 

@@ -1,13 +1,15 @@
 // Package ubuntuvex implements source.Adapter for Canonical's OpenVEX 0.2.0
 // feed at https://security-metadata.canonical.com/vex/vex-all.tar.xz.
 //
-// Coverage is a strict superset of the existing Ubuntu OVAL adapter: where
-// the OVAL feed only ships rows for CVEs that have a USN, the OpenVEX feed
-// includes pre-USN triage state (`not_affected`, `under_investigation`,
-// `affected`) for every CVE Canonical has assessed.
+// Where the Ubuntu OVAL feed only ships rows for CVEs that have a USN, the
+// OpenVEX feed includes pre-USN triage state (`not_affected`,
+// `under_investigation`, `affected`) for every CVE Canonical has assessed.
+// It is not a superset of OVAL: OVAL covers identifier shapes this feed
+// spells differently (versioned binary packages such as golang-1.20-go,
+// source vs binary package families), so both adapters run.
 //
-// The feed is one ~59MB tar.xz containing ~54K per-CVE OpenVEX 0.2.0 JSON
-// files at vex/cve/<year>/CVE-<id>.json (plus USN-keyed files at vex/usn/
+// The feed is one ~68 MB tar.xz containing 68,845 per-CVE OpenVEX 0.2.0 JSON
+// files (2026-10) at vex/cve/<year>/CVE-<id>.json (plus USN-keyed files at vex/usn/
 // which this adapter ignores). Each per-CVE document carries one or more
 // statements; each statement carries one or more product identifiers in
 // PURL form.
@@ -72,14 +74,14 @@ func New(cfg source.AdapterConfig) (source.Adapter, error) {
 	name := cfg.Name
 	if name == "" {
 		// Distinct from "Ubuntu" used by ubuntu-oval so operators can tell
-		// the two apart in stats / dashboards during the soak window.
+		// the two apart in stats / dashboards.
 		name = "Ubuntu (OpenVEX)"
 	}
 	return &Adapter{
 		id:   cfg.ID,
 		name: name,
 		url:  cfg.URL,
-		http: &http.Client{Timeout: 15 * time.Minute, Transport: httpretry.New(nil)}, // tarball is ~59MB; allow time for slow links
+		http: &http.Client{Timeout: 15 * time.Minute, Transport: httpretry.New(nil)}, // tarball is ~68 MB; allow time for slow links
 	}, nil
 }
 
@@ -163,11 +165,11 @@ func (a *Adapter) Sync(ctx context.Context, since time.Time, emit func(source.St
 	}
 
 	// Buffer the tarball fully into memory before walking. The xz+tar walk
-	// can take 30-60+ minutes on a real Canonical feed (≥54K JSON entries
+	// can take 30-60+ minutes on a real Canonical feed (~69K JSON entries
 	// to decode + insert), but the body read needs to complete inside the
 	// HTTP client's Timeout — streaming the body through xz/tar/JSON keeps
 	// the connection open for the full walk and trips the deadline. The
-	// tarball is small enough (~59 MB compressed) to buffer; processing
+	// tarball is small enough (~68 MB compressed) to buffer; processing
 	// then happens entirely on local memory with no HTTP coupling.
 	body, err := io.ReadAll(getResp.Body)
 	getResp.Body.Close()

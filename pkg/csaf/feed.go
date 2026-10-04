@@ -93,8 +93,3 @@ func parseCSVLine(line string) (FeedEntry, error) {
 
 	return FeedEntry{Path: path, Updated: ts}, nil
 }
-
-// DocumentURL constructs the full URL for a feed entry.
-func DocumentURL(feedURL string, entry FeedEntry) string {
-	return feedURL + entry.Path
-}

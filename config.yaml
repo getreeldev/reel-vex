@@ -8,20 +8,22 @@ adapters:
     name: SUSE
     url: https://www.suse.com/.well-known/csaf/provider-metadata.json
   # Canonical OpenVEX: single tarball at vex-all.tar.xz containing per-CVE
-  # OpenVEX 0.2.0 documents. Strict superset of the USN-derived OVAL feeds
-  # below — covers pre-USN triage state (`not_affected`,
-  # `under_investigation`) that OVAL never emits. ESM-track distro qualifier
+  # OpenVEX 0.2.0 documents. Covers pre-USN triage state (`not_affected`,
+  # `under_investigation`) that the USN-derived OVAL feeds below never emit;
+  # neither feed is a superset of the other (see the Ubuntu OVAL comment).
+  # ESM-track distro qualifier
   # values are normalised to scanner-convention `ubuntu-<version>` in the
   # adapter; no external alias file needed.
   - type: ubuntu-vex
     id: ubuntu-vex
     url: https://security-metadata.canonical.com/vex/vex-all.tar.xz
-  # Ubuntu OVAL: per-release USN feeds (the main, non-OCI variants).
-  # DEPRECATED: superseded by ubuntu-vex; removal queued for v0.5.0.
-  # Both run during the soak window so we can verify the OpenVEX feed has
-  # parity with the OVAL feeds before retiring them. The two emit different
-  # source_format values (`oval` vs `openvex`); the statements PK includes
-  # source_format so they coexist by design.
+  # Ubuntu OVAL: per-release USN feeds (the main, non-OCI variants). Kept
+  # beside ubuntu-vex on purpose: OVAL covers identifier shapes the OpenVEX
+  # feed spells differently (versioned binary packages such as
+  # golang-1.20-go, source vs binary package families), and neither feed is
+  # a superset of the other, so running both gives consumers the union. The
+  # two emit different source_format values (`oval` vs `openvex`); the
+  # statements PK includes source_format so they coexist by design.
   #
   # We deliberately do not use Canonical's OCI-flavoured feeds
   # (oci.com.ubuntu.<release>...). Those scope to container-relevant
@@ -42,8 +44,9 @@ adapters:
     name: Ubuntu 20.04 LTS
     url: https://security-metadata.canonical.com/oval/com.ubuntu.focal.usn.oval.xml.bz2
   # Debian Security Tracker OVAL: per-release feeds covering both DSAs
-  # (class=patch) and per-CVE records (class=vulnerability) with fixed
-  # version bounds. One adapter per supported release; add new entries
+  # (class=patch) and per-CVE records (class=vulnerability): fixed version
+  # bounds, and open `affected` rows for CVEs with no fix in the release yet.
+  # One adapter per supported release; add new entries
   # here as Debian ships new stable releases.
   - type: debian-oval
     id: debian-oval-bookworm

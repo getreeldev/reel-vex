@@ -13,6 +13,12 @@
 // some distro=oracle-8 rows that the ol8 adapter writes too. The adapter keeps
 // only rows of its own release, N from the configured file name; New refuses a
 // URL it cannot read N from.
+//
+// The own-release file is authoritative for its release, and that has a known
+// gap: an ELSA's copy in another release's file can list packages of this
+// release that this file's copy does not, and those are dropped.
+// ELSA-2026-500137 (a UEK update) in the ol8 file lists 19 OL9 packages that
+// its copy in the ol9 file lacks (2026-10); they reach no row.
 package oracleoval
 
 import (
