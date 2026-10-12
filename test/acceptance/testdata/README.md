@@ -15,6 +15,29 @@ that were trimmed (secdb, Rancher `index.json`, `repository-to-cpe.json`) are
 re-serialised (whitespace only), and the day-2 files listed at the end are edited on
 purpose.
 
+## Licences
+
+The files under `testdata/feeds` and `testdata/src` are the vendors' data, not reel-vex
+code: they stay under each vendor's own terms and are **not** covered by the repository's
+Apache-2.0 licence. They are trimmed and, for day 2, edited as this README describes.
+
+| Vendor / feed | Terms | Attribution |
+|---|---|---|
+| Red Hat CSAF VEX, `repository-to-cpe.json` | CC BY 4.0, stated in each document's `legal_disclaimer` | © Red Hat, Inc. |
+| SUSE CSAF VEX | CC BY 4.0, stated in each document's `legal_disclaimer` | © SUSE LLC |
+| SUSE Rancher VEX hub | CC BY 4.0, the repository's `LICENSE` (https://github.com/rancher/vexhub) | © SUSE LLC / Rancher |
+| Canonical OpenVEX | CC BY-SA 4.0, as `canonical/ubuntu-security-notices` | © Canonical Ltd. |
+| Ubuntu OVAL | Canonical's terms; the file's `<rights>` element is kept | © Canonical Ltd. |
+| Debian OVAL | the Debian Security Team's published data, under Debian's terms | Debian |
+| Alpine secdb | CC BY-SA 4.0 | Alpine Linux |
+| Amazon Linux ALAS `updateinfo` | Amazon's terms; public repository metadata | © Amazon.com, Inc. or its affiliates |
+| AlmaLinux OVAL | MIT, as `AlmaLinux/osv-database`; the file's copyright is kept | © AlmaLinux OS |
+| Oracle Linux OVAL | Oracle's terms; the file's copyright is kept | © Oracle and/or its affiliates |
+
+The CC BY-SA 4.0 fixtures (Canonical OpenVEX, Alpine secdb) are adaptations and are
+shared under CC BY-SA 4.0. Licences: https://creativecommons.org/licenses/by/4.0/,
+https://creativecommons.org/licenses/by-sa/4.0/.
+
 ## Layout
 
 - `feeds/day1/<host>/<path>` — what the fixture server serves, at `/<host>/<path>`,

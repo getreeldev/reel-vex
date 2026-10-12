@@ -6,7 +6,7 @@ package acceptance
 // ("UV <entry>" below). Every statement carries its own timestamp. Canonical's
 // distro qualifier names a release by codename, with or without a support track
 // (esm-apps/, esm-infra/, esm-infra-legacy/, fips/, fips-updates/, ...); the hub
-// serves it in the scanner convention ubuntu-<version> (CLAUDE.md, config.yaml).
+// serves it in the scanner convention ubuntu-<version> (config.yaml).
 //
 // A product query is answered with the verdict Canonical stated for the version
 // asked about, under the vendor's own per-version identifiers, and a versionless

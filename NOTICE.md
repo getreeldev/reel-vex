@@ -31,4 +31,10 @@ the provenance carried in `status_notes`.
   mirrored with provenance — consistent with their established public
   redistribution by other scanners and tools.
 
+## Test fixtures
+
+`test/acceptance/testdata/` holds trimmed copies of the same vendor feeds. They stay
+under each vendor's own terms, not this repository's Apache-2.0 licence; its
+README lists each vendor's terms and attribution, and what was trimmed or edited.
+
 This NOTICE is provided in good faith and is not legal advice.
