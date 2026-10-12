@@ -2,7 +2,7 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
-## [Unreleased]
+## [0.13.0] — removal, version-aware answers, Debian by source package
 
 **Deploying this version requires a fresh database.** Rows stored by an earlier version have no owner (`adapter_id`, below), so the removal this release adds never touches them, and the data fixes and the one-row-per-verdict shape change which rows exist. Start from an empty database and let the first ingest load it; every statement below about rows an earlier version stored assumes that.
 
