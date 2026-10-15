@@ -513,7 +513,10 @@ func docCVE(docPath string) string {
 }
 
 // liveIndexFile sits next to changes.csv and lists the path of every document
-// the distribution currently publishes, one per line.
+// the distribution currently publishes, one per line. It is the only source of
+// withdrawals. Red Hat's deletions.csv is deliberately not read: its dates are
+// back-dated, SUSE publishes none, and some documents it lists are still in
+// index.txt and served, so the index wins.
 const liveIndexFile = "index.txt"
 
 // fetchLiveIndex reads index.txt into the paths of the CVE documents it
