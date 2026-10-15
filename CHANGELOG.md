@@ -1,669 +1,481 @@
 # Changelog
 
-All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
+All notable changes to reel-vex. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). reel-vex is pre-1.0, so a minor version can carry breaking changes; they are marked **Breaking** and listed under **Upgrade notes**.
 
 ## [0.13.1] — Ubuntu OpenVEX re-reads only the documents that changed
 
-### Changed
+*Released 2026-10-15*
 
-- **Ubuntu OpenVEX: a publish re-ingests only the CVEs whose document changed.** Canonical's `vex-all.tar.xz` carries one `Last-Modified` for ~70K per-CVE documents and no list of what changed, so every publish (about daily) re-upserted all ~199M rows and then swept them: 4-5 hours of upsert and ~1.5 hours of sweep, while a publish typically changes about a hundred documents. Between the 2026-10-14 and 2026-10-15 tarballs 130 of 69,923 documents changed (30 of them in what they state); the adapter walked the new tarball in 2 minutes and emitted 532,799 rows, where a full read takes 13½ minutes of walking and emits 198.7M. The adapter now fingerprints each document (SHA-256 of its bytes, stored in the new `adapter_documents` table) and emits only those whose fingerprint differs from the last run's, each one whole; the orchestrator replaces just those CVEs' rows (per-document replacement, as for CSAF) and withdraws any CVE gone from the tarball (withdrawal, under the same `-sweep-max-fraction` guard). The first run after an upgrade has no fingerprints and reads everything, as before. Documents are left out only when removal is enabled; the stored fingerprints are cleared before a run changes any row and its own are stored only once its replacement succeeded, so a run that changed rows it did not replace (an error, a refusal, a killed process) leaves none, and a malformed document gets none, so anything not replaced is read again. Replacing a document's rows has no fraction guard, so a publish that changed more than a fifth of the documents and more than 1,000 of them — a format change the parser reads as empty, say — is read whole and swept whole, under `-sweep-max-fraction`, rather than replaced CVE by CVE. So is a tarball in which a file is not one CVE's own (two files of one name, or a document naming another CVE — Canonical publishes neither). A whole read that skipped a document removes nothing, as before. A tar entry over 256 MiB is skipped as malformed (Canonical's largest is 16 MB). Deleting the adapter's rows from `adapter_documents` makes the next run that fetches the tarball read it whole and sweep the whole feed. The adapter's watermark is now the tarball's `Last-Modified` rather than the newest statement date it emitted, and it does not advance past a publish whose removal did not finish, so the next run (or a `-sweep-force` run) fetches it again.
-- **`source.ChangedDocsAdapter`** (`SyncChanged`) and two new `SyncResult` fields, `Fingerprints` and `Watermark`, carry this between adapter and orchestrator (`RefreshedCVEs` and `LiveCVEs` are now set by Ubuntu OpenVEX too); `db.Store` gains `DocumentFingerprints` and `SaveDocumentFingerprints`. Migration v4 creates `adapter_documents`; it is a new empty table, so this release rolls in place, no fresh database needed. 0.13.0 ignores the table: after rolling back to it, delete the table's rows before upgrading again, or the fingerprints stored before the rollback would leave out documents 0.13.0 has since rewritten.
+**Upgrade notes:** Rolls in place; no fresh database. The release adds one empty table, `adapter_documents`. If you roll back to 0.13.0 and later upgrade again, delete that table's rows first, or documents 0.13.0 rewrote in between can be skipped.
+
+### Changed
+- **Ubuntu OpenVEX syncs re-read only the documents that changed** since the last run, so a daily publish takes minutes instead of hours. Answers are the same. The first run after upgrading, and every run with removal off (`-sweep-max-fraction 0`), still reads the whole tarball.
+- **A publish that changes more than a fifth of the documents, and more than 1,000,** is read whole and swept under `-sweep-max-fraction`. See [Removal](docs/architecture.md#removal).
+- **Ubuntu OpenVEX now withdraws CVEs that leave the tarball** and logs a `withdraw` line, under the same guard.
+- **To force a full read**, delete the adapter's rows from `adapter_documents`. The next run that fetches the tarball reads and sweeps it whole.
+- **The adapter's watermark is now the tarball's `Last-Modified`.** It does not advance past a publish whose removal did not finish, so the next run (or a `-sweep-force` run) fetches it again.
 
 ## [0.13.0] — removal, version-aware answers, Debian by source package
 
-**Deploying this version requires a fresh database.** Rows stored by an earlier version have no owner (`adapter_id`, below), so the removal this release adds never touches them, and the data fixes and the one-row-per-verdict shape change which rows exist. Start from an empty database and let the first ingest load it; every statement below about rows an earlier version stored assumes that.
+*Released 2026-10-12*
 
-### Fixed
-
-- **SUSE: fixed packages are stored as `fixed`.** SUSE CSAF VEX marks a fixed package as `product_status.recommended` (older documents: `first_fixed`) and never uses `fixed`; the extractors read only `known_not_affected`, `fixed`, `known_affected` and `under_investigation`, so no SUSE `fixed` statement was ever stored. Both now map to `fixed`, with the same version handling, in the strict and the permissive extractor. `cve-2025-1914`, which lists only `recommended`, went from 0 statements to 13.
-- **Alpine: the secfixes version key `"0"` is `not_affected`, not `affected`.** Alpine uses `"0"` for a CVE that does not apply to the package (its security-rejections README; Wolfi and Anchore's vunnel read it the same way). It is now stored `not_affected` with justification `vulnerable_code_not_present`. A (package, CVE) listed under several keys is also one deterministic row now: the highest fixed version by apk version ordering ([`go-apk-version`](https://github.com/knqyf263/go-apk-version), what Trivy uses), and `"0"` only when no fixed version lists the CVE. Before, secfixes was read in Go map order and the last key written won, so v3.24 `zlib` CVE-2026-22184, listed under `"0"` and `1.3.2-r0`, could be stored as either.
-- **Oracle Linux: each adapter stores only its own release.** An ELSA in one release's file can cover other releases too; with oval-to-vex v0.4.0 each package is emitted under its own release, and the adapter now keeps only the rows whose release matches its file (`com.oracle.elsa-ol<N>.xml.bz2`; it refuses to start when the URL does not name one). On the live feeds the ol8, ol9 and ol10 files carry 66,809, 253,027 and 209,618 rows of other releases, which those releases' own adapters write. Each adapter trusts its own release's file, and the files do not always agree: ELSA-2026-500137 in the ol8 file names 19 OL9 packages that the ol9 file's copy lacks, so those packages get no OL9 `fixed` row.
-- **Debian: a `0:0` fixed version is an open CVE, not a fix** (via `oval-to-vex` v0.4.0). Debian OVAL writes a bound of `0:0` for a CVE with no fix in the release; it was stored as `fixed` at version `0:0`, which claims every installed version is fixed. It is now stored `affected` with no version.
-- **Rancher: a subcomponent that is not a package identifier is skipped, not stored as a CPE.** The adapter typed every non-PURL subcomponent `cpe`, so when Rancher's generator writes its own error text as the `@id` — live today: `[ERROR] CVE type  not mapped`, on five CVEs × three registry scopes of `nginx-ingress-controller` — it was ingested as a product identifier that nothing can ever match. Only `pkg:` and `cpe:` identifiers are emitted now; the rest are counted as `skipped_bad_subcomponent` in the sync log. Found by the live-feed smoke test (`REEL_VEX_SMOKE=1`), which now passes with zero violations. Rows an earlier version stored have no owner, so removal does not touch them; the fresh database this release requires drops them.
-- **CSAF cold start: an ingest error during the bulk archive is returned, not answered with a full crawl.** On a first sync the Red Hat adapter walks the weekly archive and, on any error, fell back to crawling every document in `changes.csv` one GET at a time — hours. That included errors from the orchestrator itself (a failed batch insert), which the crawl would hit again on its first statement. Those are now returned at once, and so is a cancelled context; the crawl remains the fallback for an archive that cannot be fetched or read.
-- **Ubuntu: `distro=trusty/esm` is Ubuntu 14.04.** Canonical writes some ESM qualifiers codename first (`trusty/esm`) and the adapter took the last segment as the codename, so those rows (374,969 in production) were stored under `distro=trusty/esm` and no scanner query reached them; the segment that is a known codename is now used, in either position.
-- **Debian and Oracle Linux: a scanner's point-release distro matches.** Trivy sends `distro=debian-12.11` and `distro=oracle-8.10` while the rows are stored as `debian-12` and `oracle-8`; the resolver now adds the major-release candidate, as it already did for Alpine, Amazon and AlmaLinux.
-- **Debian: a binary package is answered from its source package's statements.** Debian states every verdict per source package (`pkg:deb/debian/zlib?distro=debian-12`), while a scanner lists the binaries built from it (`zlib1g`), so a Debian SBOM matched almost nothing: Trivy 0.74.0's SBOM of `debian:12` has 88 deb components, and 62 of them come from a source package with another name (`libc6` and `libc-bin` from `glibc`). On the two SBOM paths (`/v1/analyze` and `/v1/statements`' `sbom`), a `pkg:deb/debian` component whose `aquasecurity:trivy:SrcName` property names another package is now also looked up as that source package, and a row found that way is answered under the binary — echoed in `products[]`, one per binary, which is the identifier Trivy applies VEX to; the component's own analysis on `/v1/analyze` — with `match_reason=via_source_package`. A source package never matches an exact-list row (Ubuntu OpenVEX, Rancher), and Ubuntu components get no source lookup: Canonical's feeds name binaries. A plain `products` query has no source name to read, so it must name the source package's PURL.
-- **Amazon Linux: `product_id` is a PURL.** The adapter wrote the version after the qualifiers (`pkg:rpm/amazon/ca-certificates?distro=amazon-2@2021.2.50-72.amzn2.0.5`, returned as is by a CVE-only query) and now writes `pkg:rpm/amazon/ca-certificates@2021.2.50-72.amzn2.0.5?distro=amazon-2`, with `base_id` unchanged.
-- **Red Hat: rows from the bulk archive carry the document's own date.** A cold start stamped every archived document with the archive's date, so a `since` query returned CVEs Red Hat last changed earlier; each document is now dated by its own `document.tracking.current_release_date`, the date Red Hat last changed it.
-- **`match_reason` names the strongest rule, whatever the order of the products.** When several products of one request reached the same stored identifier by different rules, the first product's rule was reported; now the strongest is (`direct`, then `via_alias`, `via_cpe_prefix`, `via_source_package`), as the API reference always said.
-- **A PURL's base form ignores an `@` in its namespace, and drops its subpath.** The version was split at the last `@` anywhere, so a versionless npm-scoped PURL (`pkg:npm/@angular/core`) lost its name to the "version"; the version is now the text after the first `@` of the name segment.
-- **The caller's identifier is echoed with its own encoding.** A percent-encoded distro qualifier (Trivy's Amazon Linux 2 `distro=amazon-2%20%28Karoo%29`) came back decoded as `?distro=amazon-2 (Karoo)`, which is not a valid PURL; the echoed base form now keeps the qualifier as sent.
+**Upgrade notes:**
+- **Start from an empty database.** Rows stored by an earlier version have no owner, so removal never deletes them, and the fixes below change which rows should exist. Let the first ingest load it.
+- **`config.yaml` needs three edits** (the release's `config.yaml` has them):
+  - Remove any `redhat-oval` entry. Otherwise the server does not boot (`unknown adapter type`).
+  - Point `rancher-vex` at `https://github.com/rancher/vexhub/archive/refs/heads/main.tar.gz`. A URL still ending in `index.json` fails every Rancher sync.
+  - Each `oracle-oval` URL must name a release file (`com.oracle.elsa-ol<N>.xml.bz2`). Otherwise the server does not boot (`cannot read the release from url`).
+- **`/healthz` now answers `503 database unreachable` when the database does not answer a ping.** Used as a liveness probe, it restarts the app during a database outage.
+- **Removal is on by default** (`-sweep-max-fraction 0.2`; `0` turns it off). A full sweep of Ubuntu OpenVEX needs up to ~116 GB of temporary disk on the database host.
+- **Only one ingest runs per database.** A second `ingest` subcommand exits non-zero with `another ingest is running`. A `serve` scheduler logs the refusal and skips that run.
+- **Breaking:** a query with a version can now get nothing where it used to get `fixed` (see Changed).
+- **Breaking:** `/v1/analyze` leaves a vulnerability unannotated when its `affects[]` components disagree (see Changed).
 
 ### Changed
-
-- **Debian, Ubuntu OVAL, AlmaLinux, Oracle, Alpine and Amazon: a versioned query gets `fixed` only at or above the version the vendor fixed.** These feeds state `fixed` with a fixed-in version, and the rows were matched version-blind: `zlib@1:1.2.11.dfsg-2` got Debian's `fixed` for CVE-2022-37434, which ships in `1:1.2.11.dfsg-4.1`, and Trivy reads `fixed` as a suppression, so the true finding was hidden. Such a row is now stored with `version_kind` `boundary`, and a product queried with a version — on `/v1/statements`, and per component on `/v1/analyze` — gets it only when the version is at or above the fixed-in version in the ecosystem's ordering (dpkg, rpm, apk: [`go-deb-version`](https://github.com/knqyf263/go-deb-version) and [`go-rpm-version`](https://github.com/knqyf263/go-rpm-version), MIT, beside the `go-apk-version` already used, as Trivy uses them). An `epoch=N` qualifier and an inline `N:` are one epoch, and a version with neither is epoch 0; a version the ordering cannot read gets nothing. A Debian binary answered through its source package is compared by the source package's version. The answer names the product as the query sent it, version included, so it never covers a version it was not checked against; a product without a version, and a CVE-only query, are answered as before. The comparison runs as the rows are read, before `offset` and `limit`, so `X-Reel-Statements`, `limit` and `X-Reel-Truncated` count only the rows returned. It can only remove a `fixed` answer, never add one: where a feed states several fixed-in versions for one key (5,967 such keys in Debian bookworm's OVAL; Oracle's parallel UEK streams, AlmaLinux module streams), the row still keeps the last one written, so a version fixed in another stream may get no answer. Measured with Trivy 0.74.0 against Debian bookworm OVAL of 2026-10-04 (45,171 of its 56,244 rows are fixed-in rows): on `debian:12`, the hub's VEX made Trivy suppress one finding Trivy reports unfixed (CVE-2026-103111 in `libpcre2-8-0` 10.42-1+deb12u1, fixed in 10.42-1+deb12u2), and now none; on `debian:12.0`, 126, of which Trivy lists a fixed version above the installed one for 125, and now none. Red Hat and SUSE CSAF are unchanged: their fixed versions hold per product stream, which a later release will record.
-- **Ubuntu OpenVEX and Rancher: one row per verdict with every version stated, and a versioned query gets only its own verdict.** Both feeds list a package at exact builds (Canonical: the binary's current archive version; Rancher: the module version inside an image), and one CVE can list the same package, architecture and release at several versions with different verdicts — 1.15M such keys in Canonical's feed on 2026-10-02. Their rows are now *exact-list* rows (`version_kind` `exact`): one row per (CVE, package identifier without its version — every qualifier kept, scope, status, justification) whose `versions` are every version the vendor stated for that verdict, replaced whole on each sync, so a rebuild changes a row's list instead of adding a row. Measured on the live feeds: Ubuntu (tarball of 2026-10-02) 197,991,753 rows → 195,636,880 (98.8% of lists hold one version), the longest list 7 versions; Rancher (snapshot of 2026-10-03) 89,414 → 33,382, the longest list 30 versions. Where Canonical's ESM/FIPS tracks of one release fold onto one identifier with different verdicts, and where a Rancher file states one key with conflicting justifications (1,072 keys), each verdict is now its own row; before, the last one written won.
-
-  Matching is strict for these rows only. A product queried **with a version** — on `/v1/statements`, and on `/v1/analyze` for vendor rows before user VEX is merged — gets only the verdict Canonical or Rancher stated for that version, and **nothing for a version they did not list**, including a newer build not yet in the feed (`glibc@2.35-1` gets `affected`, not the `fixed` stated for `2.35-2`; `openssl@1.09`, a build Canonical did not list, gets nothing). A product queried **without a version**, or a CVE-only query, gets every listed version, each under its own verdict. An exact-list row is rendered under the vendor's identifiers, one per matched version — `pkg:deb/ubuntu/glibc@2.35-1?arch=amd64&distro=ubuntu-22.04` under `affected` and `…glibc@2.35-2…` under `fixed` — rather than under the bare identifier the query sent, where two verdicts of one package read as a contradiction. Each is written as Trivy writes the package, since Trivy applies a statement only when the product's version equals the package's: a deb or rpm version with an inline epoch drops it, is percent-encoded and gains an `epoch=N` qualifier (Canonical's `bind9@1:9.11.3+dfsg-1ubuntu1.17` is rendered `bind9@9.11.3%2Bdfsg-1ubuntu1.17?arch=amd64&distro=ubuntu-18.04&epoch=1`). A verdict stated with no version (every Rancher deb, rpm and apk subcomponent) matches any version and is rendered as the vendor's versionless identifier. Versions compare percent-decoded (`%2B` is `+`), and a scanner's `epoch=N` qualifier is read as Canonical's inline `N:` prefix. The match runs in the query, so `X-Reel-Statements`, `limit` and `X-Reel-Truncated` count only the rows the caller keeps, and `strict_arch` applies as before. Rows of the other feeds are matched as the entry above describes. Rows stored by earlier versions are dropped by the fresh database this release requires.
-
-  On `/v1/analyze` verdicts are attributed per component: an exact-list row counts only for the components whose version it lists, a fixed-in row (above) only for those at or above it, and an exact-list row never through a source package. A vulnerability whose `affects[]` names several components is annotated only when all of them get the same state (and keeps the justification only when they agree on that too), and is otherwise left without an analysis, since one analysis would claim the same for each; before, the verdicts of every component's rows were rolled up into one. An entry whose `affects[]` names no component of the SBOM still gets the rollup of its CVE's rows, and a CVE a user statement asserts still gets the rollup of the user's rows.
-- Rows that share a product identifier — two verdicts of one package, or one verdict under several Rancher scopes — are returned in a fixed order (`vendor, scope, status, justification` after `base_id, cve, product_id, source_format`), so `offset` pagination cannot repeat or skip one of them.
-- **One row per verdict, carrying the versions the vendor stated.** A `statements` row is now keyed by `(vendor, cve, product_id, source_format, scope, stream, status, justification)` and holds a sorted, de-duplicated `versions` list and a `version_kind`, replacing the single `version` column. Every feed but Ubuntu OpenVEX and Rancher (above) emits one version per statement, so its lists hold at most one element and the new shape alone changes none of its answers, with one exception: a component a Red Hat CSAF document gives different verdicts in different product streams kept only the last verdict extracted, and now keeps each (`microcode_ctl` for CVE-2025-20012 is `affected` on RHEL 6 and `not_affected` on RHEL 10, and both are returned). The shape is what lets one versionless package listed at many versions be stored as one row per verdict. `stream` is empty for every feed and is keyed now so a later release can record a CSAF product stream without changing the primary key. A re-insert rewrites a row's content (and `updated`) only when its version list, base id, id type or version kind changed, and moves only its owner when another adapter wrote it (below). A changed verdict is a new row, and the old one goes only when removal deletes it: with removal disabled (`-sweep-max-fraction 0`) or while an adapter's sweep is refused, the old verdict is served beside the new one. Migration v3 makes the change; the fresh database this release requires makes the primary-key rebuild free, and the migration is also correct on a populated table.
-- **Rancher reads the hub's repository snapshot.** The `rancher-vex` adapter now downloads the tarball the hub's `vex-repository.json` names (`https://github.com/rancher/vexhub/archive/refs/heads/main.tar.gz`, ~8 MB) on every sync and parses each per-package file its `index.json` lists: one request per sync and one consistent commit. It replaces a walk of ~1,250 per-file requests (~204 MB) that could mix commits while Rancher's bot pushed, and an incremental path through GitHub's compare API, which silently returns only the first 300 changed files. **Deploy note:** a host `config.yaml` whose `rancher-vex` url still points at `…/index.json` fails every Rancher sync until it is changed to the tarball; the deploy installs the release's `config.yaml`, which has it.
-- Adapters report what each sync covered: whether it emitted the feed's entire current set, which CSAF documents it fully re-read, and, for Red Hat and SUSE CSAF, the distribution's `index.txt` of live documents. The `adapter done` log line carries `complete`, `refreshed` and `live`, and removal (under Added) acts on them.
-- **Red Hat and SUSE CSAF: each document is read once, a failed one is read again, and an answer that is not the document is a failure.** A cold start reads `changes.csv` and `index.txt` first, back to back. The bulk archive, a weekly cut, now skips every document `changes.csv` dates after the cut and every one `index.txt` no longer lists — before, an archived copy was stored as well as the current one, so the older version's rows outlived it — and the crawl then reads every `changes.csv` document the archive did not, and each document only `index.txt` lists, by its index path (Red Hat had six such in October 2026). A cold start is complete only when its `index.txt` is trusted and every document it lists was read. Every fetched body must be the CSAF document its path names (a `document.csaf_version`, a `document.tracking.id`, and the CVE as the tracking id or in `vulnerabilities[].cve`): an HTTP 200 carrying an error page extracted to nothing and would count as a document that states nothing. A document that fails is read once more about 30 s after the main pass; one that fails again makes the run incomplete and holds the watermark one second before the earliest such document, so the next run reads it again — unless its `changes.csv` date is more than 7 days old, when it is given up on with a WARN. A 404 or 410 for a document `index.txt` does not list is a withdrawal, not a failure. The steps log `csaf reading failed documents once more`, `csaf failed documents read once more` and `csaf document withdrawn: gone, and index.txt does not list it` (INFO), and `csaf document gone but not withdrawn`, `csaf document failed and is older than the retry window; giving up on it` and `csaf index.txt lacks documents fetched this run; no live manifest this run` (WARN).
-- **Every row records the adapter that wrote it.** `statements.adapter_id` (migration v2) holds the adapter that last wrote the row: an identical write by another adapter moves only the owner, so a key two adapters emit (an Alpine package that moved between the main and community repositories) is not deleted by the sweep of the one that stopped emitting it. Removal deletes only an adapter's own rows, and never a row with no owner. The migration adds an index on `(adapter_id, cve)` and sets autovacuum on `statements` to 1% of the table plus 100,000 rows, so the space removal frees is reused after every sweep rather than about once a month at the default 20%.
-- **`/healthz` checks the database.** It pings the database with a 2 s timeout and answers `503 database unreachable` when the ping fails; before, it answered `200 ok` without touching the database, and did so through a database outage while `/v1/stats` answered from its cache. An orchestrator that uses `/healthz` as a liveness probe will now restart the app during a database outage.
-- `docker-compose.yml` sets `wal_compression=lz4` on Postgres: a removal writes about one full page image per deleted row, and lz4 cut that WAL 3.6x in testing. The file also notes the transient disk a sweep needs.
-- Alpine 3.24 secdb feeds (`alpine-secdb-v3.24-main`, `alpine-secdb-v3.24-community`) are configured.
-- Red Hat OVAL removed: Red Hat is deprecating the feed, there is no RHEL 10 OVAL, and its rows are version-less claims on every EUS CPE variant. Cost, stated plainly: queries against RHEL 9.6 EUS repository CPEs no longer get `fixed` for CVEs fixed before the 9.6 EUS branch point (Red Hat CSAF records those under `enterprise_linux:9`). The `redhat-oval` adapter type is gone, so a `config.yaml` that still lists it fails at boot with "unknown adapter type"; the release's `config.yaml` drops the entry. Its stored rows have no owner and no adapter, so nothing would remove them; the fresh database this release requires has none. Red Hat CSAF VEX is unchanged.
-- `oval-to-vex` dependency bumped to v0.4.0, which removes the Red Hat translator and carries the Oracle and Debian fixes above.
-- Dependencies: pgx 5.11.0, klauspost/compress 1.20.0, ulikunitz/xz 0.5.17, golang.org/x/{sync,sys,text,time}. Runtime image on Alpine 3.24. Release workflow on `docker/setup-buildx-action@v4`, `docker/login-action@v4`, `docker/build-push-action@v7` (Node 24; none of the removed inputs were in use). `docker-compose.yml` pins `v0.12.2`, which it had fallen behind.
+- **Breaking: a versioned query gets only the verdicts that hold for that version.** For Debian, Ubuntu OVAL, AlmaLinux, Oracle, Alpine and Amazon, `fixed` comes back only at or above the fixed-in version. For Ubuntu OpenVEX and Rancher, you get the verdict stated for that exact build, and nothing for a build the vendor did not list. Red Hat and SUSE CSAF are unchanged. See [Versioned queries](docs/api.md#versioned-queries).
+- **Fixed-in rows answer a versioned query under the PURL you sent, version included.** Before, it was echoed in base form.
+- **Ubuntu OpenVEX and Rancher answers name the vendor's own versioned identifiers**, one per matched build, written the way Trivy writes them (`epoch=N` qualifier, percent-encoded). A query without a version gets every listed build, each under its own verdict.
+- **Breaking: `/v1/analyze` attributes verdicts per component.** A vulnerability whose `affects[]` components get different states is left without an analysis, instead of getting one rolled-up verdict. See [POST /v1/analyze](docs/api.md#post-v1analyze).
+- **Ubuntu ESM/FIPS tracks of one release, and Rancher keys with conflicting justifications, return each verdict.** Before, the last one written won.
+- **Red Hat CSAF can return several verdicts for one component**, one per product stream (for example `affected` on RHEL 6 and `not_affected` on RHEL 10). Before, only the last one was kept.
+- **A changed verdict is a new row.** While removal is off, or refused for an adapter, the old and new verdicts are both served.
+- **Rows that share an identifier come back in a fixed order**, so `offset` paging never repeats or skips one.
+- **`limit`, `X-Reel-Statements` and `X-Reel-Truncated` count only the rows returned** after version matching.
+- **Rancher is read from one repository snapshot per sync** instead of one request per file.
+- **Red Hat and SUSE CSAF:** a document that fails is read again in the same run, and an HTTP 200 that is not the CSAF document counts as a failure. A cold start no longer stores an archived copy beside the current one.
+- **The `adapter done` log line** carries `complete`, `refreshed` and `live`.
+- Internal: a CSAF cold start returns ingest errors instead of falling back to a full crawl; acceptance suite; CI on every branch; `oval-to-vex` v0.4.0 and other dependency bumps; runtime image on Alpine 3.24; `docker-compose.yml` sets `wal_compression=lz4`.
 
 ### Added
+- **Removal:** rows a vendor stops publishing are deleted after a sync, behind a safety guard. `-sweep-max-fraction` (default `0.2`; `0` off, `1` lifts the fraction guards) and `-sweep-force <adapter-id>[,…]` for a sweep that stays refused. See [Removal](docs/architecture.md#removal).
+- **Debian binaries are answered from their source package** (`libc6` → `glibc`) on `/v1/analyze` and on `/v1/statements` with `sbom`, with `match_reason=via_source_package`. A plain `products` query must name the source package. See [Debian source packages](docs/api.md#debian-source-packages).
+- **Alpine 3.24** feeds (`alpine-secdb-v3.24-main`, `alpine-secdb-v3.24-community`).
 
-- **Rows a vendor stops publishing are removed.** Until now ingest only inserted and updated, so a statement a vendor withdrew or corrected stayed in the database, and was served, indefinitely. Each sync now records the keys it emitted, and three mechanisms delete the adapter's own rows that it did not, each where the feed can prove it:
-  - **Whole-feed sweep**, after a sync that emitted the feed's entire current set: Ubuntu OpenVEX and every OVAL and Alpine secdb adapter when their file changed, Amazon ALAS and Rancher on every run (both re-read their whole feed), and a CSAF cold start that read every document its trusted `index.txt` lists, with none failed. Refused, deleting nothing, when it would remove more than `-sweep-max-fraction` of the adapter's rows, or when the sync emitted nothing.
-  - **Per-document replacement** for the CSAF documents a run read in full when the run as a whole is not complete — an incremental sync, or a cold start in which some documents failed: each document is the vendor's complete current set for its CVE, so that CVE keeps exactly the rows this sync emitted, and a document that now lists nothing removes them all. No fraction guard: a parsed document is authoritative.
-  - **Withdrawal** of CSAF CVEs absent from the distribution's `index.txt`, keeping every document the run itself refreshed (a document just fetched is live even when `index.txt`, read at another moment, does not list it yet). A run whose `index.txt` lacks a document it fetched does not trust that `index.txt`: it logs a WARN, withdraws nothing and is not complete. Refused on an empty manifest, or when more than `-sweep-max-fraction` of the CVEs the adapter holds would go. Red Hat's `deletions.csv` is not read: its dates are back-dated, and some documents it lists are still in `index.txt` and served.
+### Removed
+- **Red Hat OVAL** (the `redhat-oval` adapter type). Red Hat is deprecating the feed. Queries against RHEL 9.6 EUS repository CPEs no longer get `fixed` for CVEs fixed before the 9.6 EUS branch point.
 
-  A CSAF run in which some documents failed still replaces the documents it did read and still withdraws. No removal runs after a sync or batch-write error or a `-limit` cut, and a sync that found its feed unchanged and fetched nothing is not complete, so it removes nothing. A failed or refused removal is logged and never fails the adapter; the next sync retries. `-sweep-max-fraction` (default `0.2`) sets both guards: `0` disables removal and records nothing, `1` lifts the fraction guards. A refused sweep stays refused, since the rows it would delete still count against the guard on the next run; `-sweep-force <adapter-id>[,…]` lifts the guards for the named adapters on every ingest the process runs (an unknown id refuses to start, and the forced lines say `forced=true`), which is the way out once the drop is confirmed. A sweep counts before it deletes, so a refused one writes nothing, and then deletes in batches of at most five million rows, all in one `REPEATABLE READ` transaction; each statement is bounded at two hours and each sweep or withdrawal at six. An adapter run that reaches its sync logs one `sweep` line (one that fails earlier, at discovery or reading its watermark, logs none), and a CSAF run whose `index.txt` was trusted and whose removal was not skipped one `withdraw` line. Measured on the full Ubuntu OpenVEX feed, a whole-feed sweep took 85 minutes and ~84-116 GB of transient disk above the database's steady size (temp files, the table of keys the sync emitted, and the gone set at about 36 bytes a row), released when it ends. Details: [`docs/architecture.md`](./docs/architecture.md#removal).
-- **One ingest at a time.** An ingest holds a Postgres advisory lock for its whole run, and a second one against the same database — a CronJob's `ingest` beside a `serve` scheduler, or a manual `ingest` — touches nothing and refuses with `another ingest is running` (the `ingest` subcommand exits non-zero). Without it the second run would replace the first's seen keys mid-sync, and the first's sweep would then delete live rows. The lock ends with its database session, so a crashed process cannot leave it held.
-- **Acceptance suite** (`test/acceptance`, build tag `integration`): trimmed copies of one live feed per adapter type (Red Hat and SUSE CSAF, Canonical OpenVEX, Ubuntu OVAL noble, Debian OVAL bookworm, Rancher, Alpine v3.22, Amazon Linux 2 and 2023, AlmaLinux 9, Oracle ol8 and ol9), served over HTTP to the real binary's `ingest`, load a database of the suite's own, and each case compares an HTTP answer with the statements the vendor document makes, citing where. A second fixture generation and ingest checks removal. Each ingest must ask for every fixture of its day and nothing else, log only the warnings it must (the two refused removals, exactly once each), read every feed whole on its first run and leave each adapter the expected number of rows; the binary's HTTP proxy points at a closed port so it cannot reach a live feed. It found the `trusty/esm`, point-release, Amazon identifier, Red Hat archive date and echo-encoding defects fixed above.
-- CI runs on pushes to every branch, vets with the `integration` tag too, runs `TestPG` against its Postgres service, and passes `-count=1` everywhere. The database suites fail instead of skipping when `CI=true` and `REEL_VEX_TEST_PG_DSN` is unset.
+### Fixed
+- **SUSE fixed packages are now stored as `fixed`.** None were before.
+- **Alpine's `"0"` is now `not_affected`** (justification `vulnerable_code_not_present`), not `affected`. A package listed under several versions gets the highest fixed one.
+- **Debian's `0:0` bound is now `affected`** with no version, not `fixed`.
+- **Each Oracle Linux adapter stores only its own release.**
+- **Ubuntu `trusty/esm` rows now match Ubuntu 14.04.**
+- **Point-release distros now match**: `debian-12.11` reaches `debian-12`, `oracle-8.10` reaches `oracle-8`.
+- **Amazon Linux `product_id`s are valid PURLs**, with the version before the qualifiers.
+- **Red Hat rows loaded from the bulk archive carry each document's own date**, so `since` is right after a cold start.
+- **Rancher error text is no longer stored as a product identifier.**
+- **`match_reason` names the strongest rule**, whatever the order of the products sent.
+- **Versionless npm-scoped PURLs** (`pkg:npm/@angular/core`) keep their name, and a PURL's subpath is dropped from its base form.
+- **The echoed identifier keeps the caller's encoding** (`distro=amazon-2%20%28Karoo%29` is no longer decoded).
 
 ## [0.12.2] — the stats timeout now survives the process that set it
 
+*Released 2026-08-24*
+
 ### Fixed
-
-- **The stats timeout is enforced server-side.** 0.12.1 bounded the computation with a Go context, which is enough only while the process is alive. If it exits mid-scan — a container recreate, say — Postgres does not notice the client is gone until the query tries to return rows, so an aggregate over the whole table runs to completion with nothing to return to, competing for I/O with the replacement process doing the same work. Observed on the 0.12.0 → 0.12.1 swap: an orphaned count was still running **eleven minutes** after the container that asked for it had exited. The computation now runs in a transaction with `SET LOCAL statement_timeout`, so the database enforces the bound whether or not the client is still there. `SET LOCAL` rather than `SET`, so the setting can't ride a pooled connection back into the pool and cap unrelated work later.
-
-- **`Retry-After` is exposed to browsers.** `/v1/stats` answers `503` + `Retry-After` while its cache warms, but `Retry-After` is not a CORS-safelisted response header — so a browser client could not read it and had to guess how long to wait. Added to `Access-Control-Expose-Headers`.
+- **The `/v1/stats` time limit is enforced by Postgres**, so the computation stops even if the process that started it exits.
+- **Browsers can read `Retry-After`** (added to `Access-Control-Expose-Headers`).
 
 ## [0.12.1] — /v1/stats no longer stalls after a restart
 
-### Fixed
+*Released 2026-08-24*
 
-- **The distinct-CVE count is ~15× faster.** `COUNT(DISTINCT cve)` is correct but Postgres plans it as a single-threaded sequential scan over every row followed by a full sort — on a 382M-row table that is **~30 minutes and gigabytes of temp spill, on every process restart**. It is now a recursive loose ("skip") index scan over the `cve` index, so the work tracks the number of *distinct* CVEs (~336k) rather than the number of rows. Measured on production: **30 min → 1m59s**, same answer. An integration test pins it against the naive query, empty table included.
-
-  This depends on an index leading with `cve`; dropping `idx_statements_cve` would make the new form far worse than the old one, and the code says so.
-
-- **`/v1/stats` answers immediately while the cache is cold.** The startup warm-up holds the stats mutex for as long as the scans take, and a request arriving in that window used to block on it — so the caller got a proxy timeout after 30s rather than an answer. The endpoint now returns **`503` with `Retry-After: 60`** when a computation is already in flight. Nothing is broken in that state; the number simply isn't ready, and saying so beats stalling a connection.
-
-- **Stats computation is bounded.** It ran with `context.Background()` — no timeout at all, which is how a pathological plan held a pooled connection for half an hour. It now has a 20-minute backstop: far above the normal path, far below forever.
+**Upgrade notes:** With the bundled `docker-compose.yml`, recreate the Postgres container to apply `shm_size: 1gb`.
 
 ### Changed
+- **`/v1/stats` answers `503` with `Retry-After: 60` while its numbers are being computed**, instead of holding the request.
+- **`shm_size: 1gb`** on the bundled Postgres service, which large parallel queries need.
 
-- **`shm_size: 1gb` on the bundled Postgres service.** Docker defaults `/dev/shm` to 64MB, which is too small for the parallel plans a table this size invites — a parallel bitmap scan fails outright with `could not resize shared memory segment`. Takes effect when the container is recreated.
+### Fixed
+- **`/v1/stats` is ready within minutes of a restart** instead of about half an hour.
+- **The stats computation has a 20-minute limit.**
 
 ## [0.12.0] — OpenVEX statements grouped by assertion; opt-in architecture matching
 
-### Fixed
+*Released 2026-08-24*
 
-- **Responses that supply `products` are now schema-valid.** OpenVEX 0.2.0 declares `statements` with `uniqueItems: true`, and reel-vex was emitting duplicates: one statement per database row, while a products-bearing query echoes the *caller's* identifier in base form — no version, no arch — so the eight architectures × five package versions a distro publishes for one advisory all rendered byte-identically. A real `ubuntu:22.04` SBOM query returned 13 543 statements of which 12 215 were exact duplicates, and the document failed validation. CVE-only queries were never affected (each statement carried its own stored identifier).
+**Upgrade notes:** If you count `statements[]`, the number changes (see Changed). No migration; to roll back, redeploy the previous image.
 
 ### Changed
-
-- **`statements[]` now counts distinct assertions, not database rows.** Rows agreeing on every statement-level field — CVE, status, justification, supplier, timestamp, and the whole of `status_notes` — are emitted once with `products[]` holding the union of their subjects. Nothing merges across a differing verdict, vendor, timestamp or provenance: `status_notes` carries `source_format`, `match_reason` and `scope`, and is part of the merge key precisely so a CSAF row and an OVAL row, or a scoped Rancher verdict and an unscoped one, stay distinct.
-
-  Measured on live data: `ubuntu:22.04` SBOM 13 543 → 750 statements (4.5 MB → 316 KB); `CVE-2023-4911` 6 353 → 19. **Nothing is dropped** — every product in the old response is in the new one. If you counted `statements[]` as a number of verdicts, that number changes; `X-Reel-Statements` still reports rows and is unchanged.
-
-  Consumers that iterate `products[]` need no change. Verified against **Trivy 0.74.0**: a grouped document suppresses the identical set of CVEs as the ungrouped equivalent, including with statements carrying thousands of products.
+- **Breaking for counters: statements are grouped.** Rows that agree on CVE, status, justification, supplier, timestamp and `status_notes` are one statement whose `products[]` lists all their products. Nothing is dropped, and Trivy suppresses the same findings. `X-Reel-Statements` still counts rows.
 
 ### Added
+- **`strict_arch`** on `/v1/statements` and `/v1/analyze` (default `false`). When set, a row comes back only if it has no `arch`, an architecture-independent one (`noarch`, `src`, `source`, `all`), or one the request named.
+- **`X-Reel-Grouped`** (statements emitted) and **`X-Reel-Arch`** (the architecture set `strict_arch` applied) headers. Browsers can read both.
 
-- **`strict_arch` on `POST /v1/statements` and `POST /v1/analyze`** (optional, default `false` — existing behaviour unchanged). Matching ignores the `arch` qualifier by default, which is correct across a corpus where the feeds disagree wildly about whether to qualify (Canonical's OpenVEX ~100% of rows, Red Hat CSAF ~69%, every other source 0%) — but it means a scanner on `amd64` silently receives `arm64` and `s390x` verdicts echoed back under its own identifier. With `strict_arch` a row is returned only if it carries no `arch`, an architecture-independent one, or one the caller named.
-
-  Architecture-independent means `noarch`, `src`, `source` and `all` — Red Hat writes `src`, Ubuntu writes `source`, Debian/Ubuntu write `all`. Narrowing these away would discard real vendor verdicts, so the set is table-tested by vendor.
-
-  The architecture set is request-level (the union across supplied products), so a mixed-architecture request widens rather than narrows; and it is a no-op when nothing you sent names an architecture, including every CVE-only query.
-
-- **`X-Reel-Grouped`** — statements emitted, alongside `X-Reel-Statements`' row count.
-- **`X-Reel-Arch`** — the architecture set `strict_arch` applied; absent when nothing was narrowed. Deliberately not a dropped-row count, which would require running the un-narrowed query to compute. Both headers are CORS-exposed.
-
-### Internal
-
-- `pkg/csaf.PURLArch` / `csaf.ArchIndependent`; `db.QueryFilters.ArchAllow`, implemented in both the Postgres backend and the in-memory fake. Arch filtering is two layers: a `LIKE` superset in SQL so `LIMIT` applies to rows the caller keeps and truncation stays honest, and an exact qualifier re-parse in `pkg/api` because `LIKE` cannot see qualifier boundaries (`arch=amd64` vs `arch=amd64_v2`). The predicate rides the existing covering index as an index filter — verified on production data: no additional heap fetches, **no new index**.
-- `TestEncode_ValidatesAgainstSchema` runs encoder output through a real JSON Schema validator. The previous test read the schema but only checked required fields and enums, which is why a `uniqueItems` violation could ship.
-- **No schema migration, no ingest change.** Rows stay one-per-architecture; all of this is response-time, and rollback is redeploying the previous image.
-- Dependencies refreshed: `gocsaf/csaf` v3.5.1 → v3.6.0, `klauspost/compress` v1.18.6 → v1.19.2, `ulikunitz/xz` v0.5.15 → v0.5.16. Toolchain moved to **Go 1.27** across reel-vex, `oval-to-vex` and `cyclonedx-to-openvex`.
+### Fixed
+- **Responses to queries with `products` are valid OpenVEX.** They used to contain duplicate statements.
+- Internal: Go 1.27 toolchain, dependency updates, a full JSON Schema check in tests.
 
 ## [0.11.1] — telemetry: echo queried CVE for single-CVE lookups
 
-### Added
+*Released 2026-07-13*
 
-- **`X-Reel-CVE` response header** on `POST /v1/statements` for single-CVE lookups (exactly one CVE queried; omitted for multi-CVE and broad/SBOM queries to avoid high-cardinality noise). Lets the telemetry pipeline see which CVE was asked for — the CVE rides the request body, invisible to the fronting proxy. Paired with the website `vector.toml` lifting it into the `api_request` event as `cve`.
+### Added
+- **`X-Reel-CVE` header** on `/v1/statements` when exactly one CVE was queried.
 
 ## [0.11.0] — telemetry: query mode + result size on response headers
 
-### Added
+*Released 2026-07-13*
 
-- **`X-Reel-Mode` + `X-Reel-Statements` response headers** on `POST /v1/statements` and `POST /v1/analyze`. `X-Reel-Mode` is `cve` or `broad` (broad = product/SBOM-component query with no CVE filter); `X-Reel-Statements` is the emitted/merged statement count. Set on both the 200 and 204 paths. The fronting Caddy proxy logs response headers, so the PostHog telemetry pipeline (Caddy access log → Vector sidecar) can capture query shape and result size without inspecting request bodies. The served VEX/JSON bodies are untouched. Pairs with the website `vector.toml` change that lifts these into the `api_request` event.
+### Added
+- **`X-Reel-Mode`** (`cve` or `broad`) and **`X-Reel-Statements`** (statement count) headers on `/v1/statements` and `/v1/analyze`, on both `200` and `204`.
 
 ## [0.10.0] — four new OS feeds: Alpine, Amazon Linux, AlmaLinux, Oracle Linux
 
+*Released 2026-06-09*
+
+**Upgrade notes:** An adapter runs only when `config.yaml` lists it. Add the new entries to use these feeds (the release's `config.yaml` has them).
+
 ### Added
-
-- **Alpine Linux secdb adapter** (`alpine-secdb`, vendor `alpine`, new `source_format` `secdb`). Ingests Alpine's per-branch `main.json`/`community.json` from `secdb.alpinelinux.org`. Fix-version statements; the `secfixes` `"0"` sentinel maps to `affected`, all other keys to `fixed`. CVE ids are split from glued non-CVE advisory refs (e.g. `"CVE-… GHSL-…"`). Statements are branch-scoped — `pkg:apk/alpine/<name>?distro=alpine-<major.minor>` — so a package fixed at different versions across branches stays distinct.
-- **Amazon Linux adapter** (`amazon-alas`, vendor `amazon`, new `source_format` `updateinfo`). Amazon ships no OVAL/CSAF; the adapter crawls each core repo's `mirror.list → repomd.xml → updateinfo.xml.gz` for amzn2 + al2023, emitting `pkg:rpm/amazon/<name>?distro=amazon-<major>` fixed statements. v1 covers core repos only (AL2 "Extras" + EOL AL1 are out of scope).
-- **AlmaLinux + Oracle Linux OVAL adapters** (`almalinux-oval` / `oracle-oval`, vendors `almalinux` / `oracle`). Both delegate to `oval-to-vex` v0.3.0's new RPM-level parsers (`FromAlmaLinuxOVAL`, `FromOracleOVAL`), which walk the rpminfo criteria tree to emit `pkg:rpm/<vendor>/<name>` fixed statements (unlike the CPE-only `FromRedHatOVAL`). AlmaLinux is emitted under both `pkg:rpm/almalinux/` and `pkg:rpm/alma/` (scanner namespace drift); Oracle reads its target release(s) per-definition from the `<platform>` tag and skips Ksplice variants in v1.
-- **Resolver distro normalization** (`pkg/resolver`). A scanner's distro qualifier is more granular than the stored identity for these feeds, so the resolver now normalizes apk (`3.21.3` / `alpine-3.21.2` → `alpine-3.21`), Amazon (`amazon-2023.7.x` → `amazon-2023`), and AlmaLinux (`alma-9.1` / `almalinux-9.1` → `almalinux-9`) query distros to the stored major(.minor). Additive and ecosystem-gated — other feeds are untouched, and distro stays identity, so one major/branch's fix can't leak into another's scan.
-
-### Changed
-
-- **`oval-to-vex` dependency bumped to v0.3.0** (adds the RPM-level OVAL parsers above; `FromRedHatOVAL` is unchanged).
+- **Alpine secdb** (`alpine-secdb`, vendor `alpine`, `source_format` `secdb`), per branch: `pkg:apk/alpine/<name>?distro=alpine-<major.minor>`. The secfixes `"0"` key was stored as `affected` (corrected to `not_affected` in 0.13.0).
+- **Amazon Linux** (`amazon-alas`, vendor `amazon`, `source_format` `updateinfo`) for the amzn2 and al2023 core repositories.
+- **AlmaLinux and Oracle Linux OVAL** (`almalinux-oval`, `oracle-oval`). AlmaLinux rows are emitted under both `pkg:rpm/almalinux/` and `pkg:rpm/alma/`.
+- **Distro normalisation for these feeds**: `alpine-3.21.2` → `alpine-3.21`, `amazon-2023.7.x` → `amazon-2023`, `almalinux-9.1` → `almalinux-9`.
 
 ## [0.9.2] — analyze CVE cap raised to the SBOM limit (covering index made it cheap)
 
-### Changed
+*Released 2026-06-07*
 
-- **`-analyze-max-cves` default 500 → 10000**, aligned with `-max-sbom-vulns` so a document the API accepts at the door is one it will analyze. The old cap predated the 0.9.0 covering index: in 0.8.x the CVE-mode query (`cve = ANY(...) AND base_id = ANY(...)`) was ~linear at ~18 ms/CVE, which is what the 500/800 caps were sized for. Re-measured on the prod-size DB (185M rows) it now plans as an **index-only scan on `idx_statements_broad`** driven by `base_id`, so cost tracks matched rows, not CVE count — a real 3509-CVE × 464-base user-VEX merge runs in **~0.9 s** (previously rejected with a 400). The cap stays a cheap up-front reject; `-query-timeout` (20 s) is the hard backstop.
-- **`docker-compose.yml` reconciled to the prod runtime** (it had drifted): explicit `-analyze-max-cves`, `-ingest-interval 4h` (was 24h), `-admin-token ${ADMIN_TOKEN}` (gates `POST /v1/ingest`), and a pinned image tag instead of `:latest`. `.env.example` gains `ADMIN_TOKEN`.
+**Upgrade notes:** The bundled `docker-compose.yml` now refuses to start until `ADMIN_TOKEN` is set in `.env` (see `.env.example`). It gates `POST /v1/ingest`.
+
+### Changed
+- **`-analyze-max-cves` defaults to 10000** (was 500), the same as `-max-sbom-vulns`. Requests that got a `400` may now be accepted.
+- **`docker-compose.yml`** runs `-ingest-interval 4h` and `-admin-token`, and pins the image tag.
 
 ## [0.9.1] — build the covering index after the cold load (fast first deploy)
 
-### Changed
+*Released 2026-06-05*
 
-- **The broad-mode covering index (`idx_statements_broad`) is no longer created in the schema migration.** It's built at the end of each ingest cycle by `EnsureCoveringIndex` (`CREATE INDEX IF NOT EXISTS`, a new `db.Store` method). So the **cold first ingest loads index-free** (fast bulk `COPY`) and the index is built **once** afterwards; later incremental cycles find it already present (the create no-ops, the small deltas just maintain it). This removes the slow *maintain-during-bulk-load* path a plain `docker compose up` would otherwise hit on first boot — the cold deploy is now fast with no manual drop/rebuild step. Existing 0.9.0 databases keep their index (migration v1 already ran); the post-ingest ensure no-ops there.
+### Changed
+- **The broad-mode covering index is built after each ingest**, not by the migration, so loading an empty database is fast. A 0.9.0 database keeps its index.
 
 ## [0.9.0] — Postgres backend; SQLite removed (BREAKING)
 
-### Changed
+*Released 2026-06-05*
 
-- **reel-vex is now Postgres-only.** The single-file SQLite backend (`modernc.org/sqlite`) is gone; persistence is PostgreSQL via `pgx/v5` (`pkg/db/postgres`), behind the `db.Store` interface introduced in 0.8.5. **Breaking:** `-db` now requires a `postgres://` connection URL (no more file path). This is the scalability foundation — real concurrent connections, autovacuum (no upsert bloat / cattle-rebuild), and a **covering index** (`idx_statements_broad … INCLUDE (…)`) that makes broad-mode an index-only scan, which SQLite couldn't do (no `INCLUDE`).
-- The Postgres schema declares the final shape directly (no v1→v4 evolution dance); migrations are tracked in `schema_version`. Query/upsert semantics are identical to the old backend — same conditional upsert (`IS DISTINCT FROM`), scope gate, deterministic order, and RFC3339-TEXT `updated` comparison. Validated end-to-end against a real Postgres (`TestPG`, gated on `REEL_VEX_TEST_PG_DSN`).
-- Consumer tests use an in-memory `db.Store` fake (`pkg/db/dbtest`), so `go test ./...` needs no database. The integration suite (`-tags integration`) runs against a real Postgres (a `postgres` service in CI; locally via `REEL_VEX_TEST_PG_DSN`) and skips when none is set.
-- **Ingest bulk-load via `COPY`.** `BulkInsert` stages each batch in a temp table via `COPY` then merges with one set-based conditional upsert, instead of per-row `INSERT`s. Measured ~9× faster at ingest scale (≈7,150 vs ≈780 rows/s) — the DB is no longer the ingest bottleneck.
+**Upgrade notes:** **Breaking:** reel-vex needs PostgreSQL. `-db` takes a `postgres://` URL instead of a file path. Nothing is imported from SQLite; the first ingest fills the new database.
 
 ### Added
+- **`-no-scheduler`**: serve without the in-process ingest, for read-only replicas beside a separate `ingest` worker.
+- **`docker-compose.yml` and `.env.example`**: the app plus Postgres, with `config.yaml` mounted from the host.
 
-- **`-no-scheduler` flag** to run `serve` without the in-process ingest scheduler — for read-only API replicas behind a load balancer, with a single separate worker (e.g. a CronJob running `ingest`) owning all writes. The basis for horizontal scaling.
-- **`docker-compose.yml`** (+ `.env.example`) — single-box deployment: the app plus its Postgres, with `config.yaml` host-mounted (never baked into the image). Drop the `postgres` service to use a managed/external database.
+### Removed
+- **The SQLite backend.**
+- Internal: bulk loading with `COPY`; tests run against an in-memory store.
 
 ## [0.8.5] — every bounding limit is now a host flag
 
+*Released 2026-06-05*
+
 ### Added
-
-- **Five more server flags expose the remaining hard-coded limits**, so a self-hoster can lift them without a code change: `-query-timeout` (default 20s — the per-query DB ceiling, previously a constant), `-max-sbom-components` (50000), `-max-sbom-vulns` (10000), `-max-statements-items` (10000), `-max-user-vex-statements` (25000). With `-sbom-max-mb`, `-statements-max`, and `-analyze-max-cves` (already flags), every request-bounding number on the API is now tunable. The public hub keeps its conservative shared-instance defaults; the README's new **Limits** table documents the full set.
-- The HTTP server's `WriteTimeout` now auto-tracks `-query-timeout` (`max(30s, query-timeout+10s)`), so raising the query ceiling can't silently cut a long-but-allowed response short before its `503`.
-
-### Changed (internal)
-
-- **Extracted a `db.Store` interface** as the persistence seam; API, ingest, resolver, and alias layers now depend on it instead of the concrete `*db.DB` (SQLite). No behavior change — `*db.DB` is the only implementation today — but it lets a second backend (Postgres) drop in without touching those layers. Groundwork for the planned hub/DB split.
+- **Five limit flags**, with the previous values as defaults: `-query-timeout` (20s), `-max-sbom-components` (50000), `-max-sbom-vulns` (10000), `-max-statements-items` (10000), `-max-user-vex-statements` (25000).
+- **The HTTP write timeout follows `-query-timeout`** (`max(30s, query-timeout + 10s)`).
+- Internal: a `db.Store` interface between the database and the rest.
 
 ## [0.8.4] — skip the boot-time ingest when data is fresh
 
-### Changed
+*Released 2026-06-02*
 
-- **The scheduler no longer runs a full ingest on every restart.** `StartScheduler` ingests on boot only when data is stale (last cycle ≥ one interval old, or never ingested); within the interval it skips the boot run and aligns the next run to `last+interval`. Restarts/redeploys no longer trigger the contention-heavy full ingest (the `ubuntu-vex` long pole) that slowed every query and left `/v1/stats` cold. A manual `POST /v1/ingest` still forces a run anytime. To support this, `adapter_state.updated` now records the real cycle time (`now()`) instead of a watermark copy, and `db.LastIngestAt()` reads `MAX(updated)`. No migration — legacy values read as stale, so the first restart after upgrade ingests once and the timestamps self-correct.
+### Changed
+- **A restart runs an ingest only when the data is stale** (the last cycle is at least one interval old). Otherwise the next run waits until one interval after the last. The first restart after upgrading ingests once. `POST /v1/ingest` still forces a run.
 
 ## [0.8.3] — make the /v1/analyze CVE cap a host flag
 
-### Changed
+*Released 2026-06-02*
 
-- **`-analyze-max-cves` flag** (default 500) replaces the hard-coded constant, so the analyze CVE-query ceiling is tunable on the host without a release — same pattern as `-statements-max` and `-sbom-max-mb`. The default is lowered 800 → 500: 800 was observed to exceed the 20 s query timeout under ingest-time DB load (queries run slower while a cycle is writing). Raise it on the host when there's headroom.
+### Changed
+- **`-analyze-max-cves` flag** sets the `/v1/analyze` CVE cap. The default is 500 (was a fixed 800).
 
 ## [0.8.2] — calibrate the /v1/analyze cap to measured query cost
 
-### Changed
+*Released 2026-06-02*
 
-- **`maxAnalyzeCVEs` 1000 → 800; query timeout 15s → 20s.** 0.8.1's cap of 1000 was an estimate; measured on the prod-size DB the CVE-mode query is ~linear at ~18 ms/CVE (250→4 s, 400→7.4 s, 600→11.3 s, ~1000 exceeded 15 s). 800 distinct CVEs lands near ~15 s, within the raised 20 s `QueryStatements` timeout, so an accepted analyze reliably completes instead of tripping the backstop. Larger inputs still get a clear `400` to split.
+### Changed
+- **`/v1/analyze` CVE cap 1000 → 800, and the statement query timeout 15 s → 20 s.**
 
 ## [0.8.1] — bound /v1/analyze query cost
 
-### Fixed
+*Released 2026-06-02*
 
-- **`/v1/analyze` no longer lets a large upload pin the database.** A user-VEX document expanding to many distinct CVEs (a multi-thousand-statement VEX) built a vendor query over (distinct CVEs × product bases) that scanned for minutes — ~175 s observed on the prod-size DB, ending in a client-visible timeout. Two guards: the CVE-mode query is rejected up front with a clear `400` when it would touch more than `maxAnalyzeCVEs` (1000) distinct CVEs ("narrow the products/CVEs or split the document"), and **every statement query now carries a 15 s DB-side timeout** (`QueryStatements` via `QueryContext`) as a hard backstop — a slow query returns `503`, never an indefinite hold. Broad mode (components-only SBOM) is unaffected: no CVE filter, already bounded by `-statements-max`.
+### Changed
+- **`/v1/analyze` answers `400` when a request would query more than 1000 distinct CVEs.** Split the document or narrow it.
+- **Every statement query has a 15 s database timeout.** A query that hits it answers `503`.
 
 ## [0.8.0] — accept CycloneDX VEX on upload (normalised to OpenVEX)
 
-### Added
+*Released 2026-06-02*
 
-- **`/v1/analyze` accepts CycloneDX VEX** in `user_vex`, alongside OpenVEX 0.2.0 (`pkg/uservex`). A CycloneDX BOM carrying VEX is converted whole; an OpenVEX envelope that uses CycloneDX status/justification vocabulary (e.g. `requires_environment`) has those values remapped in place. Conversion uses the new [`getreeldev/cyclonedx-to-openvex`](https://github.com/getreeldev/cyclonedx-to-openvex) library and its published, fidelity-flagged crosswalk; every converted statement records provenance in `status_notes` (`converted_from=cyclonedx-vex; original_justification=…; fidelity=lossy`). Lossy mappings (CycloneDX is finer-grained than OpenVEX's five justifications) are flagged, not hidden.
-- **`reject_cyclonedx_lossy` request flag** (default false): strict mode — drop any statement whose mapping isn't exact instead of mapping to the nearest bucket.
-- **`X-Reel-Converted` response header**: counts of converted / lossy / contested / skipped statements, so normalisation is never silent (counts only — user VEX is never logged or persisted).
+### Added
+- **`user_vex` accepts CycloneDX VEX**, converted to OpenVEX. A converted statement records `converted_from=cyclonedx-vex`, its original justification and `fidelity` in `status_notes`.
+- **`reject_cyclonedx_lossy`** (default `false`) drops statements whose conversion is not exact.
+- **`X-Reel-Converted` header** with converted, lossy, contested and skipped counts.
 
 ### Changed
-
-- **Tolerant user-VEX parsing**: a single statement that isn't valid OpenVEX (bad/missing status or justification, no product identifier) is now skipped and counted, not fatal — one malformed row no longer sinks a multi-thousand-statement upload. Numeric limits (docs / statements / products per request) stay hard `400` resource guards.
-- **User-VEX statement cap raised 1000 → 25000** to admit real tool-exported documents under the 10 MB body cap.
+- **A malformed user-VEX statement is skipped and counted**, instead of failing the request. Numeric limits still answer `400`.
+- **User-VEX statement cap 1000 → 25000.**
+- **An OpenVEX document that uses CycloneDX words is converted, not rejected** (reverses 0.7.1).
 
 ## [0.7.1] — user-VEX format detection, larger upload cap, rancher-vex hardening
 
-### Added
-
-- **CycloneDX-vocabulary detection on user-VEX upload** (`pkg/uservex`). An OpenVEX-shaped document whose `status`/`justification` values are actually CycloneDX VEX vocabulary (`requires_environment`, `code_not_reachable`, `in_triage`, …) now fails with a single clear "this is CycloneDX — convert to OpenVEX first" error, instead of rejecting one off-spec enum value at a time (whack-a-mole). reel-vex accepts OpenVEX 0.2.0 only; this is the common real-world case where a tool emits an OpenVEX envelope filled with CycloneDX terms.
+*Released 2026-06-02*
 
 ### Changed
-
-- **SBOM/VEX upload cap raised from 5 MB to 10 MB** (`-sbom-max-mb` default; `/v1/analyze`, `/v1/statements`). Real vendor VEX documents exceed 5 MB, and the old cap forced truncation that yields confusing partial results.
+- **`-sbom-max-mb` defaults to 10** (was 5), on `/v1/analyze` and `/v1/statements`.
+- **An OpenVEX document that uses CycloneDX words** (`requires_environment`, `in_triage`, …) is rejected with one clear "this is CycloneDX" error.
 
 ### Fixed
-
-- **rancher-vex incremental sync no longer silently undercounts** (`pkg/source/ranchervex/adapter.go`). When the GitHub `compare` response hits its 300-file cap (truncated, no pagination), the adapter now falls back to a full index walk rather than dropping the overflow files. The commit-count guard alone didn't bound file count.
-- **rancher-vex preserves the vendor assertion timestamp** (`pkg/source/ranchervex/adapter.go`). Rancher's per-package documents set the OpenVEX `timestamp` only at the document level; statements now inherit it instead of being stamped with ingest time — fixing provenance and `/v1/statements?since=` filtering.
-- **rancher-vex `New()` error message** points at `index.json`, not the removed LFS monolith `rancher.openvex.json`.
+- **Rancher statements carry the document's timestamp** instead of the ingest time, so `since` filters them correctly.
+- **Rancher incremental syncs no longer drop files** past GitHub's 300-file compare limit.
 
 ## [0.7.0] — report server version in /v1/stats
 
-### Added
+*Released 2026-05-27*
 
-- **Server build version in `/v1/stats`** (`version` field). The version is injected into the binary at build time via `-ldflags "-X main.version=<tag>"` (Dockerfile `ARG VERSION`, set from the release tag in CI); `dev` for local/CI builds. Additive and `omitempty` — existing `/v1/stats` consumers are unaffected. Surfaced so the website can show which version is running.
+### Added
+- **`version` in `/v1/stats`**: the server build, or `dev` for local builds.
 
 ## [0.6.4] — rancher-vex consumes the index.json repo format
 
-### Changed
+*Released 2026-05-27*
 
-- **rancher-vex switches from the consolidated document to the `index.json` repo format** (`pkg/source/ranchervex/adapter.go`). It previously fetched the consolidated `reports/rancher.openvex.json` (~100 MB) in full every cycle. The adapter now walks the small `index.json` manifest to the per-package `scan.openvex.json` files (~3–4 KB each) — Rancher's repo-consumption path — fetching only what's needed instead of re-downloading the whole document each cycle. The index is in fact a **superset** of the consolidated report (which was a partial roll-up): a first reseed observed ~+18% more rows over the same scope set — broader, vendor-published, scope-gated coverage, with no schema change.
-  - **First sync**: full index walk, fetched via a bounded concurrent worker pool.
-  - **Incremental**: the GitHub commits API (`?since=<watermark>` + one `compare`) reports which per-package files changed; only those are fetched — most cycles touch nothing. Reuses the existing timestamp watermark (no new state).
-  - An unexpected non-JSON response fails with a clear error rather than a cryptic parse failure; individual per-file fetch failures are logged and skipped, not fatal.
-  - **Deploy note (two-part)**: the host `config.yaml` rancher URL must change from `…/reports/rancher.openvex.json` to `…/refs/heads/main/index.json`. Removals aren't reconciled (the ingest never deletes — a separate follow-up).
+**Upgrade notes:** In `config.yaml`, change the `rancher-vex` URL from `…/reports/rancher.openvex.json` to `…/refs/heads/main/index.json`.
+
+### Changed
+- **Rancher is read file by file through its `index.json`**, and later syncs fetch only the files that changed. This returns more Rancher statements than the consolidated document did.
 
 ## [0.6.3] — skip rewriting unchanged statements on ingest
 
-### Changed
+*Released 2026-05-27*
 
-- **Conditional upsert** (`pkg/db/db.go` `BulkInsert`): ingest now rewrites a row only when a verdict-bearing column (`status`, `justification`, `base_id`, `version`, `id_type`) actually changed — `INSERT … ON CONFLICT(…) DO UPDATE … WHERE … IS NOT excluded.…`. Previously `INSERT OR REPLACE` rewrote every row unconditionally, so re-walking a monolithic feed (Canonical's `vex-all.tar.xz`, Rancher's consolidated doc) re-upserted all ~164M rows on a no-op republish — hours of WAL churn. Unchanged rows are now true no-ops, collapsing a no-change re-walk from hours to minutes. `updated` is deliberately excluded from the change-test, so a timestamp-only bump is skipped and `updated` now tracks the last *material* verdict change; the null-safe `IS NOT` catches NULL↔value transitions on the nullable `version`/`justification` columns. No schema change.
+### Changed
+- **Ingest rewrites a row only when its verdict changed.** `updated`, and so `since`, now tracks the last real change rather than the last re-publish.
 
 ## [0.6.2] — retry transient feed-fetch failures
 
-### Added
+*Released 2026-05-27*
 
-- **`pkg/source/httpretry`**: a shared `http.RoundTripper` that retries idempotent requests (GET/HEAD) on transient failures — network errors and `429`/`500`/`502`/`503`/`504` — with exponential backoff (3 retries, 500 ms → 8 s cap), aborting on context cancellation. Wired into every adapter's HTTP client (Red Hat CSAF + bulk archive, SUSE CSAF, all OVAL streams, Ubuntu OpenVEX, Rancher). Previously a single transient blip (e.g. a CDN `503` on Canonical's `vex-all.tar.xz`) failed the adapter for the whole ingest cycle; on a **cold-start fresh box** (the rebuild-and-swap deploy model) that left the feed's data entirely missing until the next 4 h cycle. Non-idempotent methods are never replayed; the cap and backoff bound the added latency.
+### Added
+- **Feed downloads retry transient failures** (network errors, `429`, `500`, `502`, `503`, `504`) up to 3 times with backoff.
 
 ## [0.6.1] — expose truncation headers to browsers
 
-### Fixed
+*Released 2026-05-27*
 
-- **`Access-Control-Expose-Headers`** (`pkg/api/handler.go`): the truncation signal (`X-Reel-Truncated`, `X-Reel-Next-Offset`) is now exposed cross-origin. CORS hides all but a small safelist of response headers from browser JS, so a cross-origin client (the `vex.getreel.dev` playground) couldn't read truncation at all — a broad-mode/components-only-SBOM query capped at `-statements-max` looked like a complete result. curl/Go/Trivy were unaffected (CORS gates browsers only). The cap itself is unchanged.
+### Fixed
+- **Browsers can read `X-Reel-Truncated` and `X-Reel-Next-Offset`** (added to `Access-Control-Expose-Headers`).
 
 ## [0.6.0] — SUSE Rancher VEX hub (product-scoped statements)
 
-Adds a `rancher-vex` adapter for SUSE's Rancher VEX hub (`github.com/rancher/vexhub`) — a single consolidated OpenVEX 0.2.0 document of `not_affected` suppressions for SUSE cloud-native product images (Rancher, RKE2, K3s, Harvester, Longhorn). These statements are **product-scoped**, a model new to reel-vex: the product (`products[].@id` — an OCI image or Go module) is the context a verdict was made in, and the affected package rides in an OpenVEX *subcomponent*. To represent this faithfully without over-claiming, statements gain a `scope` dimension.
+*Released 2026-05-26*
 
-A scoped verdict applies only when the caller names its scope, so a `not_affected` scoped to one image can never suppress the same package on an unrelated one. With no scope context, only unscoped (package-level) rows — every existing feed — are returned, so all prior behaviour is unchanged.
+**Upgrade notes:** A forward-only migration adds `scope` to the `statements` primary key and rewrites the table. To roll back, restore a backup taken before the upgrade. Add the `rancher-vex` entry to `config.yaml` to ingest the feed.
 
 ### Added
-
-- **`rancher-vex` adapter** (`pkg/source/ranchervex/`): streams the consolidated `rancher.openvex.json` and emits one statement per (product-scope × subcomponent). Skips non-CVE-named statements (~3%, mostly `SUSE-SU` advisories with no CVE alias — reel-vex keys by CVE) and any product with no subcomponent. Vendor string `rancher` (distinct from `suse`); `SourceFormat()` `openvex`. Registered in `cmd/server/main.go`; config entry in `config.yaml`.
-- **`scope` column on `statements`** (schema **v4**, `pkg/db/migrations.go`): the OpenVEX product `@id` a statement is scoped to, added to the primary key `(vendor, cve, product_id, source_format, scope)` so the same package + CVE can carry different verdicts under different products without colliding. Additive rebuild — existing rows backfill `scope=''` and behave exactly as before. No index on `scope` (a residual filter after the `cve`/`base_id` narrowing; an index would roughly double the largest table).
-- **Query scope gate** (`pkg/db/db.go`, `QueryFilters.Scopes`): with no scopes, only `scope=''` rows return; with scopes, a row matches if it is unscoped *or* its scope is named — so scoped statements surface only for the product the caller is scanning.
-- **`scopes` request field on `POST /v1/statements`** (`pkg/api/handler.go`): opts product-scoped statements into the result. An SBOM's `metadata.component` supplies the scope automatically; `/v1/analyze` derives the scope from `metadata.component` the same way (`pkg/api/analyze.go`).
-- **`pkg/csaf.NormalizeScope`**: canonicalises a product `@id` for use as a scope key (keeps `repository_url`, strips version/digest); shared by ingest and the query layer so both canonicalise identically. A normalization mismatch only costs a missed suppression, never a false one.
-- **OpenVEX `subcomponents`** (`pkg/openvex.Component.Subcomponents`): the parser now models the OpenVEX 0.2.0 subcomponent struct; `status_notes` discloses `scope=<product @id>` on product-scoped rows (`pkg/openvex/encode.go`).
-- **Tests**: unit (parser, `NormalizeScope`, db scope gate incl. the over-suppression guard, adapter mapping/skips/errors), integration (HTTP scope gate on both endpoints), a trimmed **real-feed fixture** (`testdata/rancher-sample.openvex.json`), and an **opt-in live smoke** (`TestSmoke_LiveFeed`, gated behind `REEL_VEX_SMOKE=1`, skipped by default).
-
-### Changed
-
-- **`statements` primary key** gains `scope`: `(vendor, cve, product_id, source_format)` → `(vendor, cve, product_id, source_format, scope)`. Forward-only v4 migration; rollback = restore from a pre-upgrade backup.
-
-### Notes
-
-- **Deferred**: the ~3% non-CVE-named (`SUSE-SU`) tail carries no CVE alias and is skipped at ingest; reel-vex keys and serves by CVE. Advisory→CVE resolution (via the SUSE CSAF data we already ingest) is a possible later pass if a consumer needs it.
-- The v4 migration rebuilds the `statements` table. On a fresh-ingest box (the rebuild-and-swap deploy model) the table is empty and the copy is instant; an in-place upgrade pays a one-time full-table rewrite.
+- **SUSE Rancher VEX hub** (`rancher-vex`, vendor `rancher`): `not_affected` verdicts scoped to Rancher product images. Statements with no CVE id (mostly `SUSE-SU` advisories) are skipped. See [Product-scoped statements](docs/api.md#product-scoped-statements).
+- **`scopes` on `/v1/statements`.** A scoped verdict comes back only when you name its scope. An SBOM's `metadata.component` supplies it on both endpoints, and scoped rows carry `scope=` in `status_notes`. Without a scope, answers are unchanged.
 
 ## [0.5.1] — broad-mode queries, `/v1/analyze` synthesis, faster ingest
 
-`/v1/statements` gains **broad mode**: a request with products/SBOM-components but no CVEs returns *every* vendor statement touching those products (no CVE filter) — the fetch-once-attach-to-every-scan unit for `trivy --vex`, which does its own CVE matching against the doc. `/v1/analyze` gains the matching CycloneDX behaviour: a **components-only SBOM** comes back with `vulnerabilities[]` synthesised from a broad-mode lookup and annotated, so a downstream consumer gets a fully-populated CycloneDX document without a client-side OpenVEX → CycloneDX translation. Mission split is unchanged: `/v1/analyze` → CycloneDX, `/v1/statements` → OpenVEX.
-
-Separately, the first ingest of a fresh database is dramatically faster: Red Hat CSAF now seeds from the weekly bulk archive instead of crawling ~317K documents one HTTP GET at a time (~15 h → minutes), which makes the rebuild-and-swap deploy model practical.
+*Released 2026-05-26*
 
 ### Added
-
-- **`/v1/statements` broad mode** (`pkg/api/handler.go`): when `cves` is absent but `products`/SBOM components are present, returns all statements for the matched products with no CVE filter. `400` only when neither CVEs nor products are present.
-- **`-statements-max` flag** (`cmd/server/main.go`, default 50000; 0 = unlimited): caps statements returned by `/v1/statements`. When the cap is hit the response stays `200 OK` with `X-Reel-Truncated: true` and `X-Reel-Next-Offset` (an unsolicited 206 without `Content-Range` would violate RFC 7233); request `limit`/`offset` paginate. Wired via `api.Server.SetStatementsMax(int)`. Truncation is never silent (a dropped statement is a CVE `trivy --vex` won't suppress).
-- **`/v1/analyze` broad-mode synthesis**: when the input SBOM has empty `vulnerabilities[]`, `/v1/analyze` queries the vendor DB for every CVE touching the SBOM's components and synthesises a `vulnerabilities[]` entry per matched CVE before annotating. Lets a downstream consumer POST a components-only SBOM and get back a CycloneDX document fully populated with vendor VEX, without an intermediate OpenVEX → CycloneDX translation step. Non-empty-vulns input behaviour is unchanged — only existing entries are annotated. Rule: empty-in → populate from broad mode; non-empty-in → annotate only.
-- **gzip responses** (`pkg/api/gzip.go`): JSON endpoints compress when the request sends `Accept-Encoding: gzip` (skipped for 204/304). OpenVEX/CycloneDX compress ~10×.
-- **Red Hat CSAF bulk-archive cold-start** (`pkg/source/csafadapter/archive.go`): on a cold start (no watermark) the adapter downloads Red Hat's weekly `csaf_vex_<date>.tar.zst` (~300 MB) via `archive_latest.txt`, walks it locally, then fetches only the post-archive delta from `changes.csv`. Feeds without such an archive (e.g. SUSE) auto-fall-back to the per-document crawl. Adds dependency `github.com/klauspost/compress` (zstd).
-- **DB read tuning** (`pkg/db/db.go`): PRAGMAs moved into the DSN (`busy_timeout`, 256 MB `cache_size`, 2 GB `mmap_size`, `temp_store=MEMORY`) so they apply to every pooled connection — `synchronous=NORMAL` previously landed on only one. `DB.Optimize()` runs `PRAGMA optimize` after each ingest and at startup.
-- **`QueryFilters.Limit` / `.Offset`** (`pkg/db/db.go`): pagination on the unified query primitive; results are ordered deterministically (`base_id, cve, product_id, source_format`) so paged/cached output is byte-stable.
-- **Tests**: unit + integration coverage for broad mode, truncation, gzip, the bulk-archive cold-start (with SUSE-style fallback), and `/v1/analyze` synthesis (incl. BOM-Link rewrite of synthesised entries).
+- **Broad mode on `/v1/statements`**: products or SBOM components with no CVEs return every statement for those products. Only a request with neither CVEs nor products is a `400`.
+- **`-statements-max`** (default 50000, `0` = unlimited) caps `/v1/statements`. A capped answer is still `200`, with `X-Reel-Truncated: true` and `X-Reel-Next-Offset`. Page with `limit` and `offset`.
+- **gzip responses** when the request sends `Accept-Encoding: gzip` (not on `204` or `304`).
+- **Red Hat CSAF loads from the weekly bulk archive** on a cold start, so filling an empty database takes minutes instead of hours.
 
 ### Changed
-
-- **`/v1/statements` empty-input error**: now `"one of cves, products, or sbom (with components or vulnerabilities) is required"` (products alone are now a valid, broad-mode input).
-- **`/v1/analyze` query**: the empty-vulns path now performs a broad-mode lookup (previously skipped — the `len(queryCVEs) > 0 && len(queryBases) > 0` gate passed the SBOM through unchanged).
-
-### Notes
-
-- A wide covering index for broad mode (`idx_statements_broad`) was prototyped and **dropped**: on the production-scale DB it roughly doubles the table (~+100 GB). Broad mode runs on the existing `idx_statements_base_id`; a narrower index can be added later if query latency warrants it. No schema change ships in this version.
+- **`/v1/analyze` fills in an SBOM with no `vulnerabilities`** from a broad-mode lookup, then annotates them. Before, such an SBOM came back unchanged.
+- **Results come back in a fixed order**, so paged and cached output is stable.
+- **The empty-input error** now reads `one of cves, products, or sbom (with components or vulnerabilities) is required`.
 
 ## [0.5.0] — `/v1/statements` accepts SBOM input
 
-Lets the user feed a CycloneDX SBOM to `/v1/statements` and get back an OpenVEX 0.2.0 document derived from the SBOM's CVE and component lists. Removes the manual CVE/PURL extraction step from the natural Trivy flow: the article-grade scan-with-VEX run now stays in `trivy image --vex` mode (OpenVEX is BOM-context-free) without the user having to write `jq` glue. Filters (`vendors`, `statuses`, `since`, etc.) keep their meaning; output shape is unchanged.
-
-The two SBOM-accepting endpoints now serve distinct missions:
-
-- `/v1/analyze` — annotate a CycloneDX SBOM in place, return CycloneDX (with BOM-Link refs after v0.4.4 — for `trivy sbom --vex`).
-- `/v1/statements` — return OpenVEX 0.2.0, with the input set specified explicitly *or* via SBOM (new) — for `trivy image --vex` and any tool that prefers portable identifiers.
+*Released 2026-05-03*
 
 ### Added
-
-- **`statementsRequest.SBOM`** (`pkg/api/handler.go`): new optional `sbom` field on `POST /v1/statements`. When present, CVEs are derived from `.vulnerabilities[].id` and products from `.components[].purl` / `.components[].cpe`. SBOM-derived sets are unioned with any explicit `cves` / `products` the caller also passed.
-- **`-sbom-max-mb` server flag** (`cmd/server/main.go`, default 5): caps body size on SBOM-accepting endpoints (`/v1/analyze`, `/v1/statements`). Operators can tune up or down without rebuilding.
-- **`api.Server.SetSBOMMaxBytes(int64)`**: production wires the flag through this setter so the `NewServer` call site stays stable across the 30+ test files using the constructor.
-- **Integration tests** (`test/integration/api_test.go`): `TestStatements_AcceptsSBOMInput`, `TestStatements_SBOMUnionWithExplicitCVEs`, `TestStatements_MalformedSBOM`.
+- **`sbom` on `/v1/statements`**: CVEs come from `vulnerabilities[].id` and products from `components[].purl` and `.cpe`, merged with any `cves` or `products` you send. `cves` is optional when `sbom` is given.
+- **`-sbom-max-mb`** (default 5) caps the body on `/v1/analyze` and `/v1/statements`.
 
 ### Changed
-
-- **`/v1/statements` body cap**: 1MB → 5MB (default), now matches `/v1/analyze`. Configurable via `-sbom-max-mb`.
-- **`statementsRequest.CVEs`** is now optional when `sbom` is provided. Existing CVE-only clients are unaffected. Empty-input error message updated to `"one of cves or sbom (with vulnerabilities) is required"`.
-- **`pkg/api/analyze.go`**: removed the hard-coded `maxAnalyzeBodySize = 5 << 20` constant; the handler now reads `s.sbomMaxBytes` so both SBOM-accepting endpoints share a single configurable limit.
+- **The `/v1/statements` body cap is 5 MB** (was 1 MB).
+- **The empty-input error** now reads `one of cves or sbom (with vulnerabilities) is required`.
 
 ## [0.4.4] — `/v1/analyze` emits BOM-Link refs
 
-Fixes downstream Trivy `--vex` consumption of the annotated CycloneDX returned by `/v1/analyze`. Trivy binds VEX statements to scan findings via BOM-Link refs in `affects[].ref` (per CycloneDX 1.5 VEX); the previous behaviour passed input PURLs through unchanged, which Trivy rejects with `WARN [vex] Unable to parse BOM-Link` and silently drops. With v0.4.4, the natural one-POST flow (`SBOM → /v1/analyze → trivy --vex`) suppresses findings end-to-end without manual VEX assembly.
+*Released 2026-05-03*
 
-### Fixed
-
-- **`pkg/api/analyze.go`**: new `rewriteAffectsAsBOMLinks(sbom)` rewrites each `vulnerability.affects[].ref` from raw PURL to `urn:cdx:<serial>/<version>#<bom-ref>` form, using the input SBOM's `serialNumber`, `version`, and per-component `bom-ref` values. Best-effort: if any of those are missing, the original `.ref` is left in place. Runs unconditionally on the SBOM-output path so refs are spec-correct even when no vendor statements matched.
-
-### Added
-
-- **`TestRewriteAffectsAsBOMLinks_*`** (`pkg/api/analyze_bomlink_test.go`): five unit tests covering the rewrite, the string-shaped affects entry, missing serialNumber, unmatched ref, and component without bom-ref.
-- **`TestAnalyze_EmitsBOMLinkRefsInAnnotatedSBOM`** (`test/integration/api_test.go`): end-to-end assertion that a Trivy-shape SBOM POSTed to `/v1/analyze` returns BOM-Link refs and an `analysis` block on the same vulnerability.
+### Changed
+- **`/v1/analyze` writes `affects[].ref` as a BOM-Link** (`urn:cdx:<serial>/<version>#<bom-ref>`), so `trivy sbom --vex` applies the result. A ref stays as sent when the SBOM lacks `serialNumber`, `version` or the component's `bom-ref`.
 
 ## [0.4.3] — Resolver bridge for scanner-emitted RPM `?distro=` qualifiers
 
-Fixes `/v1/analyze` returning unannotated SBOMs for Trivy- and syft-generated CycloneDX inputs covering Red Hat content. Trivy emits RPM PURLs with a `?distro=redhat-X.Y` qualifier; mainstream Red Hat CSAF publishes bare PURLs without distro. The resolver previously produced only the SplitPURL-canonical candidate (which retains `?distro=`), so scanner queries missed the most common stored shape.
+*Released 2026-05-03*
 
 ### Fixed
-
-- **`pkg/resolver/resolver.go`**: `Expand()` now produces a distro-stripped candidate alongside the existing direct candidate when the input PURL carries `?distro=`. Purely additive on the read path: never removes a match, doesn't change write-side identity, no DB migration. Variant feeds that publish *with* distro (Red Hat Hummingbird, Ubuntu, Debian) continue to match via the unchanged distro-bearing candidate.
-
-### Added
-
-- **`TestExpand_RPMScannerDistroProducesBareAndDistroCandidates`** (`pkg/resolver/resolver_test.go`). Asserts both candidates appear for a Trivy-shape RPM input.
-- **`TestAnalyze_AnnotatesTrivyShapeRPMSBOM`** (`test/integration/api_test.go`). End-to-end coverage: a CycloneDX SBOM with the realistic Trivy emission shape comes back with populated `analysis` blocks. The pre-existing `TestAnalyze_SBOMOnly_Annotates` used a clean PURL without scanner qualifiers and missed the regression vector.
-- **`TestStatements_ResolvesTrivyShapeRPMToBareStored`** (`test/integration/api_test.go`). Same coverage at the `/v1/statements` query API.
-
-### Changed
-
-- **`TestExpand_PreservesDistroQualifier`** (`pkg/resolver/resolver_test.go`): tightened to assert the identity-preserving candidate is *present*, rather than that it's the only candidate. Original intent (distro is preserved) is unchanged.
+- **An RPM PURL with `?distro=`, as Trivy and syft write it, now also matches Red Hat rows stored without it**, on `/v1/analyze` and `/v1/statements`.
 
 ## [0.4.2] — Canonical OpenVEX adapter
 
-Adds a new adapter for Canonical's OpenVEX 0.2.0 feed at `https://security-metadata.canonical.com/vex/vex-all.tar.xz`. The feed is a strict superset of the existing Ubuntu OVAL coverage — it includes pre-USN triage state (`not_affected`, `under_investigation`) for every CVE Canonical has assessed, where the OVAL feed only ships `fixed` rows after a USN lands.
+*Released 2026-05-02*
 
-Both `ubuntu-vex` and `ubuntu-oval` adapters run during the soak window. Statements coexist in the database under different `source_format` values (`openvex` vs `oval`); the `statements` table PK includes `source_format`, so the two never collide. `ubuntu-oval` removal is queued for v0.5.0 once OpenVEX parity is verified in production.
+**Upgrade notes:** Add the `ubuntu-vex` entry to `config.yaml` to ingest the feed.
 
 ### Added
-
-- **`ubuntu-vex` adapter** (`pkg/source/ubuntuvex/`). Streaming xz + tar walk. HEAD/`Last-Modified` incremental skip on the tarball. Ignores USN-keyed entries; logs and skips malformed entries. Emits one row per (statement × unique normalized identifier).
-- **ESM-track distro normalisation** (`pkg/source/ubuntuvex/distro.go`). Constant table mapping Canonical's `?distro=` qualifier values (`ubuntu/<codename>`, `esm-apps/<codename>`, `esm-infra/<codename>`, `esm-infra-legacy/<codename>`) to scanner-convention `ubuntu-<version>`. No external alias file; many-to-one collisions deduped at emit time.
-- **`source_format=openvex`** as a new value in `db.Statement.SourceFormat`, surfaced in OpenVEX `status_notes` automatically.
-- New direct dep: `github.com/ulikunitz/xz` (pure-Go, MIT, no cgo). Required for the tar.xz feed format.
+- **Canonical OpenVEX** (`ubuntu-vex`, `source_format` `openvex`), including Canonical's triage before a USN (`not_affected`, `under_investigation`). Ubuntu OVAL stays alongside it, because each covers package names the other spells differently.
 
 ### Changed
-
-- **`pkg/openvex/identifiers.go`** (new): `CollectIdentifiers([]Component) []string` extracted from `pkg/uservex/parse.go` so both inbound user-VEX parsing and the new adapter share the dedup logic. Pure refactor; `pkg/uservex` behaviour is unchanged.
-- **`config.yaml`**: new `ubuntu-vex` entry; existing `ubuntu-oval-*` entries flagged with a deprecation comment.
-
-### Changed
-
-- **Ingest architecture for `ubuntu-vex`**: the tarball is buffered fully into memory before the xz/tar walk begins, then processed locally. The original streaming-through-HTTP-body design coupled the connection lifetime to the walk duration — staging surfaced this when a 47-minute walk tripped the 15-minute HTTP timeout. The tarball is ~59 MB compressed; in-memory buffering removes the HTTP/walk coupling entirely.
-- **`/v1/stats` now serves a cached struct** updated at the end of each ingest cycle. Before this change, every call ran four `COUNT(*)` / `COUNT(DISTINCT)` queries over the full statements table — fine on the v0.4.1-era 13M-row DB (~1s) but unacceptable on the v0.4.2-era ~145M-row DB (30-60s). The cache is exact (not approximate), refreshed in `pkg/db/db.go:RefreshStats()` from the orchestrator at the end of `ingest.Run`, and warmed at server startup via a background goroutine. Tests that mutate the DB and re-read stats must call `RefreshStats` between mutation and read.
-
-### Notes
-
-- No breaking changes; this is a patch bump matching the v0.2.3 (Ubuntu OVAL) and v0.2.6 (Debian OVAL) precedent for new adapters.
-- The Canonical tarball regenerates daily-ish; `Last-Modified` skip saves CPU but not bandwidth on cycles where the upstream did regenerate.
-- Per-entry tar mtime prune (a finer-grained incremental optimisation) is deferred to v0.4.3 if profiling shows the full re-emit is too expensive at production cadence.
-- **`ubuntu-oval` is intentionally retained** alongside `ubuntu-vex`. Empirical staging parity check (8-CVE sample on prod-snapshot data) found OVAL contributes ~10% of unique `(cve, base_id)` tuples that OpenVEX uses different naming for (versioned binary packages like `golang-1.20-go`, source vs binary package families, etc.). Both feeds together give consumers the union of identifier shapes; storage cost is trivial. The Phase F removal originally planned for v0.5.0 is cancelled.
+- **`/v1/stats` is served from a cache** that is refreshed after each ingest and warmed at startup.
 
 ## [0.4.1] — rename `customer_vex` → `user_vex`
 
-> **Breaking change.** The `customer_vex` request field on `POST /v1/analyze` is renamed to `user_vex`, and the `from_customer_vex` match-reason value (carried in OpenVEX `status_notes`) is renamed to `from_user_vex`. "Customer" implied a paid-product relationship that doesn't apply to the free OSS hub — the document is supplied by the API user, not a customer. No semantic change; pure rename.
->
-> Migration:
->
-> | Old | New |
-> |---|---|
-> | Request field `customer_vex` on `POST /v1/analyze` | `user_vex` |
-> | `match_reason=from_customer_vex` in `status_notes` | `match_reason=from_user_vex` |
-> | Go package `pkg/customervex/` | `pkg/uservex/` |
+*Released 2026-04-27*
+
+**Upgrade notes:** **Breaking rename**, no change in behaviour:
+
+| Old | New |
+|---|---|
+| `customer_vex` on `POST /v1/analyze` | `user_vex` |
+| `match_reason=from_customer_vex` in `status_notes` | `match_reason=from_user_vex` |
+| Go package `pkg/customervex` | `pkg/uservex` |
+
+A request that still sends `customer_vex` gets `400` (`at least one of sbom or user_vex required`).
 
 ### Changed
-
-- **`POST /v1/analyze` request field** `customer_vex` → `user_vex`. Documents posted under the old key are rejected with the standard "at least one of sbom or user_vex required" 400.
-- **OpenVEX `status_notes`** match-reason value `from_customer_vex` → `from_user_vex` for user-supplied rows.
-- **Go package** `pkg/customervex/` → `pkg/uservex/`. Public symbols (`Parse`, `Validate`, `Merge`, `MatchReason`) keep their names; only the import path changes. `MatchReason` constant value updates from `"from_customer_vex"` to `"from_user_vex"`.
-- **Documentation**: `docs/api.md` and `README.md` updated; user-facing prose drops "customer" terminology throughout.
-
-### Notes
-
-- No production users on the deployed hosted instance to migrate. Companion website (`getreel.dev/vex`) renames its UI copy and curl examples in lockstep.
-- Output shape, merge semantics, override rules, limits, and privacy posture are unchanged from v0.4.0.
+- **`customer_vex` is now `user_vex`**, and `from_customer_vex` is now `from_user_vex`.
 
 ## [0.4.0] — unified `/v1/statements` query endpoint
 
-> **Breaking change.** Three v0.3.0 endpoints are removed and replaced by a single `POST /v1/statements`. The split between `/v1/cve/{id}` (CVE-only lookup) and `/v1/resolve` (CVE × product matrix) was a transport-level convenience, not a semantic distinction; v0.4.0 collapses them into one filter-rich query primitive.
->
-> Migration:
->
-> | Old | New |
-> |---|---|
-> | `GET /v1/cve/{id}` | `POST /v1/statements` with `{"cves": ["<id>"]}` |
-> | `GET /v1/cve/{id}/summary` | No replacement; was unused. The website computes per-CVE breakdown client-side from the full statement list. |
-> | `POST /v1/resolve` | `POST /v1/statements` with the same body shape |
->
-> All three old paths return `404` after the upgrade. URLs like `https://vex.getreel.dev/v1/cve/<id>` shared in bookmarks or chat will break — the trade-off for unifying the API behind one query primitive.
+*Released 2026-04-27*
+
+**Upgrade notes:** **Breaking.** Three routes now answer `404`:
+
+| Old | New |
+|---|---|
+| `GET /v1/cve/{id}` | `POST /v1/statements` with `{"cves": ["<id>"]}` |
+| `GET /v1/cve/{id}/summary` | none |
+| `POST /v1/resolve` | `POST /v1/statements` with the same body |
 
 ### Added
-
-- **`POST /v1/statements`** — unified query primitive over the VEX statements database. Replaces `/v1/cve/{id}`, `/v1/cve/{id}/summary`, and `/v1/resolve`. `cves` is required (≥1); every other filter is optional and narrows the result set further.
-- **Four new filter dimensions** beyond v0.3.0's `source_formats`:
-  - `vendors` — `["redhat"]`, `["redhat", "suse"]`, etc.
-  - `statuses` — `["not_affected", "fixed"]`. Useful for noise-reduction policies.
-  - `justifications` — OpenVEX 0.2.0 enum values. Filters to `not_affected` rows with the given justifications.
-  - `since` — RFC3339 timestamp; statements with `updated >= since`. Enables incremental sync from a downstream cache.
-
-  Filter semantics: AND across populated dimensions, IN within each non-empty list. Empty list (or omitted field) → no filter on that dimension. `source_formats` carries forward from v0.3.0 unchanged.
+- **`POST /v1/statements`**, with new filters `vendors`, `statuses`, `justifications` and `since` beside `source_formats`. Filters combine with AND, and the values in one filter with OR. `cves` is required (relaxed in 0.5.0). See [POST /v1/statements](docs/api.md#post-v1statements).
 
 ### Removed
-
-- `GET /v1/cve/{id}` — returns `404`. Migrate to `POST /v1/statements` with `{"cves": ["<id>"]}`.
-- `GET /v1/cve/{id}/summary` — returns `404`. The website computes the breakdown client-side; no migration needed.
-- `POST /v1/resolve` — returns `404`. Migrate to `POST /v1/statements` (same body shape).
-- Internal: `db.QueryByCVE` and `db.QueryResolve` are deleted; replaced by `db.QueryStatements(QueryFilters)` with a struct-based filter parameter.
-
-### Changed
-
-- **CVE-only queries are POST now.** The browser-friendly `GET /v1/cve/{id}` URL is gone. The trade-off: one canonical query method that scales to N filters cleanly. URLs the website previously shared (e.g. `getreel.dev/vex?cve=CVE-X`) still work — the website does the POST internally.
-- **`/v1/analyze` flow internals**: the SBOM-merge code path now calls `db.QueryStatements` instead of `db.QueryResolve`. No external behaviour change; covered by existing regression tests.
-
-### Notes
-
-- The encoder (`pkg/openvex/Encode`) is unchanged. CVE-only queries (no `products`) get nil expansion maps and the encoder falls back to each statement's stored `product_id` — same shape `/v1/cve/{id}` produced in v0.3.0. CVE+products queries echo the user's input PURLs into `products[]` — same shape `/v1/resolve` produced.
-- `vexctl merge` interop verified end-to-end against `/v1/statements` output (existing integration test renamed; same behaviour).
-- All existing `/v1/analyze` behaviour is preserved (override semantics, user-VEX merge, sample fixtures).
+- **`GET /v1/cve/{id}`, `GET /v1/cve/{id}/summary` and `POST /v1/resolve`.**
 
 ## [0.3.0] — API format unification + user-VEX merge
 
-> **Breaking changes — three migrations.** This release folds long-standing API tidying into one cut so future migrations stay singular.
->
-> 1. **`POST /v1/sbom` is removed.** Migrate to `POST /v1/analyze` with `{"sbom": <cyclonedx>}` wrapping. The annotation logic and CycloneDX output shape are unchanged; only the request envelope and route differ. Requests to the old route now return `404`.
-> 2. **`/v1/resolve` always returns OpenVEX 0.2.0.** The `format` request field is removed; the reel-vex-native flat response is gone. Existing OpenVEX consumers (Trivy `--vex`, `vexctl`) are unaffected. Native-format consumers must migrate to OpenVEX — `source_format` and `match_reason` are now carried in `status_notes` (`source_format=csaf; match_reason=direct` etc.).
-> 3. **`/v1/cve/{id}` returns OpenVEX 0.2.0.** Empty results return `204 No Content` instead of a 200 with an empty array (OpenVEX schema requires `statements: minItems 1`). `/v1/cve/{id}/summary` is unaffected — it serves a separate counts-style response.
+*Released 2026-04-27*
+
+**Upgrade notes:** **Breaking**, three changes:
+1. **`POST /v1/sbom` is removed** (`404`). Send `POST /v1/analyze` with `{"sbom": <cyclonedx>}`. The output is the same.
+2. **`/v1/resolve` returns only OpenVEX 0.2.0.** The `format` field is ignored. `source_format` and `match_reason` move into `status_notes`.
+3. **`/v1/cve/{id}` returns OpenVEX 0.2.0**, and `204 No Content` when nothing matches (was `200` with an empty array).
 
 ### Added
-
-- **`POST /v1/analyze` — single endpoint for SBOM annotation and user-VEX merging.** Accepts an SBOM (CycloneDX 1.4+), one or more user-supplied OpenVEX 0.2.0 documents, or both:
-  - `sbom` only → annotated CycloneDX (preserves prior `/v1/sbom` behaviour byte-for-byte).
-  - `user_vex` only → merged OpenVEX 0.2.0 doc (vendor data + user's claims, with override on collision).
-  - Both → annotated CycloneDX where the per-CVE rollup honours user override.
-  Inline JSON only; no multipart, no URL fetch.
-- **User-VEX merge with absolute override.** User statements override vendor statements when `(cve, base_id)` matches. In the SBOM-annotation flow, user-asserted CVEs are tracked in a set so vendor rows are excluded from the per-CVE rollup — even when they sit at a different base_id. Without this guard, a higher-priority vendor `not_affected` would silently outrank a user `affected` on a different identifier.
-- **New `pkg/uservex/`** package: parses OpenVEX 0.2.0 inbound, validates against a leaner inbound-only ruleset (separate from `pkg/openvex.Validate` which is outbound-focused), enforces request-time limits, and merges with vendor data. User VEX is processed strictly in memory: parsed, merged, returned, discarded. No source-tree code logs or persists user payload content.
-- **`from_user_vex` match reason.** User-sourced rows in OpenVEX output carry `status_notes` with `match_reason=from_user_vex` (no `source_format=` prefix, since user rows have no upstream feed).
-
-### Changed
-
-- **`pkg/openvex` is the single response writer for VEX-statement-emitting endpoints.** Replaces the prior native scaffolding (`statementJSON`, `statementsResponse`, `writeStatements`, `writeStatementsWithMatch`) which is deleted from source.
-- **`csaf.SplitPURL` consolidates the PURL-base-normalisation logic.** The previously private `resolver.splitBase` (line-for-line equivalent) is removed; `pkg/resolver` now imports `pkg/csaf` and calls `SplitPURL` directly. Single source of truth.
-- **`pkg/openvex/encode.go` skips the `source_format=` prefix in `status_notes`** when the source row's `SourceFormat` is empty (user-sourced rows). Vendor rows are unchanged.
-- **Limits on `/v1/analyze`**: 5 MB body; 10 user_vex docs / 1000 user statements / 100 products per user statement; 50 000 SBOM components / 10 000 SBOM vulnerabilities. 4xx codes split: 400 for limit overflow / shape requirements; 422 for spec-violation rejections (bad `@context`, status enum, justification placement, missing required fields).
+- **`POST /v1/analyze`** takes an SBOM, your own OpenVEX documents (`customer_vex`, renamed `user_vex` in 0.4.1), or both. An SBOM comes back as annotated CycloneDX. VEX alone comes back as merged OpenVEX. Your statement overrides the vendor's for the same CVE and package. Your VEX is never stored or logged.
+- **Limits on `/v1/analyze`:** 5 MB body; 10 user documents, 1000 user statements and 100 products per statement; 50,000 SBOM components and 10,000 vulnerabilities. A limit or missing input answers `400`; an invalid VEX document answers `422`.
+- **`match_reason=from_customer_vex`** (now `from_user_vex`) on your own statements.
+- **A document's `@id` is a hash of its content**, so identical queries get identical `@id`s.
 
 ### Removed
-
-- **`POST /v1/sbom`** — return `404`. Use `POST /v1/analyze` with `{"sbom": <cyclonedx>}`.
-- **`format` request field on `/v1/resolve`** — OpenVEX is the only format. Trying to send `format: ...` is silently ignored (Go JSON decoder drops unknown fields).
-- **Native flat response shape** (`{vendor, cve, product_id, ...}` rows). All endpoints emit OpenVEX 0.2.0. The `cve` / `vendor` / `product_id` semantic content is preserved as `vulnerability.name` / `supplier` / `products[].@id` (or `products[].identifiers.{purl,cpe22,cpe23}`); `source_format` / `match_reason` move into `status_notes`.
-
-### Notes
-
-- `source_formats` request filter on `/v1/resolve` is unchanged — it still restricts which upstream feeds match. Filtering happens at query time; the filter is a request parameter, not a response annotation.
-- Empty `/v1/resolve` results have always returned `204` for OpenVEX output. This is now the default since OpenVEX is the only output.
-- The `@id` of any emitted document is a deterministic SHA-256 over the canonical body (timestamps zeroed); identical queries produce byte-identical `@id`s. Useful for caching.
+- **`POST /v1/sbom`, the `format` field and the native response shape.**
 
 ## [0.2.6] — Debian OVAL adapter
 
+*Released 2026-04-24*
+
 ### Added
-
-- **Debian OVAL adapter** (`pkg/source/debianoval`). Ingests Debian Security Tracker OVAL feeds, delegating parse/translate to [`oval-to-vex` v0.2.2](https://github.com/getreeldev/oval-to-vex)'s new `FromDebianOVAL`. Adds Debian coverage alongside Red Hat, SUSE, and Ubuntu — completing the major deb/rpm vendor set for typical container bases and bare-metal Linux fleets.
-- **Default config wires three releases**: `bullseye` (11), `bookworm` (12), `trixie` (13). Buster (10) is end-of-life and Debian no longer publishes its OVAL feed; add it back if needed against an archived feed mirror.
-
-### Notes
-
-- **Identifier shape**: `pkg:deb/debian/<name>?distro=debian-<N>`. The `distro` qualifier is part of `BaseID` (same approach as Ubuntu) so bookworm `openssl` and bullseye `openssl` are distinct products. The v0.2.5 resolver fix (preserve `distro` in `splitBase`) means scanner queries with `?distro=debian-12` match correctly out of the box.
-- **Status mapping** (mirror model — report what the vendor publishes, let consumers decide):
-  - `class="patch"` or `class="vulnerability"` with a dpkginfo evr bound → `status="fixed"`, `version=<evr>`
-  - `class="vulnerability"` with no resolvable dpkginfo test → `status="affected"` (empty version) keyed on the `<product>` name from metadata — Debian's tracker knows the CVE applies but no patch has shipped yet
-  - Consistent with our Red Hat OVAL posture. Trivy 0.70.0 was empirically verified to accept `affected`-containing VEX documents without errors. Debian's current feed happens not to include unpatched-vuln records in practice (every `class="vulnerability"` definition ships with a fix bound today), so the affected branch is mostly latent coverage for future records.
-- **Volume**: Bookworm alone has ~46k statements (Ubuntu noble is ~24k for comparison); per-release volume is high because Debian's tracker is comprehensive — every CVE that ever affected the release, going back decades.
+- **Debian OVAL** for bullseye, bookworm and trixie, as `pkg:deb/debian/<name>?distro=debian-<N>`. A definition with a fixed version is `fixed`; one without is `affected`.
 
 ## [0.2.5] — preserve `distro` qualifier on PURL base IDs
 
-### Fixed
+*Released 2026-04-23*
 
-- **`/v1/resolve` now matches Ubuntu (and any deb) statements.** Both `csaf.SplitPURL` and the resolver's private `splitBase` were stripping *all* qualifiers from input PURLs, so a query for `pkg:deb/ubuntu/openssl@...?distro=ubuntu-24.04` was normalised to `pkg:deb/ubuntu/openssl` and never matched the stored Ubuntu `base_id` which carries the `distro` qualifier. Both functions now preserve `distro`, which is identity for deb packages — noble `openssl` and jammy `openssl` are different packages with different fixed versions. `arch`, `epoch`, `repository_id` remain scanner-side filters and are still stripped.
-- Symptom was visible on the hosted deployment after v0.2.4 landed Ubuntu ingest: `/v1/cve/<id>` returned Ubuntu statements correctly, but `/v1/resolve` with a versioned PURL returned empty. No effect on RH or SUSE queries (no `distro` qualifier in use).
+### Fixed
+- **`/v1/resolve` now matches Ubuntu and other deb rows.** The `distro` qualifier is kept as part of the package's identity. `arch`, `epoch` and `repository_id` are still ignored.
 
 ## [0.2.4] — switch Ubuntu adapters to main USN feeds
 
+*Released 2026-04-23*
+
+**Upgrade notes:** In `config.yaml`, the Ubuntu OVAL adapter ids lose their `-oci` suffix (`ubuntu-oval-noble`, `ubuntu-oval-jammy`, `ubuntu-oval-focal`) and point at the main USN feeds (`com.ubuntu.<release>.usn.oval.xml.bz2`). State stored under the old ids is left in place.
+
 ### Changed
-
-- **Ubuntu OVAL adapters now point at the main USN feeds** (`com.ubuntu.<release>.usn.oval.xml.bz2`) instead of the OCI variants (`oci.com.ubuntu.<release>...`). The OCI feeds use a different OVAL test model (`textfilecontent54_*` rather than `dpkginfo_*`) that the adapter does not parse — v0.2.3 therefore ingested zero statements from them in practice. The fix is not to teach the adapter the OCI shape; it is to use the feed that carries everything Canonical publishes.
-- **Adapter IDs dropped the `-oci` suffix** to reflect the swap: `ubuntu-oval-noble`, `ubuntu-oval-jammy`, `ubuntu-oval-focal`. On the hosted deployment the existing `-oci`-suffixed adapter_state rows are left in place (with zero statements) and new rows are created under the new IDs on first sync.
-
-### Rationale
-
-vex.getreel.dev is a general VEX hub, not a container scanner. Scoping vulnerability data to "container-relevant" packages is a decision the scanner should make, based on what it is scanning — a container image, a VM filesystem, a bare-metal host, an initramfs. Our Red Hat and SUSE adapters already ingest the full vendor feeds; scoping Ubuntu to a subset broke symmetry for no principled reason. A consumer scanning a bare-metal Ubuntu host would otherwise receive less coverage from us than they would for the equivalent RHEL host.
+- **Ubuntu OVAL reads the main USN feeds.** The OCI feeds used in 0.2.3 yielded no statements.
 
 ## [0.2.3] — Ubuntu OVAL adapter
 
+*Released 2026-04-23*
+
 ### Added
-
-- **Ubuntu OVAL adapter** (`pkg/source/ubuntuoval`). Ingests Canonical's USN OVAL feeds, delegating parse/translate to [`oval-to-vex` v0.2.0](https://github.com/getreeldev/oval-to-vex)'s new `FromUbuntuOVAL`. Adds non-distroless Ubuntu coverage — the highest-volume container base — alongside existing Red Hat and SUSE sources.
-- **Default config wires OCI feeds for focal/jammy/noble.** Three `ubuntu-oval` adapter entries in `config.yaml` pointing at Canonical's OCI-flavoured feeds (`oci.com.ubuntu.<release>.usn.oval.xml.bz2`) — kernel/HWE noise stripped, focused on container-scanning use cases. Main-feed adapters can be added by pointing a new entry at `com.ubuntu.<release>.usn.oval.xml.bz2`.
-
-### Notes
-
-- **Identifier shape.** Ubuntu statements emit PURLs in the form `pkg:deb/ubuntu/<name>?distro=ubuntu-<version>`. The distro qualifier is part of `BaseID` (not just `ProductID`) — noble `openssl` and jammy `openssl` are distinct products, since the fixed versions differ per release.
-- **Patches only, for now.** Ubuntu's USN OVAL feed publishes `class="patch"` statements only. Unfixed/"affected" statements live in Canonical's separate CVE OVAL feed, which is a future adapter.
-- **Supported release codenames** are `focal`, `jammy`, `noble`. Definitions for unsupported codenames are skipped by the translator; add new entries to the codename-version map in `oval-to-vex` when Canonical ships a new LTS.
-- **USNs with no CVE references are skipped.** Rare in practice (USNs almost always have ≥1 CVE); emitting USN-keyed statements as a fallback is future work.
+- **Ubuntu OVAL** for focal, jammy and noble, as `pkg:deb/ubuntu/<name>?distro=ubuntu-<version>`, with `fixed` statements only. The OCI feeds configured here yielded nothing until 0.2.4.
 
 ## [0.2.2] — OpenVEX opt-in output + native format as first-class
 
+*Released 2026-04-21*
+
 ### Added
-
-- **OpenVEX 0.2.0 output format on `/v1/resolve`.** Pass `"format": "openvex"` in the request body to receive an [OpenVEX 0.2.0](https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md) document instead of the native reel-vex statements JSON. Designed for drop-in consumption by [`vexctl merge`](https://github.com/openvex/vexctl) and Trivy's `--vex` flag. Default behaviour is unchanged — native JSON remains the default response shape.
-- **`docs/api.md` — canonical API reference.** Every endpoint, every response field, every `status` / `justification` / `source_format` / `match_reason` enum value documented in one place. Linked from the README header. The native response format is now a first-class, versioned interface rather than something you reverse-engineer from examples.
-- **Input-echoing product resolution.** `/v1/resolve` now tracks which user-supplied product (in hierarchical base form — version and qualifiers stripped) expanded to each candidate base identifier. The OpenVEX encoder uses this map to place the user's PURL into each matched statement's `products[]`, so statements keyed on an upstream CPE (Red Hat OVAL) remain Trivy-matchable when queried via a PURL with `?repository_id=X`.
-- **`pkg/openvex/`** package — stdlib-only OpenVEX 0.2.0 types + encoder. Includes deterministic content-hashed `@id` generation (`https://openvex.dev/docs/public/vex-<sha256>`), per-statement `timestamp` carried from the source `updated` field so `vexctl merge` orders correctly across vendors, vendor attribution via `supplier`, and diagnostic round-trip via `status_notes` (carries `source_format` and `match_reason`). The OpenVEX 0.2.0 JSON Schema is embedded in `pkg/openvex/testdata/` and its `required` fields are checked against encoded output in unit tests.
-
-### Notes
-
-- **Empty OpenVEX results return `204 No Content`.** The OpenVEX 0.2.0 schema requires `statements.minItems: 1`; rather than emit an invalid document when no statements match, the handler returns 204.
-- **Trivy `--vex` matches on PURL only.** The encoder therefore emits user-supplied PURLs (not vendor CPEs) in `products[]`. Queries with only a CPE still produce a spec-valid document consumable by `vexctl` and Grype, but Trivy won't suppress anything.
-- **No cryptographic signing yet.** `author` is a plain string; consumers relying on signed provenance should wait for the planned signed-attestations work.
+- **OpenVEX 0.2.0 output on `/v1/resolve`** with `"format": "openvex"` (native JSON stays the default). An empty OpenVEX result is `204 No Content`.
+- **`products[]` echoes the PURL you sent**, so Trivy can apply a statement Red Hat keyed on a CPE.
+- **`docs/api.md`**, the API reference.
 
 ## [0.2.1]
 
-### Added
+*Released 2026-04-19*
 
-- **Structured `api_request` slog line per HTTP request.** Fields: `method`, `path`, `status`, `latency_ms`, `bytes`, plus `cve` on `/v1/cve/{id}[/summary]` routes. CORS preflight (`OPTIONS`) short-circuits before the log middleware, so no preflight noise. Consumers (Vector, Promtail, Fluent Bit, plain jq) can parse these with any slog-aware tooling and forward them anywhere; no vendor-specific SDK is embedded. Pure OSS observability improvement — operators running reel-vex anywhere get a machine-readable request log for free.
+### Added
+- **One `api_request` log line per request** with `method`, `path`, `status`, `latency_ms` and `bytes`, plus `cve` on `/v1/cve/{id}`. `OPTIONS` preflight requests are not logged.
 
 ## [0.2.0] — multi-source Red Hat coverage
 
-Plan-completion milestone. reel-vex now ingests Red Hat OVAL alongside CSAF, filling the EUS / AUS / E4S / SAP / HA / NFV stream coverage gap that Red Hat documented in [SECDATA-1181](https://redhat.atlassian.net/browse/SECDATA-1181) as intentional-but-asymmetric between their two feeds.
+*Released 2026-04-19*
+
+**Upgrade notes:** Add a Red Hat OVAL entry to `config.yaml`, and keep the CSAF entry's `id: redhat`. The schema migrates on first boot and keeps the CSAF watermark, so there is no full re-sync.
 
 ### Added
-
-- **Red Hat OVAL source adapter** (`pkg/source/redhatoval/`). Fetches a single OVAL file per adapter instance (configurable via `url:`), decompresses bz2 in-stream, delegates parsing to the new [`getreeldev/oval-to-vex`](https://github.com/getreeldev/oval-to-vex) library, and emits VEX statements with `source_format: oval`. Incremental sync via HTTP `Last-Modified` — if upstream hasn't regenerated the file since our watermark, the adapter skips the GET entirely.
-- **`source.Adapter.Vendor()` method**. Distinguishes the vendor domain (written onto statements) from the adapter instance ID (used for per-adapter watermarks). CSAF adapter's Vendor() returns its ID for backward compatibility; RH OVAL adapter's Vendor() returns `"redhat"` regardless of which OVAL file it targets. Two adapters for one vendor now produce statements under one vendor string, distinguished only by `source_format`.
-- **`/v1/resolve` `source_formats` filter**. Request body accepts an optional `source_formats: ["csaf", "oval"]` array. Empty means all formats. Applied at the SQL `WHERE source_format IN (...)` layer.
-- **`adapter_state` table** (schema v3). Keyed by adapter ID; holds per-adapter feed URL + last_synced watermark. Replaces the v2 `vendors.last_synced` / `vendors.feed_url` columns which were per-vendor and would collide when two adapters shared a vendor.
-- Regression tests covering: the full Discover + Sync adapter lifecycle against an `httptest.Server` serving the committed OVAL fixture; HEAD-short-circuit when upstream is unchanged; source_formats filter at the API level with four scenarios (no filter / csaf-only / oval-only / both explicitly); schema v2 → v3 carry-forward preserving existing CSAF watermarks.
+- **Red Hat OVAL** (`source_format` `oval`), covering the EUS, AUS, E4S, SAP, HA and NFV streams that CSAF lacks.
+- **`source_formats` filter** on `/v1/resolve` (for example `["csaf", "oval"]`; empty means all).
 
 ### Changed
-
-- `statements.vendor` is now `a.Vendor()` (not `a.ID()`). For CSAF, unchanged in practice. For RH OVAL, statements carry `vendor: redhat` matching CSAF — no `redhat-oval` string appears in user-facing output.
-- `ingest.Run` records per-adapter state via `UpsertAdapterState(adapterID, feedURL, lastSynced)` instead of `SetVendorSynced` / `UpsertVendor(…, feedURL)`. Watermark-preserving on no-op cycles (HEAD-short-circuit on OVAL, or CSAF runs with no new documents since last sync).
-- `Stats.LastUpdated` reads `MAX(last_synced) FROM adapter_state`. JSON field name unchanged; semantics unchanged (newest upstream data absorbed across all adapters).
-- `db.QueryResolve` signature: `QueryResolve(cves, products, sourceFormats)`. `sourceFormats` empty = no filter.
-- `db.UpsertVendor` signature: `UpsertVendor(id, name)` (dropped `feedURL` argument — URL is now per-adapter, not per-vendor).
-- `vendors` table schema: `last_synced` and `feed_url` columns dropped (v3 migration carries their values forward into `adapter_state` before drop).
-
-### Migration
-
-- Schema v2 → v3 runs on first boot of the new binary. Data-preserving:
-  - `adapter_state` created and seeded from existing `vendors.{id, feed_url, last_synced}` rows.
-  - `vendors.feed_url` and `vendors.last_synced` columns dropped after the copy.
-  - Pre-existing CSAF watermark carries forward under the CSAF adapter's ID; first ingest after upgrade resumes from that timestamp (no full re-sync).
-- Hosted deployment `config.yaml` must add one new entry for the Red Hat OVAL adapter. No rename of the existing CSAF `id: redhat`.
-
-### Library
-
-- New dependency: [`github.com/getreeldev/oval-to-vex v0.1.0`](https://github.com/getreeldev/oval-to-vex) — Red Hat OVAL XML parser + VEX-statement translator, zero dependencies beyond stdlib.
+- **`vendor` names the vendor, not the adapter**, so Red Hat OVAL rows say `redhat`.
 
 ## [0.1.7]
 
+*Released 2026-04-17*
+
 ### Added
-
-- **Identifier translation layer.** The resolver now expands a queried product through vendor-published mapping files as well as the CPE-prefix rule. A scanner POSTing a PURL with `?repository_id=rhel-8-for-x86_64-appstream-rpms` gets matched against VEX statements keyed on `cpe:/a:redhat:enterprise_linux:8::appstream` — the CPE Red Hat actually publishes VEX under. Response `match_reason` gains a new value: `via_alias`. This is the change that moves reel-vex from pass-through cache to translation hub.
-- **`pkg/aliases/` package** with a `Fetcher` interface, factory registry (`Register` / `New` / `BuildAll`), and Red Hat's `repository-to-cpe.json` as the first implementation. Fetchers run after adapters during the ingest cycle; failures log and continue so that a broken alias source doesn't block statement ingest.
-- **New `product_aliases` table** (schema v2 migration, additive). Keyed `(vendor, source_ns, source_id, target_ns, target_id)` with bidirectional indexes. Exposes `BulkUpsertAliases`, `LookupAliases`, `AliasCount` on `db.DB`.
-- **`pkg/resolver.Resolver`** struct composes all expansion rules — `direct`, `via_alias`, `via_cpe_prefix` — with a dedupe hierarchy where stronger reasons win. The pure `CPEPrefix` helper from Phase 1 stays in place and is now called by Resolver.
-- **`config.yaml` gains an `aliases:` section** sibling to `adapters:`. Entries have `type`, `id` (associates with the vendor adapter), and optional `url` (defaults to the vendor's published URL).
-- Regression test (`TestHandleResolve_AliasExpansion`) drives the full alias path end-to-end; integration test against an `httptest.Server` serving the committed `testdata/redhat-repository-to-cpe-sample.json` fixture verifies the fetcher.
-- **`aliases` field on `/v1/stats`.** Total rows in `product_aliases`. Intended to surface on the website alongside vendors / CVEs / statements under the label **"Product mappings"**. Hosted-deployment operator note: expect ~12,000 to appear after the first alias-fetch cycle completes.
-
-### Changed
-
-- `ingest.Run` signature: now takes `(ctx, []source.Adapter, []aliases.Fetcher, *db.DB, Options)`. Pipeline orchestration runs adapters then fetchers.
-- `api.Server` holds a `*resolver.Resolver`. `/v1/resolve` and `/v1/sbom` delegate product expansion to it. Previously these paths called a package-level helper; the instance-method form carries the DB dependency needed for alias lookups.
+- **Identifier aliases.** A PURL with `?repository_id=…` matches statements Red Hat keyed on that repository's CPE, through Red Hat's `repository-to-cpe.json`. New `match_reason` value `via_alias`.
+- **`aliases:` section in `config.yaml`** (`type`, `id`, optional `url`).
+- **`aliases` count in `/v1/stats`.**
 
 ## [0.1.6]
 
-### Added
+*Released 2026-04-17*
 
-- **Pluggable source adapter interface** (`pkg/source/`). Every vendor feed is now consumed through a common `Adapter` interface (`Discover` + `Sync`), with a small registry (`Register` / `New` / `BuildAll`) that routes config entries to factories by `type`. Foundation for OVAL (Phase 5) and future sources; third-party operators can register their own adapters without forking.
-- **CSAF adapter** (`pkg/source/csafadapter/`). Existing CSAF orchestration (feed discovery, changes.csv walk, per-document fetch + parse) moved behind the adapter interface. `pkg/csaf/*` parsers stay unchanged. Tested end-to-end against an `httptest.Server` that serves the real Red Hat CVE-2024-0217 fixture.
-- **`context.Context` plumbed through ingest.** Scheduled ingests now cancel cleanly on shutdown.
+**Upgrade notes:** `config.yaml` changes from `providers:` to `adapters:`, and each entry needs a `type:`. The old form is no longer read.
+
+```yaml
+adapters:
+  - type: csaf
+    id: redhat
+    name: Red Hat
+    url: https://security.access.redhat.com/data/csaf/v2/provider-metadata.json
+```
 
 ### Changed
-
-- **`config.yaml` schema**: `providers:` → `adapters:` with a required `type:` field per entry. Old schema no longer parsed. Hosted deployments must update their config file when they roll the new binary. Current config:
-  ```yaml
-  adapters:
-    - type: csaf
-      id: redhat
-      name: Red Hat
-      url: https://security.access.redhat.com/data/csaf/v2/provider-metadata.json
-  ```
-- **`-limit` now counts statements, not documents.** Consistent unit across every adapter type (CSAF emits per-CVE, OVAL emits per-tarball, etc.; statements are the only shared primitive). Production runs `-limit 0` so this is a dev-convenience change only.
-- **`ingest.Run` signature**: now takes `(ctx, []source.Adapter, *db.DB, Options)`. The orchestrator no longer knows about CSAF-specific details; it just drives adapters and persists what they emit.
+- **`-limit` counts statements**, not documents.
+- Internal: each feed is read through a common adapter interface; a scheduled ingest stops cleanly on shutdown.
 
 ## [0.1.5]
 
-### Added
+*Released 2026-04-17*
 
-- **CPE prefix matching on query path.** `/v1/resolve` and `/v1/sbom` now expand a queried CPE into both its exact form and its 5-part prefix (part:vendor:product:version:update). A scanner querying with `cpe:/o:redhat:enterprise_linux:8::baseos` now matches a statement keyed on `cpe:/o:redhat:enterprise_linux:8`. Implements Red Hat's documented matching contract; see [SECDATA-1220](https://redhat.atlassian.net/browse/SECDATA-1220).
-- **Per-statement `source_format` field.** Every statement in the API response carries the upstream format it came from (`csaf` today; `oval` arrives in v0.2.0). All existing rows are backfilled to `csaf`.
-- **Per-match `match_reason` field** on `/v1/resolve` and `/v1/sbom` responses: `direct`, `via_cpe_prefix`. Consumers can now see *why* a statement was returned.
-- **`schema_version` table + forward-only migration runner.** Existing databases migrate in-place on first boot; rows are preserved.
-- **Regression test** for the SECDATA-1220 scenario using the real Red Hat CSAF VEX document for CVE-2024-0217 (committed under `testdata/`).
+### Added
+- **CPE prefix matching** on `/v1/resolve` and `/v1/sbom`: `cpe:/o:redhat:enterprise_linux:8::baseos` matches a statement keyed on `cpe:/o:redhat:enterprise_linux:8`.
+- **`source_format`** on every statement, and **`match_reason`** (`direct`, `via_cpe_prefix`) on each match.
+- **Schema migrations run in place on first boot**, keeping existing rows.
 
 ### Fixed
-
-- **CSAF extractor now inherits platform CPEs from `product_tree.relationships`.** Previously only the component side (`product_reference`, usually a PURL) was inherited into composite products, so Red Hat multi-stream advisories produced zero CPE-keyed statements. The extractor now also inherits from `relates_to_product_reference` (the platform side, where Red Hat puts the CPE). For `cve-2024-0217.json` this lifts CPE statement count from 0 to 41.
-- **Ingest now plumbs `BaseID` and `Version`** from the csaf extractor to the DB layer. Previously these fields were dropped, and `db.BulkInsert` defaulted `base_id` to the full `ProductID`. Result: any scanner querying `/v1/resolve` or `/v1/sbom` with a versioned PURL got zero matches because the stored `base_id` also carried the vendor's own `@version` suffix. Now `base_id` is the normalized PURL base (no `@version`, no qualifiers) as intended.
-
-### Changed
-
-- `statements` primary key is now `(vendor, cve, product_id, source_format)`. Required so Phase 5 can coexist Red Hat CSAF and Red Hat OVAL statements for the same product without overwriting each other.
-- `db.Statement` gained a `SourceFormat` field.
+- **A PURL with a version now matches.** Stored package identifiers no longer carry the vendor's version.
+- **Red Hat CSAF advisories that cover several streams now yield CPE-keyed statements.**
