@@ -1,73 +1,107 @@
 # reel-vex data model
 
-Schema for the PostgreSQL database that backs reel-vex. Migrations are applied automatically on every binary boot via `pkg/db/postgres/migrations.go`; a `schema_version` table tracks the current revision. v1 declares the original tables, v2 adds `statements.adapter_id`, v3 makes a row one verdict carrying a version list, and v4 adds `adapter_documents`; together they build the shape below.
+The PostgreSQL schema behind reel-vex. Migrations live in `pkg/db/postgres/migrations.go` and run automatically on every start. A `schema_version` table records the last one applied. Migrations are forward-only: to roll back, restore a backup taken before the upgrade.
+
+Terms used below:
+
+- **VEX**: a vendor's verdict on whether a CVE affects a product.
+- **PURL** and **CPE**: the two identifier schemes for that product (`pkg:deb/debian/zlib?distro=debian-12`, `cpe:/a:redhat:enterprise_linux:8::appstream`).
+- **Adapter**: the code that reads one configured feed.
+
+For how rows are written and removed, see [`architecture.md`](./architecture.md).
 
 ## Tables
 
 ```sql
+CREATE TABLE statements (
+    vendor        TEXT NOT NULL,                 -- e.g. "redhat", "ubuntu"
+    cve           TEXT NOT NULL,
+    product_id    TEXT NOT NULL,                 -- full PURL or CPE, as the vendor wrote it
+    base_id       TEXT NOT NULL,                 -- product_id normalised for lookup
+    versions      TEXT[] NOT NULL DEFAULT '{}',  -- versions stated for this verdict, sorted, de-duplicated
+    version_kind  TEXT NOT NULL DEFAULT '',      -- '' | 'exact' | 'boundary'
+    id_type       TEXT NOT NULL,                 -- 'purl' | 'cpe'
+    status        TEXT NOT NULL,                 -- not_affected | fixed | affected | under_investigation
+    justification TEXT NOT NULL DEFAULT '',      -- for not_affected only
+    updated       TEXT NOT NULL,                 -- RFC 3339 UTC, the vendor's date
+    source_format TEXT NOT NULL DEFAULT 'csaf',  -- csaf | oval | openvex | secdb | updateinfo
+    scope         TEXT NOT NULL DEFAULT '',      -- image/module a verdict is limited to ('' = package-level)
+    stream        TEXT NOT NULL DEFAULT '',      -- vendor product stream ('' for every feed today)
+    adapter_id    TEXT,                          -- the adapter that last wrote the row
+    PRIMARY KEY (vendor, cve, product_id, source_format, scope, stream, status, justification)
+);
+
 CREATE TABLE vendors (
-    id   TEXT PRIMARY KEY,  -- e.g. "redhat", "suse"
-    name TEXT NOT NULL      -- e.g. "Red Hat"
+    id   TEXT PRIMARY KEY,                       -- e.g. "redhat"
+    name TEXT NOT NULL                           -- e.g. "Red Hat"
 );
 
 CREATE TABLE adapter_state (
-    adapter_id  TEXT PRIMARY KEY,  -- unique per adapter instance
-    feed_url    TEXT,              -- canonical upstream URL
-    last_synced TEXT,              -- RFC3339; newest upstream data absorbed
-    updated     TEXT NOT NULL      -- RFC3339; when this row was last written
+    adapter_id  TEXT PRIMARY KEY,                -- the adapter's config id
+    feed_url    TEXT,
+    last_synced TEXT,                            -- RFC 3339 watermark
+    updated     TEXT NOT NULL                    -- when this row was last written
 );
 
 CREATE TABLE adapter_documents (
-    adapter_id  TEXT NOT NULL,     -- an adapter that skips unchanged documents (ubuntu-vex)
-    document    TEXT NOT NULL,     -- the document's CVE id
-    fingerprint TEXT NOT NULL,     -- "<fingerprintVersion>:<sha256 hex>" of the bytes last read
+    adapter_id  TEXT NOT NULL,                   -- ubuntu-vex only today
+    document    TEXT NOT NULL,                   -- the document's CVE id
+    fingerprint TEXT NOT NULL,                   -- "<fingerprintVersion>:<sha256 hex>"
     PRIMARY KEY (adapter_id, document)
-);
-
-CREATE TABLE statements (
-    vendor        TEXT NOT NULL,   -- from Adapter.Vendor()
-    cve           TEXT NOT NULL,
-    product_id    TEXT NOT NULL,   -- full PURL or CPE
-    base_id       TEXT NOT NULL,   -- normalized base for indexing
-    versions      TEXT[] NOT NULL DEFAULT '{}',  -- versions stated for this verdict, sorted, de-duplicated
-    version_kind  TEXT NOT NULL DEFAULT '',      -- '' (legacy) | 'exact' | 'boundary'
-    id_type       TEXT NOT NULL,   -- "purl" or "cpe"
-    status        TEXT NOT NULL,   -- not_affected, fixed, affected, under_investigation
-    justification TEXT NOT NULL DEFAULT '',      -- for not_affected only
-    updated       TEXT NOT NULL,   -- RFC3339 from the upstream advisory
-    source_format TEXT NOT NULL DEFAULT 'csaf',  -- "csaf" | "oval" | "openvex" | "secdb" | "updateinfo"
-    scope         TEXT NOT NULL DEFAULT '',      -- product the verdict is scoped to ('' = unscoped/package-level)
-    stream        TEXT NOT NULL DEFAULT '',      -- vendor product stream a boundary holds within ('' today)
-    adapter_id    TEXT,            -- the adapter that last wrote the row
-    PRIMARY KEY (vendor, cve, product_id, source_format, scope, stream, status, justification)
 );
 
 CREATE TABLE product_aliases (
     vendor     TEXT NOT NULL,
-    source_ns  TEXT NOT NULL,      -- e.g. "repository_id"
-    source_id  TEXT NOT NULL,      -- e.g. "rhel-8-for-x86_64-appstream-rpms"
-    target_ns  TEXT NOT NULL,      -- e.g. "cpe"
-    target_id  TEXT NOT NULL,      -- e.g. "cpe:/a:redhat:enterprise_linux:8::appstream"
+    source_ns  TEXT NOT NULL,                    -- e.g. "repository_id"
+    source_id  TEXT NOT NULL,                    -- e.g. "rhel-8-for-x86_64-appstream-rpms"
+    target_ns  TEXT NOT NULL,                    -- e.g. "cpe"
+    target_id  TEXT NOT NULL,                    -- e.g. "cpe:/a:redhat:enterprise_linux:8::appstream"
     confidence REAL NOT NULL DEFAULT 1.0,
     updated    TEXT NOT NULL,
     PRIMARY KEY (vendor, source_ns, source_id, target_ns, target_id)
 );
 ```
 
+Indexes: `statements (cve)`, `statements (source_format)`, `statements (adapter_id, cve)` for removal, and two on `product_aliases` (source and target). The main query index, `idx_statements_broad`, is not in the migrations. It is built at the end of the first ingest, so the initial bulk load runs without it:
+
+```sql
+CREATE INDEX idx_statements_broad ON statements (base_id, cve, product_id, source_format)
+    INCLUDE (vendor, versions, version_kind, id_type, status, justification, updated, scope);
+```
+
+| Version | Adds |
+|---|---|
+| v1 | `vendors`, `statements`, `product_aliases`, `adapter_state` |
+| v2 | `statements.adapter_id`, its index, and autovacuum settings for `statements` |
+| v3 | one row per verdict: `versions`, `version_kind`, `stream`, and the current primary key |
+| v4 | `adapter_documents` |
+
 ## Notes
 
-- `statements` PK is `(vendor, cve, product_id, source_format, scope, stream, status, justification)` — the same vendor + CVE + product combo can appear under different upstream feeds (OpenVEX and OVAL for Ubuntu), for product-scoped sources under different products, and once per verdict; all such rows are preserved.
-- **One row per verdict, carrying the versions stated for it** (schema v3). `versions` is sorted and de-duplicated on write, so a list that differs only in order is not a change; a re-insert rewrites a row's content (and `updated`) only when its `versions`, `base_id`, `id_type` or `version_kind` changed, and a re-insert by an adapter other than the row's owner always takes the row — when nothing else changed, it moves `adapter_id` alone and keeps `updated`. A changed verdict is a different key, so a new row. `version_kind` says how the list is read:
-  - `'exact'` — Ubuntu OpenVEX and Rancher. `product_id` carries no version, and `versions` is every version the vendor stated for this verdict (Ubuntu 22.04 amd64 glibc listed `affected` at 2.35-1 and `fixed` at 2.35-2 is two rows, `affected [2.35-1]` and `fixed [2.35-2]`). A versioned query matches the row only when its version is in the list; an empty list means the vendor stated the verdict with no version, and matches any version. Lists are replaced whole on each sync, never merged.
-  - `'boundary'` — a `fixed` row of Debian OVAL, Ubuntu OVAL, AlmaLinux and Oracle OVAL, Alpine secdb or Amazon ALAS whose `versions` holds the fixed-in version the vendor stated, as the feed writes it: dpkg `[epoch:]version-revision` for Debian (always with the epoch, `1:1.2.11.dfsg-4.1`, `0:1.3.5-6`) and Ubuntu OVAL (with or without it, `590-2ubuntu2.1`, `0:41.0.7-4ubuntu0.1`); rpm `epoch:version-release` for AlmaLinux and Oracle (`7:5.2-1.el9_0.1`, `0:1.9.5p2-1.el8_9`) and `version-release` for Amazon, with `epoch:` only when non-zero; apk `version-rN` for Alpine. A versioned query gets the row only when its version is at or above that version in the ecosystem's ordering (dpkg, rpm, apk; see [`api.md`](./api.md#fixed-in-versions-boundary-rows)). The comparison runs in Go as the rows are read, not in SQL; both columns it reads are in the covering index. The list holds one version, the last one a sync wrote for the key.
-  - `''` — every other row: Red Hat and SUSE CSAF, and every verdict stated with no version (Debian's open `0:0` is `affected`, Alpine's `"0"` is `not_affected`). One version per statement, so the list holds at most one element, and matching ignores it, as before 0.13.
-- `stream` is the vendor product stream a boundary holds within (CSAF's `relates_to` product); it is `''` for every feed today and keyed now so that recording it never changes the primary key. Neither `stream` nor `adapter_id` is returned by queries.
-- **`adapter_id`** (schema v2) is the adapter that last wrote the row: an identical write by another adapter moves only the owner, so a key two adapters emit (an Alpine package that moved between repositories) belongs to whichever wrote it last, and the other's sweep cannot delete it. It is what removal deletes by: a sweep or withdrawal touches only the running adapter's rows, and never a row whose `adapter_id` is NULL (rows an earlier version stored, which the fresh database a 0.13 deploy requires does not have). v2 also adds `idx_statements_adapter (adapter_id, cve)`, read by the CVE-scoped sweep and by withdrawal, and sets `autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_threshold = 100000` on `statements`: at the default 0.2 a ~200M-row table would be vacuumed about once a month, so the space each sweep frees would not be reused. See [`architecture.md`](./architecture.md#removal).
-- **Seen tables** (`sweep_seen_<adapter>_<hash>`) are transient: UNLOGGED, one per adapter while it syncs, holding the keys it emitted, and dropped at the end of the run. They are not part of the schema.
-- `scope` restricts a statement to one product context — an OpenVEX product `@id` such as a container image or Go module. It is `''` for every package-level feed (CSAF, OVAL, Canonical OpenVEX), leaving their storage and query behaviour unchanged. Subcomponent-scoped sources (the Rancher VEX hub) set it: the matchable package is stored in `product_id`/`base_id` while `scope` records *which image/module the verdict was made about*. The query layer only surfaces a scoped row when the caller names a matching scope (see [`api.md`](./api.md)), so a verdict scoped to one image never suppresses the same package elsewhere. Normalised via `pkg/csaf.NormalizeScope` (keeps `repository_url`, strips version/digest).
-- `base_id` is the normalized form of `product_id` used by the resolver: PURLs stripped of `@version`, any subpath and most qualifiers (but `distro` preserved for deb-shaped identity); CPEs as-is. Indexed for `/v1/statements` lookups.
-- **`product_id` is the full identifier and keeps what `base_id` drops**, including the `arch` qualifier. Matching is arch-blind by default, but `strict_arch` (see [`api.md`](./api.md)) re-parses `product_id` at query time, so architectures never need to be stored separately or indexed. Rows stay one-per-architecture on purpose: today the vendors publish the same verdict for every arch, but that is data, not a guarantee, and collapsing it at ingest would make a future divergence unrepresentable.
-- **`adapter_documents`** (schema v4) is what Ubuntu OpenVEX read last: one fingerprint per document, cleared before a run changes any row and stored again as a set once its removal succeeded. A document whose fingerprint is unchanged is left out of the next run. Deleting an adapter's rows here makes the next run that fetches the tarball (the next publish; clear `adapter_state.last_synced` too to fetch at once) read every document and sweep the whole feed.
-- `vendors` is display metadata only; runtime data (feed URLs, watermarks) lives in `adapter_state` so multiple adapters under one vendor (e.g., one Ubuntu OVAL adapter per release) don't stomp on each other.
-- A `schema_version` table tracks migration state. Forward-migration is automatic on every binary boot; the Postgres backend is forward-only, and rollback is manual (restore from a pre-upgrade backup/snapshot).
-- The broad-mode covering index (`idx_statements_broad`, on `(base_id, cve, product_id, source_format)` INCLUDE `vendor, versions, version_kind, id_type, status, justification, updated, scope`) is **not** part of the schema — it's built once after the cold bulk load by `EnsureCoveringIndex` (end of each ingest), so the first load stays index-free; later cycles find it present and just maintain it. Everything the exact-list match and the boundary comparison read is in it, so a versioned query stays an index-only scan.
+**One row per verdict.** The verdict (`status`, `justification`) is part of the key. So a verdict the vendor changes is a new row, and the old one stays until [removal](./architecture.md#removal) deletes it. The same CVE and product can also appear once per `source_format` (Ubuntu has both OVAL and OpenVEX) and once per `scope`.
+
+**Writes.** `versions` is sorted and de-duplicated on write. A re-write changes a row's content and `updated` only when `versions`, `base_id`, `id_type` or `version_kind` changed. The list is replaced, never merged.
+
+**`version_kind`** says how a versioned query reads `versions`. Details in [`architecture.md`](./architecture.md#version-lists) and [`api.md`](./api.md#versioned-queries).
+
+| Kind | Rows | `versions` holds | Match |
+|---|---|---|---|
+| `exact` | Ubuntu OpenVEX, Rancher | every version stated for this verdict. `product_id` has no version. | the queried version is in the list. An empty list matches any version. |
+| `boundary` | `fixed` rows of the OVAL feeds, Alpine and Amazon | the fixed-in version, in the feed's own dpkg, rpm or apk syntax | the queried version is at or above it |
+| `''` | Red Hat and SUSE CSAF, and the fixed-in feeds' other verdicts (Debian's open `0:0` is `affected`, Alpine's `"0"` is `not_affected`) | at most one version | the version is ignored |
+
+**Ownership.** `adapter_id` is the adapter that last wrote the row. An identical write by another adapter moves only `adapter_id` (an Alpine package that moved between repositories, say), so when the first adapter stops emitting it, its removal cannot delete a row the other still publishes. Removal deletes only the running adapter's rows. It never deletes a row with a NULL `adapter_id`. Such rows exist only in databases filled before 0.13, and an adapter that writes one again takes it over.
+
+**Not returned by queries:** `stream` and `adapter_id`.
+
+**`scope`** is set only by the Rancher VEX hub. The package goes in `product_id`, and the image or Go module the verdict is about goes in `scope` (normalised by `pkg/csaf.NormalizeScope`: version and digest removed, `repository_url` kept). A scoped row is returned only when the caller names a matching scope. See [`api.md`](./api.md#product-scoped-statements).
+
+**`base_id`** is what lookups use. For a PURL it drops the `@version`, the subpath and every qualifier except `distro`. `distro` is identity: `openssl` on `ubuntu-22.04` and `ubuntu-24.04` are different products. A CPE is stored as is.
+
+**`product_id`** keeps everything, including `arch`. Matching ignores architecture by default, and `strict_arch` reads it back from `product_id`. Rows stay one per architecture on purpose: the vendors publish the same verdict for every architecture today, but merging them at ingest would make a future difference impossible to store.
+
+**`adapter_documents`** is what Ubuntu OpenVEX read last. A document whose fingerprint is unchanged is skipped on the next run. The table is cleared before a run changes any row and written again only after that run's removal succeeds. Deleting an adapter's rows here makes its next fetch read every document.
+
+**`vendors`** is display only. Per-feed state (URL, watermark) lives in `adapter_state`, so several adapters under one vendor (one Ubuntu OVAL adapter per release, say) keep separate watermarks.
+
+**Seen tables** (`sweep_seen_*`) exist only while an adapter syncs, to record the keys it emitted. They are not part of the schema.
