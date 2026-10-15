@@ -157,7 +157,7 @@ func redhatCases() []Case {
 					Evidence: "RH 2026/cve-2026-88265.json product_status.fixed: Red Hat Hardened Images:crun-0:1.30-1.hum1@{aarch64,src,x86_64} (PURLs carry distro=hummingbird-20251124)"},
 				{CVE: "CVE-2026-88265", Supplier: "redhat", Status: "affected", Timestamp: tsRH88265, Notes: notes("csaf", "direct"),
 					Products: ss("pkg:rpm/redhat/crun?distro=hummingbird-20251124"),
-					Evidence: "RH 2026/cve-2026-88265.json product_status.known_affected: crun, crun.src, crun::container-tools:rhel8, crun.src::container-tools:rhel8 (bare PURLs; docs/api.md: rpm distro is strip-and-also)"},
+					Evidence: "RH 2026/cve-2026-88265.json product_status.known_affected: crun, crun.src, crun::container-tools:rhel8, crun.src::container-tools:rhel8 (bare PURLs; docs/api.md: a PURL is also tried without its distro)"},
 			},
 		},
 		{
@@ -269,11 +269,11 @@ func redhatCases() []Case {
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2026-101295", Supplier: "redhat", Status: "under_investigation", Timestamp: tsRH101295, Notes: notes("csaf", "direct"),
 				Products: ss("pkg:oci/oc-mirror-plugin-rhel9"),
-				Evidence: "RH 2026/cve-2026-101295.json product_status.under_investigation: ...:openshift4/oc-mirror-plugin-rhel9 (pkg:oci/oc-mirror-plugin-rhel9?repository_url=...); docs/api.md: repository_url is not part of an rpm/oci base"}},
+				Evidence: "RH 2026/cve-2026-101295.json product_status.under_investigation: ...:openshift4/oc-mirror-plugin-rhel9 (pkg:oci/oc-mirror-plugin-rhel9?repository_url=...); docs/api.md, PURL identity rules: repository_url is not part of a base"}},
 		},
 		{
-			// docs/api.md: repository_id is "Required on Red Hat queries that need
-			// EUS / AUS / E4S coverage".
+			// docs/api.md: repository_id is "Needed to reach Red Hat's EUS, AUS and
+			// E4S stream verdicts".
 			Name: "redhat/purl/EUS repository_id reaches the EUS stream via the alias (fixed)", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2025-20012"), "statuses": ss("fixed"),
 				"products": ss("pkg:rpm/redhat/microcode_ctl@20230808-2.20250512.1.el9_4?arch=noarch&distro=redhat-9.4&epoch=4&repository_id=rhel-9-for-x86_64-baseos-eus-rpms")},

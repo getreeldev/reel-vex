@@ -10,8 +10,8 @@ package acceptance
 //
 // A product query is answered with the verdict Canonical stated for the version
 // asked about, under the vendor's own per-version identifiers, and a versionless
-// query with every listed version under its own verdict (docs/api.md, Version
-// selection).
+// query with every listed version under its own verdict (docs/api.md, Versioned
+// queries).
 
 const (
 	tsUV2060  = "2022-06-13T09:15:00Z" // UV vex/cve/2022/CVE-2022-2060.json statements[0].timestamp

@@ -498,7 +498,7 @@ func analyzeCases() []Case {
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2022-37434", Supplier: "rancher", Status: "not_affected", Justification: "vulnerable_code_not_in_execute_path",
 				Timestamp: tsRVSachet, Notes: scoped(notes("openvex", "direct"), scopeSachetDocker), Products: ss("pkg:apk/alpine/zlib"),
-				Evidence: evSachetDocker + " (no version: an empty list, rendered as the vendor's product_id: docs/api.md, Version selection)"}},
+				Evidence: evSachetDocker + " (no version: an empty list, rendered as the vendor's product_id: docs/api.md, Versioned queries)"}},
 		},
 	}
 }

@@ -87,17 +87,16 @@ func rancherCases() []Case {
 			},
 		},
 		{
-			// docs/api.md describes the distro-stripped candidate for rpm only;
-			// the resolver adds it for every PURL carrying a distro, and this
-			// answer depends on it for deb: the Rancher subcomponent has no
-			// distro, a scanner's deb PURL always does.
+			// The resolver also tries a PURL without its distro (docs/api.md,
+			// PURL identity rules), and this answer depends on it for deb: the
+			// Rancher subcomponent has no distro, a scanner's deb PURL always does.
 			Name: "rancher/exact/a scanner's deb PURL reaches a distro-less subcomponent", Endpoint: epStatements,
 			Body: body{"cves": ss("CVE-2026-24061"), "scopes": ss(scopeKubeOVN),
 				"products": ss("pkg:deb/ubuntu/inetutils-ping@2.5-3ubuntu4?arch=amd64&distro=ubuntu-24.04&epoch=2")},
 			Status: 200, Rows: 1,
 			Want: []Stmt{{CVE: "CVE-2026-24061", Supplier: "rancher", Status: "not_affected", Justification: "vulnerable_code_not_in_execute_path",
 				Timestamp: tsRVKube, Notes: scoped(notes("openvex", "direct"), scopeKubeOVN), Products: ss("pkg:deb/ubuntu/inetutils-ping"),
-				Evidence: evKubeOVN + " (no version: an empty list, rendered as the vendor's product_id: docs/api.md, Version selection)"}},
+				Evidence: evKubeOVN + " (no version: an empty list, rendered as the vendor's product_id: docs/api.md, Versioned queries)"}},
 		},
 		{
 			Name: "rancher/negative/non-CVE statements are skipped", Endpoint: epStatements,
@@ -152,7 +151,7 @@ func rancherCases() []Case {
 			// An empty list means the vendor stated the verdict with no version:
 			// it matches any version, and is rendered as the vendor's
 			// versionless product_id, never the caller's identifier
-			// (docs/api.md, Version selection).
+			// (docs/api.md, Versioned queries).
 			Name: "rancher/exact/an empty version list matches any version", Endpoint: epStatements,
 			Body:   body{"cves": ss("CVE-2022-37434"), "vendors": ss("rancher"), "products": ss("pkg:apk/alpine/zlib@1.2.12-r3?arch=x86_64&distro=3.16.2"), "scopes": ss(scopeSachetDocker)},
 			Status: 200, Rows: 1,

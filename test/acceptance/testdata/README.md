@@ -6,14 +6,13 @@ server so every adapter ingests real vendor data. Everything here was fetched on
 provider-metadata → distribution → `changes.csv`/`index.txt` chain), except the
 Canonical OpenVEX tarball, a copy taken on **2026-10-02**.
 
-**Trimming rule.** Items were only ever dropped whole — tar entries, OVAL definitions
+**Trimming rule.** Items were only ever dropped whole: tar entries, OVAL definitions
 (with the tests, objects, states and variables no kept definition references), secdb
 packages, updateinfo `<update>`s, CSAF documents, `changes.csv`/`index.txt` lines,
 `repomd.xml` `<data>` entries, alias-file repositories. No vendor statement inside a
-kept item was edited, with two exceptions that are not vendor statements: JSON files
-that were trimmed (secdb, Rancher `index.json`, `repository-to-cpe.json`) are
-re-serialised (whitespace only), and the day-2 files listed at the end are edited on
-purpose.
+kept item was edited. Two exceptions, neither a vendor statement: trimmed JSON files
+(secdb, Rancher `index.json`, `repository-to-cpe.json`) are re-serialised (whitespace
+only), and the day-2 files listed at the end are edited on purpose.
 
 ## Licences
 
@@ -92,7 +91,7 @@ noted per feed for reference.
   is ~300 MB). Same format the adapter reads from the vendor: a zstd-compressed tar of
   `<year>/cve-<id>.json` entries with no directory entries (checked against the first
   400 KB of the real archive on 2026-10-03). It holds the two documents whose
-  `changes.csv` date is before the archive date (`src/day1/redhat-archive/`); the five
+  `changes.csv` date is before the archive date (`src/day1/redhat-archive/`). The five
   later ones reach the adapter through the `changes.csv` delta, as on the live feed.
   The suite requires the adapter's `csaf bulk archive: done … docs=2` line on day 1.
 - `../metrics/repository-to-cpe.json` — five of the 13,032 repositories kept
@@ -109,25 +108,29 @@ noted per feed for reference.
 - `cve-2025-1914.json` (chromium: `recommended` only — the audit's SUSE case),
   `cve-2017-15535.json` (mongodb: known_not_affected with no flag, recommended),
   `cve-2025-26791.json` (velociraptor known_affected, argocd-cli recommended),
-  `cve-2025-22077.json` (kernel; the one document kept for `first_fixed`, which SUSE
-  writes only in some large documents: 27 of a 1,168-document sample used it, none
-  under 320 KB; this one is 372 KB) — verbatim.
+  `cve-2025-22077.json` (kernel, kept for `first_fixed`: SUSE writes it only in some
+  large documents, 27 of a 1,168-document sample, none under 320 KB; this one is
+  372 KB) — verbatim.
 
 ### Canonical OpenVEX — `security-metadata.canonical.com/vex/vex-all.tar.xz`
 
 Source tarball: the 2026-10-02 copy of https://security-metadata.canonical.com/vex/vex-all.tar.xz
 (68,845 `vex/cve` documents). Kept entries (`src/day1/ubuntu-vex/`), verbatim:
-`vex/cve/2016/CVE-2016-9571.json` (affected / not_affected at two versions of one
-release, esm-apps), `vex/cve/2018/CVE-2018-20543.json` (component_not_present),
-`vex/cve/2022/CVE-2022-2060.json` (under_investigation, esm-apps-legacy),
-`vex/cve/2022/CVE-2022-33972.json` (intel-microcode fixed/affected across five
-releases, esm-infra/esm-infra-legacy), `vex/cve/2022/CVE-2022-37434.json` (zlib/klibc/
-rsync, every release, includes `distro=trusty/esm`), `vex/cve/2026/CVE-2026-41990.json`
-(libgcrypt20, fips/fips-updates/fips-preview tracks), `vex/cve/2022/CVE-2022-21180.json`
-(intel-microcode, listed on 18.04 at a different version than CVE-2022-33972 lists it),
-and one USN entry,
-`vex/usn/USN-7560-1.json`, which the adapter must not read. The tar is rebuilt with
-directory entries, as the vendor's has.
+
+- `vex/cve/2016/CVE-2016-9571.json` (affected / not_affected at two versions of one
+  release, esm-apps)
+- `vex/cve/2018/CVE-2018-20543.json` (component_not_present)
+- `vex/cve/2022/CVE-2022-2060.json` (under_investigation, esm-apps-legacy)
+- `vex/cve/2022/CVE-2022-33972.json` (intel-microcode fixed/affected across five
+  releases, esm-infra/esm-infra-legacy)
+- `vex/cve/2022/CVE-2022-37434.json` (zlib/klibc/rsync, every release, includes
+  `distro=trusty/esm`)
+- `vex/cve/2026/CVE-2026-41990.json` (libgcrypt20, fips/fips-updates/fips-preview tracks)
+- `vex/cve/2022/CVE-2022-21180.json` (intel-microcode, listed on 18.04 at a different
+  version than CVE-2022-33972 lists it)
+- one USN entry, `vex/usn/USN-7560-1.json`, which the adapter must not read.
+
+The tar is rebuilt with directory entries, as the vendor's has.
 
 ### Ubuntu OVAL — `security-metadata.canonical.com/oval/com.ubuntu.noble.usn.oval.xml.bz2`
 
@@ -228,5 +231,5 @@ dates CSAF rows by `changes.csv`.
 - OpenVEX (Canonical, Rancher): the statement's timestamp, else the document's.
 - updateinfo: the advisory's `<updated date>`.
 - OVAL and secdb: the file's Last-Modified (the server's day-1 date). OVAL definitions
-  carry dates of their own; dating OVAL rows by the file is the product's current design,
-  and whether to date them by the definition instead is an open question.
+  carry dates of their own. Dating OVAL rows by the file is the current design; whether
+  to date them by the definition instead is an open question.
