@@ -14,6 +14,13 @@ type Store interface {
 	UpsertVendor(id, name string) error
 	UpsertAdapterState(adapterID, feedURL, lastSynced string) error
 	AdapterLastSynced(adapterID string) (string, error)
+	// DocumentFingerprints returns the fingerprints SaveDocumentFingerprints
+	// last stored for the adapter (document → fingerprint), empty when none.
+	DocumentFingerprints(adapterID string) (map[string]string, error)
+	// SaveDocumentFingerprints replaces every fingerprint stored for the
+	// adapter with fps, in one transaction. An empty fps clears them, which
+	// makes the adapter's next read of its feed read every document.
+	SaveDocumentFingerprints(adapterID string, fps map[string]string) error
 	BulkInsert(stmts []Statement) error
 	BulkUpsertAliases(aliases []Alias) error
 

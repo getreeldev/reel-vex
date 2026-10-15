@@ -1,6 +1,6 @@
 # reel-vex data model
 
-Schema for the PostgreSQL database that backs reel-vex. Migrations are applied automatically on every binary boot via `pkg/db/postgres/migrations.go`; a `schema_version` table tracks the current revision. v1 declares the original tables, v2 adds `statements.adapter_id`, and v3 makes a row one verdict carrying a version list; together they build the shape below.
+Schema for the PostgreSQL database that backs reel-vex. Migrations are applied automatically on every binary boot via `pkg/db/postgres/migrations.go`; a `schema_version` table tracks the current revision. v1 declares the original tables, v2 adds `statements.adapter_id`, v3 makes a row one verdict carrying a version list, and v4 adds `adapter_documents`; together they build the shape below.
 
 ## Tables
 
@@ -15,6 +15,13 @@ CREATE TABLE adapter_state (
     feed_url    TEXT,              -- canonical upstream URL
     last_synced TEXT,              -- RFC3339; newest upstream data absorbed
     updated     TEXT NOT NULL      -- RFC3339; when this row was last written
+);
+
+CREATE TABLE adapter_documents (
+    adapter_id  TEXT NOT NULL,     -- an adapter that skips unchanged documents (ubuntu-vex)
+    document    TEXT NOT NULL,     -- the document's CVE id
+    fingerprint TEXT NOT NULL,     -- "<fingerprintVersion>:<sha256 hex>" of the bytes last read
+    PRIMARY KEY (adapter_id, document)
 );
 
 CREATE TABLE statements (
@@ -60,6 +67,7 @@ CREATE TABLE product_aliases (
 - `scope` restricts a statement to one product context — an OpenVEX product `@id` such as a container image or Go module. It is `''` for every package-level feed (CSAF, OVAL, Canonical OpenVEX), leaving their storage and query behaviour unchanged. Subcomponent-scoped sources (the Rancher VEX hub) set it: the matchable package is stored in `product_id`/`base_id` while `scope` records *which image/module the verdict was made about*. The query layer only surfaces a scoped row when the caller names a matching scope (see [`api.md`](./api.md)), so a verdict scoped to one image never suppresses the same package elsewhere. Normalised via `pkg/csaf.NormalizeScope` (keeps `repository_url`, strips version/digest).
 - `base_id` is the normalized form of `product_id` used by the resolver: PURLs stripped of `@version`, any subpath and most qualifiers (but `distro` preserved for deb-shaped identity); CPEs as-is. Indexed for `/v1/statements` lookups.
 - **`product_id` is the full identifier and keeps what `base_id` drops**, including the `arch` qualifier. Matching is arch-blind by default, but `strict_arch` (see [`api.md`](./api.md)) re-parses `product_id` at query time, so architectures never need to be stored separately or indexed. Rows stay one-per-architecture on purpose: today the vendors publish the same verdict for every arch, but that is data, not a guarantee, and collapsing it at ingest would make a future divergence unrepresentable.
+- **`adapter_documents`** (schema v4) is what Ubuntu OpenVEX read last: one fingerprint per document, cleared before a run changes any row and stored again as a set once its removal succeeded. A document whose fingerprint is unchanged is left out of the next run. Deleting an adapter's rows here makes the next run that fetches the tarball (the next publish; clear `adapter_state.last_synced` too to fetch at once) read every document and sweep the whole feed.
 - `vendors` is display metadata only; runtime data (feed URLs, watermarks) lives in `adapter_state` so multiple adapters under one vendor (e.g., one Ubuntu OVAL adapter per release) don't stomp on each other.
 - A `schema_version` table tracks migration state. Forward-migration is automatic on every binary boot; the Postgres backend is forward-only, and rollback is manual (restore from a pre-upgrade backup/snapshot).
 - The broad-mode covering index (`idx_statements_broad`, on `(base_id, cve, product_id, source_format)` INCLUDE `vendor, versions, version_kind, id_type, status, justification, updated, scope`) is **not** part of the schema — it's built once after the cold bulk load by `EnsureCoveringIndex` (end of each ingest), so the first load stays index-free; later cycles find it present and just maintain it. Everything the exact-list match and the boundary comparison read is in it, so a versioned query stays an index-only scan.

@@ -54,6 +54,22 @@ type Adapter interface {
 	Sync(ctx context.Context, since time.Time, emit func(Statement) error) (SyncResult, error)
 }
 
+// ChangedDocsAdapter is an Adapter whose feed is one file of per-CVE
+// documents with no list of what changed (Canonical's OpenVEX tarball), which
+// can leave out the documents that are byte-for-byte what its last run read.
+// The orchestrator calls SyncChanged instead of Sync when it can replace a
+// re-read document's rows; with a nil last it is Sync.
+type ChangedDocsAdapter interface {
+	Adapter
+	// SyncChanged is Sync, given the fingerprints SyncResult.Fingerprints held
+	// after the last run the orchestrator stored. A document whose
+	// fingerprint is in last unchanged emits nothing; every other document is
+	// emitted whole and listed in RefreshedCVEs. A run that left anything out
+	// as unchanged is not Complete, and lists in LiveCVEs every CVE the feed
+	// holds, so a document gone from the feed is withdrawn.
+	SyncChanged(ctx context.Context, since time.Time, last map[string]string, emit func(Statement) error) (SyncResult, error)
+}
+
 // SyncResult reports what one successful Sync covered, so the orchestrator
 // can tell which stored rows the vendor no longer publishes.
 type SyncResult struct {
@@ -66,16 +82,17 @@ type SyncResult struct {
 	// ("up to date, skipping GET") is not complete: it emitted nothing.
 	Complete bool
 
-	// RefreshedCVEs lists, for per-CVE document feeds (CSAF), the CVE ids of
-	// the documents fetched and fully parsed this call, including documents
-	// that yielded no statements. Each listed document's statements were all
-	// emitted, so its stored rows that were not are no longer published. A
-	// document that failed to fetch or parse is left out. Nil for whole-file
-	// feeds.
+	// RefreshedCVEs lists, for per-CVE document feeds (CSAF, and a
+	// ChangedDocsAdapter's changed documents), the CVE ids of the documents
+	// fetched and fully parsed this call, including documents that yielded no
+	// statements. Each listed document's statements were all emitted, so its
+	// stored rows that were not are no longer published. A document that
+	// failed to fetch or parse is left out. Nil for whole-file feeds.
 	RefreshedCVEs []string
 
 	// LiveCVEs is the vendor's manifest of live documents as CVE ids, when
-	// the adapter read one this call (CSAF's index.txt). Nil when the
+	// the adapter read one this call (CSAF's index.txt; the CVEs of a
+	// ChangedDocsAdapter's whole feed). Nil when the
 	// adapter has no manifest or could not read it — never an empty slice
 	// standing in for "unknown".
 	LiveCVEs []string
@@ -85,6 +102,25 @@ type SyncResult struct {
 	// The orchestrator keeps the watermark before it, so the next incremental
 	// sync fetches that document — and every one after it — again.
 	RetryFrom time.Time
+
+	// Watermark, when non-zero, is the watermark this call reached, recorded
+	// in place of the newest statement date it emitted. A ChangedDocsAdapter
+	// sets it to the feed's Last-Modified: a run that emits only the
+	// documents that changed has no reason to have emitted the feed's newest
+	// date, and a watermark that moved back would make the next run fetch a
+	// feed that has not changed. The orchestrator records it only when the
+	// run's removal finished (or removal is disabled); otherwise the
+	// watermark stays put and the next run fetches the feed again.
+	Watermark time.Time
+
+	// Fingerprints, from a ChangedDocsAdapter that read its feed this call,
+	// maps each document it read whole — emitted or left out as unchanged —
+	// to a fingerprint of its content. A document that failed to read has
+	// none, so the next run reads it again. The orchestrator stores it once
+	// this run's rows are written and replaced, and hands it back as the next
+	// SyncChanged's last; a run that wrote rows it did not replace clears the
+	// stored set instead. Nil otherwise.
+	Fingerprints map[string]string
 }
 
 // FeedInfo is the post-discovery metadata about an adapter's feed.

@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -46,6 +47,8 @@ type Store struct {
 	pingErr error
 	// sweeps holds the open sweep sessions, by adapter id.
 	sweeps map[string]*sweep
+	// fingerprints holds each adapter's stored document fingerprints.
+	fingerprints map[string]map[string]string
 	// ingestLocked is the ingest lock (see TryLockIngest).
 	ingestLocked bool
 }
@@ -59,7 +62,7 @@ type sweep struct {
 
 // New returns an empty in-memory Store.
 func New() *Store {
-	return &Store{vendors: map[string]string{}, adapters: map[string]adapterState{}, sweeps: map[string]*sweep{}}
+	return &Store{vendors: map[string]string{}, adapters: map[string]adapterState{}, sweeps: map[string]*sweep{}, fingerprints: map[string]map[string]string{}}
 }
 
 var _ db.Store = (*Store)(nil)
@@ -92,6 +95,26 @@ func (s *Store) AdapterLastSynced(adapterID string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.adapters[adapterID].lastSynced, nil
+}
+
+func (s *Store) DocumentFingerprints(adapterID string) (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fps := maps.Clone(s.fingerprints[adapterID])
+	if fps == nil {
+		fps = map[string]string{}
+	}
+	return fps, nil
+}
+
+func (s *Store) SaveDocumentFingerprints(adapterID string, fps map[string]string) error {
+	if adapterID == "" {
+		return errors.New("save document fingerprints: empty adapter id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fingerprints[adapterID] = maps.Clone(fps)
+	return nil
 }
 
 func (s *Store) LastIngestAt() (time.Time, error) {

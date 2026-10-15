@@ -115,6 +115,19 @@ var migrations = []migration{
 		`ALTER TABLE statements ADD PRIMARY KEY (vendor, cve, product_id, source_format, scope, stream, status, justification)`,
 		`ALTER TABLE statements DROP COLUMN version`,
 	}},
+	{version: 4, statements: []string{
+		// What a ChangedDocsAdapter (Canonical's OpenVEX tarball) last read:
+		// one row per document, its fingerprint the content it was read from.
+		// The next run emits only documents whose fingerprint differs, so
+		// deleting an adapter's rows here makes the next run that fetches the
+		// feed read every document again.
+		`CREATE TABLE IF NOT EXISTS adapter_documents (
+			adapter_id  TEXT NOT NULL,
+			document    TEXT NOT NULL,
+			fingerprint TEXT NOT NULL,
+			PRIMARY KEY (adapter_id, document)
+		)`,
+	}},
 }
 
 // migrate ensures schema_version exists, then applies each pending migration in

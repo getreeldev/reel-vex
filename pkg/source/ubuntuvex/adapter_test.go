@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"slices"
 	"sort"
 	"strings"
@@ -554,5 +556,209 @@ func TestEmitDoc_FoldedTracksKeepEachVerdict(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("rows %v, want %v", got, want)
+	}
+}
+
+// syncChanged runs SyncChanged against a tarball of entries and returns what
+// it emitted, by CVE, and its result.
+func syncChanged(t *testing.T, entries []fixtureEntry, last map[string]string) (map[string]int, source.SyncResult) {
+	t.Helper()
+	server, _ := serveFixture(t, buildTarXZ(t, entries), time.Now().UTC())
+	defer server.Close()
+	a, err := New(source.AdapterConfig{Type: Type, ID: "ubuntu-vex", URL: server.URL + "/vex-all.tar.xz"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	res, err := a.(source.ChangedDocsAdapter).SyncChanged(context.Background(), time.Time{}, last, func(s source.Statement) error {
+		got[s.CVE]++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("SyncChanged: %v", err)
+	}
+	return got, res
+}
+
+func TestAdapter_SyncChangedLeavesOutUnchangedDocuments(t *testing.T) {
+	doc := func(cve, status string) []byte {
+		return mustJSON(t, docOne(cve, []openvex.Component{purl("pkg:deb/ubuntu/curl?distro=ubuntu/jammy")}, status, "", "2026-04-01T00:00:00Z"))
+	}
+	day1 := []fixtureEntry{
+		{name: "vex/cve/2026/CVE-2026-1.json", body: doc("CVE-2026-1", "fixed")},
+		{name: "vex/cve/2026/CVE-2026-2.json", body: doc("CVE-2026-2", "affected")},
+	}
+	emitted, res := syncChanged(t, day1, nil)
+	if !res.Complete || res.RefreshedCVEs != nil || res.LiveCVEs != nil || len(emitted) != 2 {
+		t.Fatalf("a cold run must read everything and be Complete: emitted %v, result %+v", emitted, res)
+	}
+	if len(res.Fingerprints) != 2 {
+		t.Fatalf("fingerprints %v, want one per document", res.Fingerprints)
+	}
+
+	day2 := []fixtureEntry{
+		day1[0], // unchanged
+		{name: "vex/cve/2026/CVE-2026-2.json", body: doc("CVE-2026-2", "fixed")},
+		{name: "vex/cve/2026/CVE-2026-3.json", body: doc("CVE-2026-3", "affected")},
+		{name: "vex/cve/2026/CVE-2026-4.json", body: []byte(`{not valid json`)},
+	}
+	emitted, res = syncChanged(t, day2, res.Fingerprints)
+	if res.Complete {
+		t.Error("a run that left documents out must not be Complete")
+	}
+	if want := map[string]int{"CVE-2026-2": 1, "CVE-2026-3": 1}; !maps.Equal(emitted, want) {
+		t.Errorf("emitted %v, want only the changed and new documents %v", emitted, want)
+	}
+	if want := []string{"CVE-2026-2", "CVE-2026-3"}; !slices.Equal(res.RefreshedCVEs, want) {
+		t.Errorf("RefreshedCVEs %v, want %v", res.RefreshedCVEs, want)
+	}
+	// The malformed document is live, so its stored rows are not withdrawn,
+	// and has no fingerprint, so the next run reads it again.
+	if want := []string{"CVE-2026-1", "CVE-2026-2", "CVE-2026-3", "CVE-2026-4"}; !slices.Equal(res.LiveCVEs, want) {
+		t.Errorf("LiveCVEs %v, want %v", res.LiveCVEs, want)
+	}
+	if want := []string{"CVE-2026-1", "CVE-2026-2", "CVE-2026-3"}; !slices.Equal(slices.Sorted(maps.Keys(res.Fingerprints)), want) {
+		t.Errorf("fingerprinted %v, want %v", slices.Sorted(maps.Keys(res.Fingerprints)), want)
+	}
+}
+
+// TestAdapter_SyncChangedNeverLeavesOutAForeignNamedDocument: rows are keyed
+// by the CVE a statement names, so a file naming another CVE cannot be left
+// out as "that file's CVE".
+func TestAdapter_SyncChangedReadsEverythingWhenAFileIsNotOneCVEsOwn(t *testing.T) {
+	curl := []openvex.Component{purl("pkg:deb/ubuntu/curl?distro=ubuntu/jammy")}
+	wget := []openvex.Component{purl("pkg:deb/ubuntu/wget?distro=ubuntu/jammy")}
+	cases := map[string][]fixtureEntry{
+		// CVE-2026-1.json also states CVE-2026-2, whose own file is unchanged:
+		// replacing CVE-2026-2 from the first file alone would delete the
+		// second file's rows.
+		"a document naming another CVE": {
+			{name: "vex/cve/2026/CVE-2026-1.json", body: mustJSON(t, openvex.Document{Context: openvex.Context, Statements: []openvex.Statement{
+				{Vulnerability: openvex.Vulnerability{Name: "CVE-2026-1"}, Products: curl, Status: "fixed"},
+				{Vulnerability: openvex.Vulnerability{Name: "CVE-2026-2"}, Products: wget, Status: "fixed"}}})},
+			{name: "vex/cve/2026/CVE-2026-2.json", body: mustJSON(t, docOne("CVE-2026-2", curl, "affected", "", "2026-04-01T00:00:00Z"))},
+		},
+		// Two files of one name: the unchanged one would be left out while
+		// the other replaced the CVE.
+		"two files of one name": {
+			{name: "vex/cve/2025/CVE-2026-2.json", body: mustJSON(t, docOne("CVE-2026-2", wget, "fixed", "", "2026-04-01T00:00:00Z"))},
+			{name: "vex/cve/2026/CVE-2026-2.json", body: mustJSON(t, docOne("CVE-2026-2", curl, "affected", "", "2026-04-01T00:00:00Z"))},
+		},
+	}
+	for name, entries := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, first := syncChanged(t, entries, nil)
+			if !first.Complete || first.Fingerprints == nil || len(first.Fingerprints) != 0 {
+				t.Fatalf("first run %+v; want Complete and no fingerprints", first)
+			}
+			// A run that last stored the last file's fingerprint, from before
+			// the tarball took this shape: every document is read and the run
+			// is Complete, for a whole-feed sweep. (Rows the first pass
+			// emitted are emitted again; the upsert makes that a no-op.)
+			e := entries[len(entries)-1]
+			last := map[string]string{strings.TrimSuffix(path.Base(e.name), ".json"): fingerprint(e.body)}
+			emitted, res := syncChanged(t, entries, last)
+			if !res.Complete || res.RefreshedCVEs != nil || res.Fingerprints == nil || len(res.Fingerprints) != 0 {
+				t.Errorf("result %+v; want Complete, nothing refreshed, no fingerprints", res)
+			}
+			if emitted["CVE-2026-2"] < 2 {
+				t.Errorf("emitted %v; want both files' CVE-2026-2 rows", emitted)
+			}
+		})
+	}
+}
+
+// TestAdapter_SyncChangedReadsWholeWhenMuchChanged: replacing a document's
+// rows has no fraction guard, so a publish that changed more than a fifth of
+// the documents (and more than wholeReadAbove) is read whole and is Complete,
+// for the guarded whole-feed sweep.
+func TestAdapter_SyncChangedReadsWholeWhenMuchChanged(t *testing.T) {
+	defer func(n int) { wholeReadAbove = n }(wholeReadAbove)
+	wholeReadAbove = 1
+	doc := func(cve, status string) []byte {
+		return mustJSON(t, docOne(cve, []openvex.Component{purl("pkg:deb/ubuntu/curl?distro=ubuntu/jammy")}, status, "", "2026-04-01T00:00:00Z"))
+	}
+	day1 := []fixtureEntry{
+		{name: "vex/cve/2026/CVE-2026-1.json", body: doc("CVE-2026-1", "fixed")},
+		{name: "vex/cve/2026/CVE-2026-2.json", body: doc("CVE-2026-2", "affected")},
+		{name: "vex/cve/2026/CVE-2026-3.json", body: doc("CVE-2026-3", "affected")},
+	}
+	_, first := syncChanged(t, day1, nil)
+	day2 := []fixtureEntry{
+		day1[0],
+		{name: "vex/cve/2026/CVE-2026-2.json", body: doc("CVE-2026-2", "fixed")},
+		{name: "vex/cve/2026/CVE-2026-3.json", body: doc("CVE-2026-3", "fixed")},
+	}
+	emitted, res := syncChanged(t, day2, first.Fingerprints)
+	if !res.Complete || res.RefreshedCVEs != nil || res.LiveCVEs != nil {
+		t.Errorf("result %+v; want Complete, for the guarded whole-feed sweep", res)
+	}
+	if len(res.Fingerprints) != 3 {
+		t.Errorf("fingerprints %v, want all three documents'", res.Fingerprints)
+	}
+	if emitted["CVE-2026-1"] != 1 {
+		t.Errorf("emitted %v; want the unchanged document read in the whole read", emitted)
+	}
+}
+
+// TestAdapter_SyncChangedWholeReadThatSkippedRemovesNothing: a whole read —
+// cold, or forced by a tarball whose documents are not each one CVE's own —
+// that skipped a document reports nothing to remove, as before documents were
+// left out, and no fingerprints.
+func TestAdapter_SyncChangedWholeReadThatSkippedRemovesNothing(t *testing.T) {
+	defer func(n int64) { maxDocumentBytes = n }(maxDocumentBytes)
+	maxDocumentBytes = 4096
+	curl := []openvex.Component{purl("pkg:deb/ubuntu/curl?distro=ubuntu/jammy")}
+	good := func(cve string) fixtureEntry {
+		return fixtureEntry{name: "vex/cve/2026/" + cve + ".json", body: mustJSON(t, docOne(cve, curl, "fixed", "", "2026-04-01T00:00:00Z"))}
+	}
+	// CVE-2026-1.json also states CVE-2026-9, which has no file of its own:
+	// withdrawing by file name would delete the rows this run wrote for it.
+	foreign := fixtureEntry{name: "vex/cve/2026/CVE-2026-1.json", body: mustJSON(t, openvex.Document{Context: openvex.Context, Statements: []openvex.Statement{
+		{Vulnerability: openvex.Vulnerability{Name: "CVE-2026-1"}, Products: curl, Status: "fixed"},
+		{Vulnerability: openvex.Vulnerability{Name: "CVE-2026-9"}, Products: curl, Status: "fixed"}}})}
+	malformed := fixtureEntry{name: "vex/cve/2026/CVE-2026-2.json", body: []byte(`{not valid json`)}
+	oversized := fixtureEntry{name: "vex/cve/2026/CVE-2026-2.json", body: mustJSON(t, docOne("CVE-2026-2", curl, "fixed", strings.Repeat("x", 5000), "2026-04-01T00:00:00Z"))}
+	three := good("CVE-2026-3")
+	cases := []struct {
+		name    string
+		entries []fixtureEntry
+		last    map[string]string
+	}{
+		{"cold, a malformed document", []fixtureEntry{good("CVE-2026-1"), malformed, three}, nil},
+		{"cold, an oversized document", []fixtureEntry{good("CVE-2026-1"), oversized, three}, nil},
+		{"not one CVE's own, a malformed document", []fixtureEntry{foreign, malformed, three},
+			map[string]string{"CVE-2026-3": fingerprint(three.body)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, res := syncChanged(t, tc.entries, tc.last)
+			if res.Complete || res.RefreshedCVEs != nil || res.LiveCVEs != nil {
+				t.Errorf("result %+v; want nothing to remove", res)
+			}
+			if res.Fingerprints == nil || len(res.Fingerprints) != 0 {
+				t.Errorf("fingerprints %v; want none stored, so the next run reads whole", res.Fingerprints)
+			}
+		})
+	}
+}
+
+// TestAdapter_SyncChangedFingerprintsOfAnotherVersionAreAWholeRead: after
+// fingerprintVersion changes no stored fingerprint can match: the walk read
+// every document, and is not followed by a second whole read.
+func TestAdapter_SyncChangedFingerprintsOfAnotherVersionAreAWholeRead(t *testing.T) {
+	defer func(n int) { wholeReadAbove = n }(wholeReadAbove)
+	wholeReadAbove = 0
+	curl := []openvex.Component{purl("pkg:deb/ubuntu/curl?distro=ubuntu/jammy")}
+	entries := []fixtureEntry{
+		{name: "vex/cve/2026/CVE-2026-1.json", body: mustJSON(t, docOne("CVE-2026-1", curl, "fixed", "", "2026-04-01T00:00:00Z"))},
+		{name: "vex/cve/2026/CVE-2026-2.json", body: mustJSON(t, docOne("CVE-2026-2", curl, "fixed", "", "2026-04-01T00:00:00Z"))},
+	}
+	emitted, res := syncChanged(t, entries, map[string]string{"CVE-2026-1": "0:old", "CVE-2026-2": "0:old"})
+	if !res.Complete || len(res.Fingerprints) != 2 {
+		t.Errorf("result %+v; want a Complete whole read", res)
+	}
+	if want := map[string]int{"CVE-2026-1": 1, "CVE-2026-2": 1}; !maps.Equal(emitted, want) {
+		t.Errorf("emitted %v, want each document once", emitted)
 	}
 }

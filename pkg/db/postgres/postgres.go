@@ -214,6 +214,55 @@ func (p *DB) AdapterLastSynced(adapterID string) (string, error) {
 	return *ts, nil
 }
 
+// DocumentFingerprints returns the adapter's stored document fingerprints.
+func (p *DB) DocumentFingerprints(adapterID string) (map[string]string, error) {
+	rows, err := p.pool.Query(context.Background(),
+		`SELECT document, fingerprint FROM adapter_documents WHERE adapter_id = $1`, adapterID)
+	if err != nil {
+		return nil, fmt.Errorf("document fingerprints: %w", err)
+	}
+	defer rows.Close()
+	fps := map[string]string{}
+	for rows.Next() {
+		var doc, fp string
+		if err := rows.Scan(&doc, &fp); err != nil {
+			return nil, fmt.Errorf("document fingerprints: %w", err)
+		}
+		fps[doc] = fp
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("document fingerprints: %w", err)
+	}
+	return fps, nil
+}
+
+// SaveDocumentFingerprints replaces the adapter's fingerprints with fps.
+func (p *DB) SaveDocumentFingerprints(adapterID string, fps map[string]string) error {
+	if adapterID == "" {
+		return errors.New("save document fingerprints: empty adapter id")
+	}
+	ctx := context.Background()
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("save document fingerprints: %w", err)
+	}
+	defer tx.Rollback(context.Background())
+	if _, err := tx.Exec(ctx, `DELETE FROM adapter_documents WHERE adapter_id = $1`, adapterID); err != nil {
+		return fmt.Errorf("save document fingerprints: %w", err)
+	}
+	rows := make([][]any, 0, len(fps))
+	for doc, fp := range fps {
+		rows = append(rows, []any{adapterID, doc, fp})
+	}
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"adapter_documents"}, []string{"adapter_id", "document", "fingerprint"}, pgx.CopyFromRows(rows)); err != nil {
+		return fmt.Errorf("save document fingerprints: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("save document fingerprints: commit: %w", err)
+	}
+	return nil
+}
+
 // LastIngestAt returns MAX(adapter_state.updated) as a time, or the zero time
 // when nothing has run or the value can't be parsed (treated as stale).
 func (p *DB) LastIngestAt() (time.Time, error) {

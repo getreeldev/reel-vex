@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"regexp"
@@ -50,7 +51,7 @@ func TestPG(t *testing.T) {
 	defer d.Close()
 
 	// Clean slate (Open ran migrations; wipe rows so reruns are deterministic).
-	if _, err := d.pool.Exec(t.Context(), `TRUNCATE statements, vendors, product_aliases, adapter_state`); err != nil {
+	if _, err := d.pool.Exec(t.Context(), `TRUNCATE statements, vendors, product_aliases, adapter_state, adapter_documents`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 
@@ -66,6 +67,35 @@ func TestPG(t *testing.T) {
 	}
 	if _, err := d.LastIngestAt(); err != nil {
 		t.Fatalf("LastIngestAt: %v", err)
+	}
+
+	// Document fingerprints: empty before any save, each save replaces the
+	// adapter's whole set and no other adapter's, an empty save clears it.
+	if fps, err := d.DocumentFingerprints("ubuntu-vex"); err != nil || len(fps) != 0 {
+		t.Fatalf("DocumentFingerprints before a save = %v, %v", fps, err)
+	}
+	first := map[string]string{"CVE-1": "1:aa", "CVE-2": "1:bb"}
+	if err := d.SaveDocumentFingerprints("ubuntu-vex", first); err != nil {
+		t.Fatalf("SaveDocumentFingerprints: %v", err)
+	}
+	if err := d.SaveDocumentFingerprints("other", map[string]string{"CVE-1": "1:zz"}); err != nil {
+		t.Fatalf("SaveDocumentFingerprints: %v", err)
+	}
+	second := map[string]string{"CVE-2": "1:cc", "CVE-3": "1:dd"}
+	if err := d.SaveDocumentFingerprints("ubuntu-vex", second); err != nil {
+		t.Fatalf("SaveDocumentFingerprints: %v", err)
+	}
+	if fps, err := d.DocumentFingerprints("ubuntu-vex"); err != nil || !maps.Equal(fps, second) {
+		t.Fatalf("DocumentFingerprints = %v, %v; want %v", fps, err, second)
+	}
+	if fps, err := d.DocumentFingerprints("other"); err != nil || fps["CVE-1"] != "1:zz" || len(fps) != 1 {
+		t.Fatalf("another adapter's fingerprints = %v, %v", fps, err)
+	}
+	if err := d.SaveDocumentFingerprints("ubuntu-vex", nil); err != nil {
+		t.Fatalf("SaveDocumentFingerprints(nil): %v", err)
+	}
+	if fps, err := d.DocumentFingerprints("ubuntu-vex"); err != nil || len(fps) != 0 {
+		t.Fatalf("DocumentFingerprints after clearing = %v, %v", fps, err)
 	}
 
 	// Ping answers on a live pool and fails on a closed one (/healthz's 503).
@@ -1284,7 +1314,10 @@ func testSweeps(t *testing.T, d *DB, dsn string) {
 			INCLUDE (vendor, version, id_type, status, justification, updated, scope)`); err != nil {
 			t.Fatalf("v2 covering index: %v", err)
 		}
-		if err := v2.migrate(ctx); err != nil {
+		migrations = all[:3]
+		err = v2.migrate(ctx)
+		migrations = all
+		if err != nil {
 			t.Fatalf("migrate to v3: %v", err)
 		}
 		var version int

@@ -171,9 +171,31 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 		}
 	}()
 
+	// A ChangedDocsAdapter's stored fingerprints name the documents whose rows
+	// are as its last run left them. They are cleared before this run changes
+	// any row and stored again only once its removal finished, so a run that
+	// stops part-way — on an error or a killed process — leaves none, and the
+	// next run reads every document.
+	cd, changedDocs := a.(source.ChangedDocsAdapter)
+	fingerprintsCleared := false
+	clearFingerprints := func() error {
+		if !changedDocs || fingerprintsCleared {
+			return nil
+		}
+		if err := database.SaveDocumentFingerprints(a.ID(), nil); err != nil {
+			return fmt.Errorf("clear document fingerprints: %w", err)
+		}
+		fingerprintsCleared = true
+		return nil
+	}
+
 	flush := func() error {
 		if len(batch) == 0 {
 			return nil
+		}
+		if err := clearFingerprints(); err != nil {
+			flushFailed = true
+			return err
 		}
 		if err := database.BulkInsert(batch); err != nil {
 			flushFailed = true
@@ -235,7 +257,20 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 		return nil
 	}
 
-	res, err := a.Sync(ctx, since, emit)
+	// A ChangedDocsAdapter leaves out the documents its last run read
+	// unchanged. That is only safe when this run can replace the documents it
+	// does read, so without removal it reads every one, as Sync does.
+	var res source.SyncResult
+	if changedDocs && sessionOpen {
+		last, ferr := database.DocumentFingerprints(a.ID())
+		if ferr != nil {
+			slog.Warn("document fingerprints unreadable; reading every document", "adapter", a.ID(), "error", ferr)
+			last = nil
+		}
+		res, err = cd.SyncChanged(ctx, since, last, emit)
+	} else {
+		res, err = a.Sync(ctx, since, emit)
+	}
 	if err != nil && !errors.Is(err, errLimitReached) {
 		// The pending batch is not flushed: the run failed.
 		if skip == "" {
@@ -278,6 +313,10 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 		}
 	}
 	scopeLabel := sweepScopeLabel(res)
+	// replaced: this run's removal did everything its scope asked, so the
+	// fingerprints of what it read may be stored and the next run may leave
+	// those documents out. withdrawn: its withdrawal, if any, did too.
+	replaced, withdrawn := false, true
 	switch {
 	case skip != "":
 		if sessionOpen {
@@ -292,16 +331,27 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 		case len(res.RefreshedCVEs) > 0:
 			scope.CVEs = res.RefreshedCVEs
 		}
-		if scope.All || len(scope.CVEs) > 0 {
+		// Removal changes rows too: the stored fingerprints go first.
+		var cerr error
+		if scope.All || len(scope.CVEs) > 0 || res.LiveCVEs != nil {
+			cerr = clearFingerprints()
+		}
+		switch {
+		case cerr != nil:
+			endSession()
+			logSweep(a.ID(), scopeLabel, db.SweepResult{Seen: seen}, "", false, cerr)
+		case scope.All || len(scope.CVEs) > 0:
 			sweepRes, err := database.FinishSweep(a.ID(), scope, maxFraction)
 			sessionOpen = false
 			// Only a whole-feed sweep has a fraction guard to lift.
 			logSweep(a.ID(), scopeLabel, sweepRes, "", forced && scope.All, err)
-		} else {
+			replaced = err == nil && !sweepRes.Refused
+		default:
 			endSession()
 			logSweep(a.ID(), scopeLabel, db.SweepResult{Seen: seen}, "incomplete", false, nil)
+			replaced = true
 		}
-		if res.LiveCVEs != nil {
+		if res.LiveCVEs != nil && cerr == nil {
 			// A document this run fetched is live even when the manifest, read
 			// at another moment, does not list it yet. An empty manifest stays
 			// empty, so Withdraw still refuses it.
@@ -311,6 +361,14 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 			}
 			wres, err := database.Withdraw(a.ID(), live, maxFraction)
 			logWithdraw(a.ID(), wres, forced, err)
+			withdrawn = err == nil && !wres.Refused
+		}
+	}
+
+	// A document whose fingerprint is not stored is read again next run.
+	if res.Fingerprints != nil && replaced {
+		if err := database.SaveDocumentFingerprints(a.ID(), res.Fingerprints); err != nil {
+			slog.Warn("save document fingerprints failed", "adapter", a.ID(), "error", err)
 		}
 	}
 
@@ -318,6 +376,16 @@ func runAdapter(ctx context.Context, a source.Adapter, database db.Store, opts O
 	// new data this cycle). UpsertAdapterState preserves the prior watermark
 	// when the incoming one is empty, so HEAD-short-circuit cycles don't
 	// erase a previously-set last_synced.
+	// An adapter-reported watermark (the feed's Last-Modified) stays where it
+	// was when this run's removal did not finish, so the next run fetches the
+	// same feed and retries — a forced sweep included — rather than finding
+	// it up to date.
+	if !res.Watermark.IsZero() {
+		newest = time.Time{}
+		if skip == "disabled" || (replaced && withdrawn) {
+			newest = res.Watermark
+		}
+	}
 	// A document the adapter failed to read is read again next run: the
 	// watermark stays a second before it (the stored form has no fraction).
 	if !res.RetryFrom.IsZero() && !newest.Before(res.RetryFrom) {

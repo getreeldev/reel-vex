@@ -228,11 +228,16 @@ var day1Want = ingestWant{
 
 // day2Want: the Alpine community feed loses more than 20% of its rows, so its
 // sweep is refused, and SUSE's index.txt loses more than 20% of its CVEs, so
-// its withdrawal is.
+// its withdrawal is. Ubuntu OpenVEX re-reads only the two documents day 2
+// changed, and replaces just those CVEs' rows.
 var day2Want = ingestWant{
 	warn: [][]string{
 		{" WARN sweep ", "adapter=alpine-secdb-v3.22-community ", "refused="},
 		{" WARN withdraw ", "adapter=suse ", "refused="},
+	},
+	info: [][]string{
+		{"INFO ubuntu-vex sync complete ", "adapter=ubuntu-vex ", "entries=7 ", "unchanged=5 ", "refreshed=2 "},
+		{"INFO sweep ", "adapter=ubuntu-vex ", "scope=cves:2 "},
 	},
 	// Day 1's, less every removal the day-2 cases describe: Red Hat 9 (a
 	// product dropped from a re-published document, a document re-published
