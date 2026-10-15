@@ -2,7 +2,7 @@
 
 All notable changes to reel-vex are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); reel-vex is pre-1.0 so minor bumps may carry breaking changes.
 
-## [Unreleased] — Ubuntu OpenVEX re-reads only the documents that changed
+## [0.13.1] — Ubuntu OpenVEX re-reads only the documents that changed
 
 ### Changed
 
