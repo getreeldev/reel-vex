@@ -22,8 +22,11 @@ var ErrIngestRunning = errors.New("another ingest is running")
 
 // Statement is a VEX assertion stored in the database.
 type Statement struct {
-	Vendor        string
-	CVE           string
+	Vendor string
+	CVE    string
+	// ProductID keeps every qualifier, arch included, so rows stay one per
+	// architecture. Vendors state the same verdict for every architecture
+	// today; folding them at ingest would leave no way to store a difference.
 	ProductID     string
 	BaseID        string
 	IDType        string
