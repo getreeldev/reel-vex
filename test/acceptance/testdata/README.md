@@ -4,8 +4,8 @@ Trimmed copies of the live vendor feeds, served to the adapters by the acceptanc
 provider-metadata → distribution → `changes.csv`/`index.txt` chain), except the Canonical
 OpenVEX tarball, copied on **2026-10-02**.
 
-**Trimming rule.** Items were only dropped whole (tar entries, OVAL definitions and the tests,
-objects, states and variables only dropped definitions used, secdb packages, updateinfo `<update>`s, CSAF
+**Trimming rule.** Items were only dropped whole (tar entries, OVAL definitions with the tests,
+objects, states and variables no kept definition references, secdb packages, updateinfo `<update>`s, CSAF
 documents, index lines, `repomd.xml` `<data>` entries, alias-file repositories). No vendor
 statement in a kept item was edited. Trimmed JSON files are re-serialised (whitespace only), and
 the [day-2 files](#day-2-second-ingest) are edited on purpose.
@@ -42,11 +42,14 @@ https://creativecommons.org/licenses/by/4.0/, https://creativecommons.org/licens
   compressed file differs from `src/`.
 
 **What the server checks.** Each ingest must ask for every file of its day. Any 404 fails it,
-except SUSE's `archive_latest.txt` on day 1 and the document gone on day 2.
+except SUSE's `archive_latest.txt` on day 1 and the document gone on day 2. A fixture no
+adapter reads, or one an adapter asks for and the fixtures lack, fails the suite rather than
+surfacing later as a wrong answer.
 
 **Last-Modified.** Day-1 files are served as `Sat, 03 Oct 2026 00:00:00 GMT`, day-2 replacements
 as `Sun, 04 Oct 2026 00:00:00 GMT` (one is pinned, below). OVAL and secdb rows carry the day-1
-date (`2026-10-03T00:00:00Z`). Dates below are the vendor's Last-Modified.
+date (`2026-10-03T00:00:00Z`). The vendors' own Last-Modified values on the fetch day are noted
+per feed for reference.
 
 ## Feeds
 
