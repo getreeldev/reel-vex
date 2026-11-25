@@ -8,6 +8,10 @@ Notable changes to reel-vex. Before 1.0 a minor version can break things: such c
 - **`/v1/statements` keeps `X-Reel-Truncated` and `X-Reel-Next-Offset` on a `204`** when `strict_arch` empties a truncated page, so a client keeps paging.
 - **`/v1/statements` answers a query past `-query-timeout` with `503`**, as `/v1/analyze` and the flag's help do. It was `500`.
 
+### Security
+- **`klauspost/compress` 1.20.5** fixes [GO-2026-6865](https://pkg.go.dev/vuln/GO-2026-6865), a panic on a crafted zstd frame, reached through the Red Hat CSAF archive.
+- **Built with Go 1.27.4 or later**, which fixes [GO-2026-6859](https://pkg.go.dev/vuln/GO-2026-6859), an HTTP server crash. 0.13.1 was built with Go 1.27.2.
+
 ## [0.13.1] — Ubuntu OpenVEX reads only what changed
 
 *Released 2026-10-15*
