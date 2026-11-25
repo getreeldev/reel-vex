@@ -653,8 +653,7 @@ func TestAdapter_SyncChangedReadsEverythingWhenAFileIsNotOneCVEsOwn(t *testing.T
 			}
 			// A run that last stored the last file's fingerprint, from before
 			// the tarball took this shape: every document is read and the run
-			// is Complete, for a whole-feed sweep. (Rows the first pass
-			// emitted are emitted again; the upsert makes that a no-op.)
+			// is Complete, for a whole-feed sweep.
 			e := entries[len(entries)-1]
 			last := map[string]string{strings.TrimSuffix(path.Base(e.name), ".json"): fingerprint(e.body)}
 			emitted, res := syncChanged(t, entries, last)
@@ -760,5 +759,75 @@ func TestAdapter_SyncChangedFingerprintsOfAnotherVersionAreAWholeRead(t *testing
 	}
 	if want := map[string]int{"CVE-2026-1": 1, "CVE-2026-2": 1}; !maps.Equal(emitted, want) {
 		t.Errorf("emitted %v, want each document once", emitted)
+	}
+}
+
+// TestAdapter_SyncChangedFallbackEmitsEachStatementOnce: when a run falls back
+// to reading every document, nothing it emitted before deciding to may be
+// emitted again. The orchestrator records every emitted row in the sweep's
+// seen table, which keeps duplicates: emitting the changed documents and then
+// the whole feed doubled it, and the whole-feed sweep then outgrew its temp
+// file limit on every such publish.
+func TestAdapter_SyncChangedFallbackEmitsEachStatementOnce(t *testing.T) {
+	defer func(n int) { wholeReadAbove = n }(wholeReadAbove)
+	wholeReadAbove = 1
+	curl := []openvex.Component{purl("pkg:deb/ubuntu/curl?distro=ubuntu/jammy")}
+	wget := []openvex.Component{purl("pkg:deb/ubuntu/wget?distro=ubuntu/jammy")}
+	doc := func(cve, status string) fixtureEntry {
+		return fixtureEntry{name: "vex/cve/2026/" + cve + ".json", body: mustJSON(t, docOne(cve, curl, status, "", "2026-04-01T00:00:00Z"))}
+	}
+	cases := []struct {
+		name    string
+		day1    []fixtureEntry
+		day2    []fixtureEntry
+		wantAll int // statements in day2
+	}{
+		{
+			name:    "more than a fifth changed",
+			day1:    []fixtureEntry{doc("CVE-2026-1", "fixed"), doc("CVE-2026-2", "affected"), doc("CVE-2026-3", "affected")},
+			day2:    []fixtureEntry{doc("CVE-2026-1", "fixed"), doc("CVE-2026-2", "fixed"), doc("CVE-2026-3", "fixed")},
+			wantAll: 3,
+		},
+		{
+			name: "a changed document names another CVE",
+			day1: []fixtureEntry{doc("CVE-2026-1", "fixed"), doc("CVE-2026-2", "affected"), doc("CVE-2026-3", "affected")},
+			day2: []fixtureEntry{
+				{name: "vex/cve/2026/CVE-2026-1.json", body: mustJSON(t, openvex.Document{Context: openvex.Context, Statements: []openvex.Statement{
+					{Vulnerability: openvex.Vulnerability{Name: "CVE-2026-1"}, Products: curl, Status: "fixed"},
+					{Vulnerability: openvex.Vulnerability{Name: "CVE-2026-2"}, Products: wget, Status: "fixed"}}})},
+				doc("CVE-2026-2", "affected"), doc("CVE-2026-3", "affected"),
+			},
+			wantAll: 4,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, first := syncChanged(t, tc.day1, nil)
+			server, _ := serveFixture(t, buildTarXZ(t, tc.day2), time.Now().UTC())
+			defer server.Close()
+			a, err := New(source.AdapterConfig{Type: Type, ID: "ubuntu-vex", URL: server.URL + "/vex-all.tar.xz"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seen := map[string]int{}
+			res, err := a.(source.ChangedDocsAdapter).SyncChanged(context.Background(), time.Time{}, first.Fingerprints, func(s source.Statement) error {
+				seen[s.CVE+" "+s.ProductID+" "+s.Status]++
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("SyncChanged: %v", err)
+			}
+			if !res.Complete {
+				t.Fatalf("result %+v; want the whole read", res)
+			}
+			if len(seen) != tc.wantAll {
+				t.Errorf("emitted %v; want all %d statements", seen, tc.wantAll)
+			}
+			for k, n := range seen {
+				if n != 1 {
+					t.Errorf("%s emitted %d times, want once", k, n)
+				}
+			}
+		})
 	}
 }

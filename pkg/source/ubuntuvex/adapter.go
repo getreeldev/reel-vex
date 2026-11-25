@@ -233,14 +233,19 @@ func (a *Adapter) SyncChanged(ctx context.Context, since time.Time, last map[str
 	if fallbackTime.IsZero() {
 		fallbackTime = time.Now().UTC()
 	}
-	res, odd, err := a.walk(ctx, body, last, fallbackTime, emit)
-	if err != nil {
-		return source.SyncResult{}, err
-	}
-	// A run that found every document changed (fingerprints of another
-	// fingerprintVersion, say) has read the whole feed already.
-	whole := len(last) == 0 || res.Complete
+	// Decide what to read before emitting anything: a first pass emits
+	// nothing, so a fallback to the whole feed does not emit the changed
+	// documents twice (the orchestrator records every emitted row for the
+	// sweep, duplicates included).
+	whole := len(last) == 0
 	if !whole {
+		probe, odd, err := a.walk(ctx, body, last, fallbackTime, nil)
+		if err != nil {
+			return source.SyncResult{}, err
+		}
+		// A run that finds every document changed (fingerprints of another
+		// fingerprintVersion, say) reads the whole feed anyway.
+		whole = probe.Complete
 		// Replacing a document's rows has no fraction guard; the whole-feed
 		// sweep does. A publish that changed more than a fifth of the
 		// documents and more than wholeReadAbove of them (a new format the
@@ -250,19 +255,24 @@ func (a *Adapter) SyncChanged(ctx context.Context, since time.Time, last map[str
 		// document out is only leaving that CVE's rows when every document is.
 		var why string
 		switch {
+		case whole:
 		case odd:
 			why = "a document is not one CVE's own"
-		case len(res.RefreshedCVEs) > wholeReadAbove && len(res.RefreshedCVEs)*5 > len(res.LiveCVEs):
+		case len(probe.RefreshedCVEs) > wholeReadAbove && len(probe.RefreshedCVEs)*5 > len(probe.LiveCVEs):
 			why = "more than a fifth of the documents changed"
 		}
 		if why != "" {
 			slog.Warn("ubuntu-vex reading every document", "adapter", a.id, "reason", why,
-				"refreshed", len(res.RefreshedCVEs), "entries", len(res.LiveCVEs))
-			if res, odd, err = a.walk(ctx, body, nil, fallbackTime, emit); err != nil {
-				return source.SyncResult{}, err
-			}
+				"refreshed", len(probe.RefreshedCVEs), "entries", len(probe.LiveCVEs))
 			whole = true
 		}
+	}
+	if whole {
+		last = nil
+	}
+	res, odd, err := a.walk(ctx, body, last, fallbackTime, emit)
+	if err != nil {
+		return source.SyncResult{}, err
 	}
 	if whole && !res.Complete {
 		// A whole read that skipped a document removes nothing, as before
@@ -280,7 +290,8 @@ func (a *Adapter) SyncChanged(ctx context.Context, since time.Time, last map[str
 // walk reads the tarball, leaving out each document whose fingerprint equals
 // its entry in last. odd reports a document that is not one CVE's own — two
 // files with one name, or a document naming another CVE — which makes
-// leaving documents out unsafe.
+// leaving documents out unsafe. A nil emit reads without emitting or logging,
+// to learn the result a walk with emit would have.
 func (a *Adapter) walk(ctx context.Context, body []byte, last map[string]string, fallbackTime time.Time, emit func(source.Statement) error) (source.SyncResult, bool, error) {
 	xzReader, err := xz.NewReader(bytes.NewReader(body))
 	if err != nil {
@@ -348,16 +359,20 @@ func (a *Adapter) walk(ctx context.Context, body []byte, last map[string]string,
 				odd = true
 			}
 		}
-		n, err := emitDoc(doc, fallbackTime, emit)
-		if err != nil {
-			return source.SyncResult{}, false, err
+		if emit != nil {
+			n, err := emitDoc(doc, fallbackTime, emit)
+			if err != nil {
+				return source.SyncResult{}, false, err
+			}
+			emitted += n
 		}
-		emitted += n
 		fps[cve] = fp
 		refreshed = append(refreshed, cve)
 	}
-	slog.Info("ubuntu-vex sync complete", "adapter", a.id, "entries", entries, "unchanged", unchanged,
-		"refreshed", entries-unchanged-skipped, "statements", emitted, "skipped", skipped)
+	if emit != nil {
+		slog.Info("ubuntu-vex sync complete", "adapter", a.id, "entries", entries, "unchanged", unchanged,
+			"refreshed", entries-unchanged-skipped, "statements", emitted, "skipped", skipped)
+	}
 	if skipped == 0 && unchanged == 0 {
 		return source.SyncResult{Complete: true, Fingerprints: fps}, odd, nil
 	}
