@@ -2,6 +2,11 @@
 
 Notable changes to reel-vex. Before 1.0 a minor version can break things: such changes are marked **Breaking** and listed under **Upgrade notes**.
 
+## [Unreleased]
+
+### Fixed
+- **Ubuntu OpenVEX refuses a tarball over 1 GiB** rather than buffering it whole; Canonical's is about 70 MB.
+
 ## [0.13.3] — Ubuntu OpenVEX emits each statement once
 
 *Released 2026-11-25*

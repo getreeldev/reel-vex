@@ -145,6 +145,10 @@ var wholeReadAbove = 1000
 // A var so tests can lower it.
 var maxDocumentBytes int64 = 256 << 20
 
+// maxTarballBytes bounds the compressed tarball buffered in memory; Canonical's
+// is ~70 MB (2026-11). A var so tests can lower it.
+var maxTarballBytes int64 = 1 << 30
+
 // fingerprint is what SyncChanged compares to tell a document unchanged.
 func fingerprint(raw []byte) string {
 	sum := sha256.Sum256(raw)
@@ -218,10 +222,13 @@ func (a *Adapter) SyncChanged(ctx context.Context, since time.Time, last map[str
 	// the connection open for the full walk and trips the deadline. The
 	// tarball is small enough (~68 MB compressed) to buffer; processing
 	// then happens entirely on local memory with no HTTP coupling.
-	body, err := io.ReadAll(getResp.Body)
+	body, err := io.ReadAll(io.LimitReader(getResp.Body, maxTarballBytes+1))
 	getResp.Body.Close()
 	if err != nil {
 		return source.SyncResult{}, fmt.Errorf("read body: %w", err)
+	}
+	if int64(len(body)) > maxTarballBytes {
+		return source.SyncResult{}, fmt.Errorf("GET %s: body over %d bytes", a.url, maxTarballBytes)
 	}
 	// The body's own date is the publish this run read, should a cache have
 	// answered the HEAD with a newer one.

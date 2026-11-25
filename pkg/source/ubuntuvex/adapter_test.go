@@ -831,3 +831,20 @@ func TestAdapter_SyncChangedFallbackEmitsEachStatementOnce(t *testing.T) {
 		})
 	}
 }
+
+// TestAdapter_RefusesAnOversizedTarball: the tarball is buffered whole, so
+// its size is bounded.
+func TestAdapter_RefusesAnOversizedTarball(t *testing.T) {
+	defer func(n int64) { maxTarballBytes = n }(maxTarballBytes)
+	maxTarballBytes = 64
+	curl := []openvex.Component{purl("pkg:deb/ubuntu/curl?distro=ubuntu/jammy")}
+	server, _ := serveFixture(t, buildTarXZ(t, []fixtureEntry{
+		{name: "vex/cve/2026/CVE-2026-1.json", body: mustJSON(t, docOne("CVE-2026-1", curl, "fixed", "", "2026-04-01T00:00:00Z"))}}), time.Now().UTC())
+	defer server.Close()
+	a, _ := New(source.AdapterConfig{Type: Type, ID: "ubuntu-vex", URL: server.URL + "/vex-all.tar.xz"})
+	emitted := 0
+	_, err := a.Sync(context.Background(), time.Time{}, func(source.Statement) error { emitted++; return nil })
+	if err == nil || !strings.Contains(err.Error(), "body over") || emitted != 0 {
+		t.Errorf("err %v, emitted %d; want a refusal before anything is emitted", err, emitted)
+	}
+}
