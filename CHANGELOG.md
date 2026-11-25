@@ -2,7 +2,9 @@
 
 Notable changes to reel-vex. Before 1.0 a minor version can break things: such changes are marked **Breaking** and listed under **Upgrade notes**.
 
-## [Unreleased]
+## [0.13.2] — paging headers on a 204, timeouts are 503, security fixes
+
+*Released 2026-11-25*
 
 ### Fixed
 - **`/v1/statements` keeps `X-Reel-Truncated` and `X-Reel-Next-Offset` on a `204`** when `strict_arch` empties a truncated page, so a client keeps paging.
