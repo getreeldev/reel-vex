@@ -10,7 +10,10 @@ Notable changes to reel-vex. Before 1.0 a minor version can break things: such c
 
 ### Security
 - **`klauspost/compress` 1.20.5** fixes [GO-2026-6865](https://pkg.go.dev/vuln/GO-2026-6865), a panic on a crafted zstd frame, reached through the Red Hat CSAF archive.
-- **Built with Go 1.27.4 or later**, which fixes [GO-2026-6859](https://pkg.go.dev/vuln/GO-2026-6859), an HTTP server crash. 0.13.1 was built with Go 1.27.2.
+- **Built with Go 1.27.4 or later**, which fixes [GO-2026-6859](https://pkg.go.dev/vuln/GO-2026-6859), an HTTP server crash, and the Go 1.27.3 `crypto/x509` fix. 0.13.1 was built with Go 1.27.2.
+
+### Changed
+- Dependencies: `pgx` 5.13.0, `gocsaf/csaf` 3.7.1, and their indirect modules.
 
 ## [0.13.1] — Ubuntu OpenVEX reads only what changed
 
