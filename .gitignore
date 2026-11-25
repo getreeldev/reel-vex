@@ -5,5 +5,5 @@
 /reel-vex
 testdata/batch/
 .DS_Store
-/CLAUDE.md
-.claude/
+.claude/*
+!.claude/skills/
