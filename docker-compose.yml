@@ -58,7 +58,7 @@ services:
     # Not published to the host — only the app reaches it over the compose network.
 
   reel-vex:
-    image: getreel/vex-hub:v0.13.1 # pinned per release; bump on each version
+    image: getreel/vex-hub:v0.13.2 # pinned per release; bump on each version
     restart: unless-stopped
     depends_on:
       postgres:
