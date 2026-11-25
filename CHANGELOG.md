@@ -2,7 +2,9 @@
 
 Notable changes to reel-vex. Before 1.0 a minor version can break things: such changes are marked **Breaking** and listed under **Upgrade notes**.
 
-## [Unreleased]
+## [0.13.3] — Ubuntu OpenVEX emits each statement once
+
+*Released 2026-11-25*
 
 ### Fixed
 - **Ubuntu OpenVEX emits each statement once when a publish is read whole.** It emitted the changed documents and then the whole feed, which doubled the sweep's seen rows past its temporary-file limit; the sweep failed and the next ingest read the feed again.
