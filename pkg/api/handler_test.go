@@ -3,8 +3,10 @@ package api
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1708,6 +1710,30 @@ func TestHandleStats_OtherErrorsStill500(t *testing.T) {
 	srv.ServeHTTP(w, req)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 for a genuine failure, got %d", w.Code)
+	}
+}
+
+// TestHandleStatements_QueryTimeoutIs503 keeps /v1/statements answering a
+// -query-timeout the way /v1/analyze and the flag's help do; any other query
+// failure stays 500.
+func TestHandleStatements_QueryTimeoutIs503(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{
+		{fmt.Errorf("query statements: %w", context.DeadlineExceeded), http.StatusServiceUnavailable},
+		{errors.New("connection refused"), http.StatusInternalServerError},
+	} {
+		database := dbtest.New()
+		t.Cleanup(func() { database.Close() })
+		database.SetQueryErr(tc.err)
+		srv := NewServer(database, nil)
+		r := httptest.NewRequest("POST", "/v1/statements", strings.NewReader(`{"cves":["CVE-2024-0001"]}`))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		if w.Code != tc.want {
+			t.Errorf("%v: got %d, want %d", tc.err, w.Code, tc.want)
+		}
 	}
 }
 

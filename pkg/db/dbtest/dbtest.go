@@ -45,6 +45,8 @@ type Store struct {
 	statsErr error
 	// pingErr, when set, is returned by Ping. See SetPingErr.
 	pingErr error
+	// queryErr, when set, is returned by QueryStatements. See SetQueryErr.
+	queryErr error
 	// sweeps holds the open sweep sessions, by adapter id.
 	sweeps map[string]*sweep
 	// fingerprints holds each adapter's stored document fingerprints.
@@ -211,6 +213,9 @@ func (s *Store) QueryStatements(f db.QueryFilters) ([]db.Statement, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.queryErr != nil {
+		return nil, s.queryErr
+	}
 
 	exact := db.NewExactFilter(f.ExactVersions)
 	boundary := db.NewBoundaryFilter(f.BoundaryVersions)
@@ -385,6 +390,14 @@ func (s *Store) SetStatsErr(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.statsErr = err
+}
+
+// SetQueryErr makes QueryStatements return err, standing in for a query that
+// hit the server's -query-timeout or failed in the database.
+func (s *Store) SetQueryErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queryErr = err
 }
 
 // SetPingErr makes Ping return err, standing in for an unreachable database.

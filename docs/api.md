@@ -214,7 +214,7 @@ Repeat with `"offset": 100` for the next page. **A truncated document is incompl
 
 - Rows come in a fixed order (package, CVE, product, feed format), so pages never overlap while data is unchanged.
 - `limit`, `offset` and the counts cover only rows that survive version selection.
-- `strict_arch` is applied again after the page is cut, so a page can be shorter than `limit` and still truncated.
+- `strict_arch` is applied again after the page is cut, so a page can be shorter than `limit`, or a `204` with no body, and still truncated. Keep paging while `X-Reel-Truncated` is set.
 </details>
 
 ### Response headers
@@ -238,7 +238,8 @@ Errors carry `{"error": "<message>"}`.
 |---|---|
 | `400` | Invalid JSON or SBOM; no CVEs or products; over 10,000 items in `cves` or `products`, SBOM included (`-max-statements-items`); an SBOM over 50,000 components or 10,000 vulnerabilities. |
 | `413` | Body over `-sbom-max-mb` (default 10 MB). Without `Content-Length`, an oversized body gets `400 invalid JSON`. |
-| `500` | `query failed`, including a query past `-query-timeout` (default 20 s). |
+| `500` | `query failed`. |
+| `503` | A query past `-query-timeout` (default 20 s). Narrow the CVEs or products, or page with a smaller `limit`. |
 
 ## POST /v1/analyze
 

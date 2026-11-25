@@ -196,3 +196,57 @@ func TestFilterByArch_NoFilterWhenEmpty(t *testing.T) {
 		t.Errorf("empty arch set must not filter, got %d statements", len(got))
 	}
 }
+
+// A truncated page that strict_arch empties answers 204, and must still carry
+// the truncation headers: without them a client stops paging and never sees
+// the rows past the cut. The database's arch predicate is a substring match,
+// so a page can hold only rows the exact check then drops (arch=amd64_v2 for a
+// caller naming amd64).
+func TestHandleStatements_StrictArchEmptiedPageStillTruncated(t *testing.T) {
+	database := dbtest.New()
+	t.Cleanup(func() { database.Close() })
+	row := func(productID string) db.Statement {
+		return db.Statement{
+			Vendor: "ubuntu", CVE: "CVE-2019-9923",
+			ProductID: productID, BaseID: "pkg:deb/ubuntu/tar?distro=ubuntu-22.04",
+			Versions: []string{"1.34-1"}, IDType: "purl",
+			Status: "not_affected", Justification: "vulnerable_code_not_present",
+			Updated: "2019-03-22T08:29:00Z", SourceFormat: "openvex",
+		}
+	}
+	// Ordered by product, the amd64_v2 row fills page one and the amd64 row
+	// the caller wants sits on page two.
+	if err := database.BulkInsert([]db.Statement{
+		row("pkg:deb/ubuntu/tar@1.34-1?arch=amd64_v2&distro=ubuntu-22.04"),
+		row("pkg:deb/ubuntu/tar@1.34-2?arch=amd64&distro=ubuntu-22.04"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(database, nil)
+	page := func(offset int) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(statementsRequest{
+			CVEs:       []string{"CVE-2019-9923"},
+			Products:   []string{"pkg:deb/ubuntu/tar?arch=amd64&distro=ubuntu-22.04"},
+			StrictArch: true,
+			Limit:      1,
+			Offset:     offset,
+		})
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, httptest.NewRequest("POST", "/v1/statements", bytes.NewReader(body)))
+		return w
+	}
+
+	w := page(0)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("page 1: expected 204 for an emptied page, got %d (%s)", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("X-Reel-Truncated"); got != "true" {
+		t.Errorf("page 1: X-Reel-Truncated: got %q, want true", got)
+	}
+	if got := w.Header().Get("X-Reel-Next-Offset"); got != "1" {
+		t.Fatalf("page 1: X-Reel-Next-Offset: got %q, want 1", got)
+	}
+	if w = page(1); w.Code != http.StatusOK || w.Header().Get("X-Reel-Statements") != "1" {
+		t.Errorf("page 2: got %d with %q statements, want the amd64 row", w.Code, w.Header().Get("X-Reel-Statements"))
+	}
+}

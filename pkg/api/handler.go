@@ -399,6 +399,10 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 
 	stmts, err := s.db.QueryStatements(filters)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeError(w, http.StatusServiceUnavailable, "query timed out — input too broad or server busy; narrow the CVEs or products, or page with a smaller limit")
+			return
+		}
 		slog.Error("statements query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -438,6 +442,17 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Reel-Arch", h)
 	}
 
+	// Truncation is signalled out-of-band via headers (not in the OpenVEX body,
+	// which must stay schema-valid). Status stays 200: an unsolicited 206 with
+	// no Content-Range violates RFC 7233 and can trip strict consumers/proxies
+	// (incl. trivy --vex). A dropped statement is a CVE the consumer won't
+	// suppress, so X-Reel-Truncated flags incompleteness and X-Reel-Next-Offset
+	// lets the caller page the remainder. Set before the 204 below: strict_arch
+	// can empty a truncated page, and that page must still name the next one.
+	if truncated {
+		w.Header().Set("X-Reel-Truncated", "true")
+		w.Header().Set("X-Reel-Next-Offset", strconv.Itoa(offset+limit))
+	}
 	// OpenVEX 0.2.0 schema requires statements: minItems 1. 204 on empty
 	// keeps the response schema-valid.
 	if len(stmts) == 0 {
@@ -449,16 +464,6 @@ func (s *Server) handleStatements(w http.ResponseWriter, r *http.Request) {
 	// into. Both are useful and neither substitutes for the other.
 	w.Header().Set("X-Reel-Grouped", strconv.Itoa(len(doc.Statements)))
 	w.Header().Set("Content-Type", "application/json")
-	// Truncation is signalled out-of-band via headers (not in the OpenVEX body,
-	// which must stay schema-valid). Status stays 200: an unsolicited 206 with
-	// no Content-Range violates RFC 7233 and can trip strict consumers/proxies
-	// (incl. trivy --vex). A dropped statement is a CVE the consumer won't
-	// suppress, so X-Reel-Truncated flags incompleteness and X-Reel-Next-Offset
-	// lets the caller page the remainder.
-	if truncated {
-		w.Header().Set("X-Reel-Truncated", "true")
-		w.Header().Set("X-Reel-Next-Offset", strconv.Itoa(offset+limit))
-	}
 	if err := json.NewEncoder(w).Encode(doc); err != nil {
 		slog.Error("openvex encode failed", "error", err)
 	}

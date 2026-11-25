@@ -2,6 +2,12 @@
 
 Notable changes to reel-vex. Before 1.0 a minor version can break things: such changes are marked **Breaking** and listed under **Upgrade notes**.
 
+## [Unreleased]
+
+### Fixed
+- **`/v1/statements` keeps `X-Reel-Truncated` and `X-Reel-Next-Offset` on a `204`** when `strict_arch` empties a truncated page, so a client keeps paging.
+- **`/v1/statements` answers a query past `-query-timeout` with `503`**, as `/v1/analyze` and the flag's help do. It was `500`.
+
 ## [0.13.1] — Ubuntu OpenVEX reads only what changed
 
 *Released 2026-10-15*
